@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Accepted (ready to implement) |
+| **Status** | Accepted / Implemented |
 | **Date** | 2026-07-18 |
 | **Deciders** | Project owner |
 | **Tags** | tools, http, web, tavily, mcp, research |
@@ -164,9 +164,9 @@ format: raw
 
 - [x] Open questions answered (`0012-answers.json`)  
 - [x] LAN allow + JSON raw + markdown HTML locked  
-- [ ] `web_fetch` implemented with tests  
-- [ ] System prompt updated (**Q8**)  
-- [ ] Ready to implement  
+- [x] `web_fetch` implemented with tests  
+- [x] System prompt updated (**Q8**)  
+- [x] Implemented  
 
 ## References
 

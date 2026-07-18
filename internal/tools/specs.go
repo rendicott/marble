@@ -23,11 +23,11 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"path", "content"},
 			}),
-		spec("list_files", "List files and directories under a workspace path (shallow or recursive).",
+		spec("list_files", "List files and directories under a workspace path (shallow or recursive). Path may be relative to the workspace or absolute if it stays under the workspace root.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"path":      map[string]interface{}{"type": "string"},
+					"path":      map[string]interface{}{"type": "string", "description": "Relative or absolute path under workspace (default \".\")"},
 					"recursive": map[string]interface{}{"type": "boolean"},
 				},
 			}),
@@ -211,6 +211,22 @@ func allSpecs() []model.ToolSpec {
 					"inline": map[string]interface{}{"type": "boolean"},
 				},
 				"required": []string{"path"},
+			}),
+		// web_fetch (ADR-0012) — direct URL retrieval after search returns real URLs
+		spec("web_fetch", "HTTP(S) GET a URL for deeper analysis. HTML/text is returned as markdown; JSON is returned raw. Prefer after web search (e.g. mcp_tavily_tavily_search) returns real URLs — do not invent URLs. Use Tavily extract/crawl only when fetch fails or multi-page crawl is needed. Prefer over shell curl. LAN/private hosts allowed; cloud metadata blocked.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"url": map[string]interface{}{
+						"type":        "string",
+						"description": "Absolute http or https URL from search results or user",
+					},
+					"max_bytes": map[string]interface{}{
+						"type":        "integer",
+						"description": "Optional download size cap (default 2MiB)",
+					},
+				},
+				"required": []string{"url"},
 			}),
 		// mpub (ADR-0009) — human-facing pages under $MEMORY/mpub, served at /mpub/{slug}
 		spec("mpub_publish", "Publish content to the Marble mpub server ($MEMORY/mpub). Primary format is HTML; markdown also supported. Returns URL like http://127.0.0.1:8080/mpub/{slug}. Not for workspace project files.",

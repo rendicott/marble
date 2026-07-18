@@ -142,6 +142,8 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.skillLoad(argsJSON)
 	case "attach_file":
 		out, err = r.attachFile(argsJSON, tc)
+	case "web_fetch":
+		out, err = r.webFetch(argsJSON, tc)
 	case "mpub_publish":
 		out, err = r.mpubPublish(argsJSON, tc)
 	case "mpub_list":
@@ -166,25 +168,33 @@ func clamp(s string, max int) string {
 	return s[:max] + fmt.Sprintf("\n\n…[truncated %d of %d chars]", max, len(s))
 }
 
+// resolve maps a path into the workspace jail.
+// Relative paths are joined to the workspace root.
+// Absolute paths are allowed when they resolve under the workspace
+// (agents often pass abs paths from list_files / prior tool output).
 func (r *Registry) resolve(rel string) (string, error) {
 	if rel == "" {
 		return "", fmt.Errorf("path is required")
 	}
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("absolute paths are not allowed")
-	}
-	clean := filepath.Clean(rel)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path escapes workspace")
-	}
-	full := filepath.Join(r.Workspace, clean)
-	absFull, err := filepath.Abs(full)
-	if err != nil {
-		return "", err
-	}
 	absWS, err := filepath.Abs(r.Workspace)
 	if err != nil {
 		return "", err
+	}
+	var absFull string
+	if filepath.IsAbs(rel) {
+		absFull, err = filepath.Abs(filepath.Clean(rel))
+		if err != nil {
+			return "", err
+		}
+	} else {
+		clean := filepath.Clean(rel)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+			return "", fmt.Errorf("path escapes workspace")
+		}
+		absFull, err = filepath.Abs(filepath.Join(r.Workspace, clean))
+		if err != nil {
+			return "", err
+		}
 	}
 	if absFull != absWS && !strings.HasPrefix(absFull, absWS+string(os.PathSeparator)) {
 		return "", fmt.Errorf("path escapes workspace")
