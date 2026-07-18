@@ -26,6 +26,39 @@
     </div>
   </div>
   <div id="fs-menu" class="ctx-menu" role="menu" aria-hidden="true" hidden></div>
+  <div id="prompt-modal" class="fs-modal" hidden>
+    <div class="fs-dialog prompt-dialog" id="prompt-dialog">
+      <div class="fs-top">
+        <div class="fs-title">
+          System prompt &amp; every-turn context
+          <button type="button" id="prompt-help" class="icon-btn prompt-help" title="How this works" aria-label="How this works">?</button>
+        </div>
+        <div class="fs-top-actions">
+          <button type="button" id="prompt-save" class="icon-btn" title="Save soul" disabled>Save soul</button>
+          <button type="button" id="prompt-close" class="icon-btn" title="Close">×</button>
+        </div>
+      </div>
+      <p class="prompt-blurb" id="prompt-blurb">
+        The <strong>system prompt</strong> is built into Marble (tools &amp; policies) and cannot be edited here.
+        <strong>Every-turn context</strong> (soul) is optional text you control — house rules, persona, standing preferences —
+        injected on every model call after the system prompt when non-empty. Not part of the chat transcript.
+      </p>
+      <div class="prompt-body">
+        <section class="prompt-sec">
+          <h3>System prompt <span class="muted">(immutable)</span></h3>
+          <pre id="prompt-system" class="prompt-system" tabindex="0"></pre>
+        </section>
+        <section class="prompt-sec">
+          <div class="prompt-soul-head">
+            <h3>Every-turn context <span class="muted">(soul)</span></h3>
+            <span id="prompt-count" class="muted prompt-count">0 / 65536</span>
+          </div>
+          <p class="hint" id="prompt-path">Path: soul.md</p>
+          <textarea id="prompt-soul" class="prompt-soul" spellcheck="true" placeholder="Optional standing context for every turn…"></textarea>
+        </section>
+      </div>
+    </div>
+  </div>
   <div id="settings-modal" class="fs-modal" hidden>
     <div class="fs-dialog settings-dialog" id="settings-dialog">
       <div class="fs-top">
@@ -92,6 +125,7 @@
           </button>
           <button id="btn-explorer" class="icon-btn" type="button" title="Workspace files" aria-label="Workspace files">📁</button>
           <a id="btn-mpub" class="icon-btn" href="/mpub" target="_blank" rel="noopener noreferrer" title="mpub — published pages" aria-label="Open mpub published pages">🚀</a>
+          <button id="btn-prompt" class="icon-btn" type="button" title="System prompt &amp; every-turn context" aria-label="System prompt and every-turn context">👁</button>
           <button id="btn-settings" class="icon-btn" type="button" title="Settings" aria-label="Settings">⚙</button>
           <button id="btn-new" class="icon-btn" title="New session" type="button">+</button>
         </div>
@@ -147,6 +181,7 @@
   <script src="/purify.min.js"></script>
   <script src="/explorer.js"></script>
   <script src="/settings.js"></script>
+  <script src="/prompt.js"></script>
   <script src="/session-info.js"></script>
   <script src="/app.js"></script>
 </body>

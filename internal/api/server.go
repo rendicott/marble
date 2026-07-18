@@ -48,6 +48,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/workspace/", s.handleWorkspace)
 	s.Mux.HandleFunc("/api/settings", s.handleSettings)
 	s.Mux.HandleFunc("/api/settings/", s.handleSettings)
+	s.Mux.HandleFunc("/api/prompt", s.handlePrompt)
 	// mpub before SPA catch-all (ADR-0009)
 	s.Mux.HandleFunc("/mpub", s.handleMpub)
 	s.Mux.HandleFunc("/mpub/", s.handleMpub)

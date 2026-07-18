@@ -107,6 +107,11 @@ func newSession(id, title string) *Session {
 	}
 }
 
+// SystemPrompt returns the immutable harness system prompt (ADR-0013).
+func SystemPrompt() string {
+	return defaultSystemPrompt
+}
+
 const defaultSystemPrompt = `You are Marble, a general-purpose agent harness for sysadmin tasks, personal automation, and learning over time.
 You work inside a single workspace directory (tool jail). Memory is separate.
 

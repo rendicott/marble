@@ -167,6 +167,8 @@ func (r *Runner) runTurn(s *Session) {
 
 		// Ephemeral advisories injected into a copy for this call only
 		prompt := trimHistory(hist, budget, toolEst)
+		// ADR-0013: every-turn soul as second system message (user sessions only)
+		prompt = r.injectSoul(s, prompt)
 		estIn := estimateAll(prompt) + toolEst
 		ratio := r.Cfg.UsageRatio(estIn)
 		s.setContextUsage(ratio)
@@ -209,6 +211,7 @@ func (r *Runner) runTurn(s *Session) {
 				copy(hist, s.history)
 				s.mu.Unlock()
 				prompt = trimHistory(hist, budget, toolEst)
+				prompt = r.injectSoul(s, prompt)
 				estIn = estimateAll(prompt) + toolEst
 				s.setContextUsage(r.Cfg.UsageRatio(estIn))
 			}
@@ -400,6 +403,36 @@ func phaseForErr(err error, s *Session) string {
 		return "stopping"
 	}
 	return "error"
+}
+
+// injectSoul inserts $MEMORY/soul.md as a second system message after the first system
+// message when non-empty. Skips system-agent sessions and blank soul (ADR-0013).
+func (r *Runner) injectSoul(s *Session, prompt []model.Message) []model.Message {
+	if s == nil || s.Kind == "system" {
+		return prompt
+	}
+	if r.Reg == nil || r.Reg.Store() == nil {
+		return prompt
+	}
+	soul, err := r.Reg.Store().ReadSoul()
+	if err != nil || strings.TrimSpace(soul) == "" {
+		return prompt
+	}
+	soul = strings.TrimSpace(soul)
+	out := make([]model.Message, 0, len(prompt)+1)
+	inserted := false
+	for i, m := range prompt {
+		out = append(out, m)
+		if !inserted && i == 0 && m.Role == "system" {
+			out = append(out, model.Message{Role: "system", Content: soul})
+			inserted = true
+		}
+	}
+	if !inserted {
+		// No leading system (unusual after trim) — still place soul at front as system
+		out = append([]model.Message{{Role: "system", Content: soul}}, prompt...)
+	}
+	return out
 }
 
 // advisory emits UI harness chip + DB event; never writes to session MD transcript body intentionally.

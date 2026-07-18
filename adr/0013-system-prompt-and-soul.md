@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Accepted (ready to implement) |
+| **Status** | Accepted / Implemented |
 | **Date** | 2026-07-18 |
 | **Deciders** | Project owner |
 | **Tags** | ui, system-prompt, soul, context, settings |
@@ -144,7 +144,7 @@ Marble’s agent loop always includes a **system** message (compiled-in `default
 
 - [x] Open questions answered (`0013-answers.json`)  
 - [x] Eyeball + modal + soul file + injection order locked  
-- [ ] Ready to implement  
+- [x] Implemented (`GET/PUT /api/prompt`, soul inject, 👁 modal)  
 
 ## References
 
