@@ -34,7 +34,7 @@
     }
     .status {
       font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
-      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
       font-family: var(--mono);
     }
     nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
@@ -46,7 +46,6 @@
     }
     h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
     h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
-    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
     .muted { color: var(--muted); }
     .lede { color: var(--muted); max-width: 72ch; }
     table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
@@ -67,10 +66,9 @@
     }
     .chip strong { color: var(--text); }
     .callout {
-      border-left: 3px solid var(--accent); background: var(--panel-2);
+      border-left: 3px solid var(--ok); background: var(--panel-2);
       padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
     }
-    .callout.ok { border-left-color: var(--ok); }
     .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
     .meta {
       background: var(--panel-2); border: 1px solid var(--border);
@@ -85,12 +83,11 @@
     <div class="brand">
       <div class="mark"></div>
       <span>Marble · ADR-0012</span>
-      <span class="status">PROPOSED · review</span>
+      <span class="status">ACCEPTED · ready to implement</span>
     </div>
     <nav class="toc">
       <a href="#pipeline">Pipeline</a>
-      <a href="#tool">Tool</a>
-      <a href="#questions">Questions</a>
+      <a href="#decisions">Decisions</a>
       <a href="0006-review.html">0006</a>
       <a href="0011-review.html">0011</a>
     </nav>
@@ -98,129 +95,68 @@
 
   <main>
     <section>
-      <h1>Native <code>web_fetch</code> tool</h1>
+      <h1>Native <code>web_fetch</code></h1>
       <p class="lede">
-        After web search returns <strong>real URLs</strong> (Tavily search already does),
-        fetch page text in-harness instead of defaulting to Tavily extract/crawl/research
-        for every hit.
+        Answers from <code>0012-answers.json</code> applied. Search for URLs, then
+        <code>web_fetch</code> for deeper analysis. HTML→markdown; JSON raw; <strong>LAN allowed</strong>.
       </p>
       <div class="meta-row">
-        <div class="meta"><b>Date</b>2026-07-18</div>
-        <div class="meta"><b>Source</b><code>adr/0012-web-fetch-tool.md</code></div>
-        <div class="meta"><b>Extends</b>0005 · 0006 · 0011</div>
+        <div class="meta"><b>Answered</b>2026-07-18T14:03:35.491Z</div>
+        <div class="meta"><b>Source</b><code>adr/0012-answers.json</code></div>
       </div>
       <div class="chips">
-        <span class="chip"><strong>search</strong> URLs first</span>
-        <span class="chip"><strong>fetch</strong> native GET</span>
-        <span class="chip"><strong>tavily extract</strong> fallback only</span>
-        <span class="chip"><strong>ssrf</strong> block private</span>
+        <span class="chip"><strong>tool</strong> web_fetch</span>
+        <span class="chip"><strong>html</strong> → markdown</span>
+        <span class="chip"><strong>json</strong> raw</span>
+        <span class="chip"><strong>lan</strong> allowed</span>
+        <span class="chip"><strong>redirects</strong> 5</span>
       </div>
     </section>
 
     <section id="pipeline">
-      <h2>1. Preferred pipeline</h2>
-      <pre class="mock">mcp_tavily_tavily_search  →  [{title, URL, snippet}, …]
-         ↓ model picks real https URLs
-web_fetch(url)            →  extracted text/markdown (capped)
-         ↓
-cite + answer
-
-Tavily extract/crawl/research only if fetch fails or multi-page crawl needed</pre>
-      <div class="callout ok">
-        Search discovers; <code>web_fetch</code> retrieves. Do not invent URLs.
-      </div>
+      <h2>1. Pipeline (locked)</h2>
+      <pre class="mock">web search if available (MCP Tavily/…)  →  real URLs
+web_fetch(url)  →  markdown (HTML) or raw JSON
+Tavily extract only if fetch fails / multi-page needed</pre>
+      <p class="muted">System prompt: use web search if available, then web_fetch for deeper analysis if needed.</p>
     </section>
 
-    <section id="tool">
-      <h2>2. Tool sketch</h2>
-      <pre class="mock">web_fetch({
-  url: "https://…",          // required, http(s) only
-  max_bytes?: number,
-  extract?: "text" | "markdown" | "raw_html_snippet"
-})
-
-→ url / final_url / status / content_type / chars
----
-extracted body (truncated to max_tool_result)</pre>
-      <ul>
-        <li>Turn-context cancel (ADR-0010)</li>
-        <li>SSRF: block localhost/private/metadata by default</li>
-        <li>Prefer over shell <code>curl</code> for model-driven reads</li>
-      </ul>
-    </section>
-
-    <section id="questions">
-      <h2>3. Open questions</h2>
-      <p class="muted">Toolbar: <strong>Use rec</strong> / Custom / Defer → Save <code>0012-answers.json</code>.</p>
-
-      <h3>Scope &amp; API</h3>
-      <div class="q" data-qid="Q1" data-status="open" data-rec="web_fetch">
-        <strong>Q1</strong> Tool name: web_fetch vs http_get vs fetch_url?
-        <div class="rec">Rec: web_fetch.</div>
-      </div>
-      <div class="q" data-qid="Q2" data-status="open" data-rec="Single URL per call in v1; model loops for more">
-        <strong>Q2</strong> Single URL or small batch per call?
-        <div class="rec">Rec: single URL v1.</div>
-      </div>
-      <div class="q" data-qid="Q3" data-status="open" data-rec="Readability-style or light HTML→text/markdown if dependency is small; else tag strip">
-        <strong>Q3</strong> HTML extraction approach?
-        <div class="rec">Rec: readability or light strip + title.</div>
-      </div>
-      <div class="q" data-qid="Q4" data-status="open" data-rec="Yes — pretty-print JSON when content-type is JSON (truncated)">
-        <strong>Q4</strong> Special-case JSON responses?
-        <div class="rec">Rec: yes, truncated pretty text.</div>
-      </div>
-
-      <h3>Safety</h3>
-      <div class="q" data-qid="Q5" data-status="open" data-rec="Block private/link-local/metadata by default; optional allow-private flag later">
-        <strong>Q5</strong> Allow private LAN fetch (home lab)?
-        <div class="rec">Rec: block by default.</div>
-      </div>
-      <div class="q" data-qid="Q6" data-status="open" data-rec="Defer custom headers/cookies in v1">
-        <strong>Q6</strong> Custom Authorization / cookies?
-        <div class="rec">Rec: defer.</div>
-      </div>
-      <div class="q" data-qid="Q7" data-status="open" data-rec="Max 5 redirects; re-validate host each hop">
-        <strong>Q7</strong> Redirect limit?
-        <div class="rec">Rec: 5.</div>
-      </div>
-
-      <h3>Product / prompt</h3>
-      <div class="q" data-qid="Q8" data-status="open" data-rec="Yes — system prompt: search → URLs → web_fetch; Tavily extract secondary">
-        <strong>Q8</strong> Bake default research path into system prompt?
-        <div class="rec">Rec: yes.</div>
-      </div>
-      <div class="q" data-qid="Q9" data-status="open" data-rec="Soft discourage extract when fetch works; still allow on failure">
-        <strong>Q9</strong> How hard to push away from Tavily extract?
-        <div class="rec">Rec: soft wording.</div>
-      </div>
-      <div class="q" data-qid="Q10" data-status="open" data-rec="Defer native web_search normalizer; MCP search is enough if URLs visible">
-        <strong>Q10</strong> Native web_search wrapper to force URL list shape?
-        <div class="rec">Rec: defer.</div>
-      </div>
-      <div class="q" data-qid="Q11" data-status="open" data-rec="Defer session URL cache">
-        <strong>Q11</strong> Cache fetches in memory/blobs?
-        <div class="rec">Rec: defer.</div>
-      </div>
-      <div class="q" data-qid="Q12" data-status="open" data-rec="No special case — fetch then mpub_publish if needed">
-        <strong>Q12</strong> Special mpub import-from-URL path?
-        <div class="rec">Rec: no special case v1.</div>
+    <section id="decisions">
+      <h2>2. Decisions locked (Q1–Q12)</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td>Q1</td><td><code>web_fetch</code></td></tr>
+          <tr><td>Q2</td><td>Single URL per call</td></tr>
+          <tr><td>Q3</td><td>Fetch → <strong>markdown</strong></td></tr>
+          <tr><td>Q4</td><td>JSON <strong>raw</strong></td></tr>
+          <tr><td>Q5</td><td><strong>Allow LAN</strong> (still block cloud metadata)</td></tr>
+          <tr><td>Q6</td><td>Defer custom headers/cookies</td></tr>
+          <tr><td>Q7</td><td>Max 5 redirects; re-validate each hop</td></tr>
+          <tr><td>Q8</td><td>Prompt: search if available → web_fetch for deeper analysis</td></tr>
+          <tr><td>Q9</td><td>Soft discourage extract when fetch works</td></tr>
+          <tr><td>Q10</td><td>Defer native web_search normalizer</td></tr>
+          <tr><td>Q11</td><td>Defer URL cache</td></tr>
+          <tr><td>Q12</td><td>No mpub special case</td></tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        Full text: <code>adr/0012-web-fetch-tool.md</code> · answers: <code>adr/0012-answers.json</code>
       </div>
     </section>
 
     <section>
-      <h2>4. Implementation order (post-accept)</h2>
+      <h2>3. Implementation order</h2>
       <ol>
-        <li>URL validation + SSRF tests</li>
-        <li><code>web_fetch</code> GET + extract + caps + turn ctx</li>
-        <li>Register tool + system prompt line</li>
-        <li>Manual: Tavily search URLs → fetch public page</li>
+        <li>URL validation: allow LAN, block metadata, 5 redirects</li>
+        <li>GET + HTML→markdown + JSON raw + caps + turn ctx</li>
+        <li>Register tool + system prompt (Q8)</li>
+        <li>Tests + manual Tavily → fetch</li>
       </ol>
-      <div class="callout">Full text: <code>adr/0012-web-fetch-tool.md</code></div>
     </section>
   </main>
 
-  <footer>Marble · ADR-0012 design review · not an implementation</footer>
+  <footer>Marble · ADR-0012 accepted · ready to implement</footer>
   <script src="review-kit.js"></script>
 </body>
 </html>

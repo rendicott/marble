@@ -1,0 +1,70 @@
+{
+  "adr": "0012",
+  "title": "Native web_fetch Tool",
+  "answered_at": "2026-07-18T14:03:35.491Z",
+  "answers": {
+    "Q1": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "web_fetch"
+    },
+    "Q2": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Single URL per call in v1; model loops for more"
+    },
+    "Q3": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Fetch and render as markdown",
+      "notes": "HTML/text pages extracted to markdown for the model"
+    },
+    "Q4": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Json should come back raw",
+      "notes": "JSON content-type: return raw body (still truncated by max_tool_result), not pretty/markdownized"
+    },
+    "Q5": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Yes allow lan",
+      "notes": "Permit private/LAN fetches (home lab); still block link-local metadata endpoints"
+    },
+    "Q6": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer custom headers/cookies in v1"
+    },
+    "Q7": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Max 5 redirects; re-validate host each hop"
+    },
+    "Q8": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "The system prompt should say \"use web search if available then use web_fetch native tool for deeper analysis if needed\""
+    },
+    "Q9": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Soft discourage extract when fetch works; still allow on failure"
+    },
+    "Q10": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer native web_search normalizer; MCP search is enough if URLs visible"
+    },
+    "Q11": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer session URL cache"
+    },
+    "Q12": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "No special case — fetch then mpub_publish if needed"
+    }
+  }
+}
