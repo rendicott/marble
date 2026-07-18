@@ -88,13 +88,32 @@ func EncodeSession(doc *SessionDoc) string {
 				fmt.Fprintf(&b, "<!-- id: %s -->\n", m.ID)
 			}
 		}
-		b.WriteString(m.Content)
-		if !strings.HasSuffix(m.Content, "\n") {
-			b.WriteByte('\n')
-		}
+		writeMessageContent(&b, m.Content)
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// writeMessageContent writes body text, neutralizing lines that would be parsed as
+// message headings (timestamp · role) so tool/README markdown cannot split the session.
+func writeMessageContent(b *strings.Builder, content string) {
+	if content == "" {
+		return
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if isMessageHeading(line) {
+			// Zero-width space keeps visual content but breaks "## " delimiter match.
+			b.WriteString("\u200b")
+		}
+		b.WriteString(line)
+		if i < len(lines)-1 {
+			b.WriteByte('\n')
+		}
+	}
+	if !strings.HasSuffix(content, "\n") {
+		b.WriteByte('\n')
+	}
 }
 
 // DecodeSession parses a session markdown file.
@@ -176,7 +195,8 @@ func parseFrontMatter(fm string) (SessionMeta, error) {
 }
 
 func parseMessages(body string) []TranscriptMessage {
-	// Split on lines starting with "## "
+	// Only split on true message headings: "## <RFC3339> · <role>[ · toolname]"
+	// Ordinary markdown headings inside tool results (## Pre-reqs) must stay in content.
 	lines := strings.Split(body, "\n")
 	var out []TranscriptMessage
 	var cur *TranscriptMessage
@@ -187,13 +207,15 @@ func parseMessages(body string) []TranscriptMessage {
 			return
 		}
 		cur.Content = strings.TrimRight(strings.Join(content, "\n"), "\n")
+		// Strip defensive ZWSP prefixes from encoded content lines.
+		cur.Content = stripContentHeadingEscapes(cur.Content)
 		out = append(out, *cur)
 		cur = nil
 		content = nil
 	}
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "## ") {
+		if isMessageHeading(line) {
 			flush()
 			cur = parseHeading(line[3:])
 			continue
@@ -223,7 +245,44 @@ func parseMessages(body string) []TranscriptMessage {
 	return out
 }
 
+// isMessageHeading reports whether line is a Marble message delimiter, not body markdown.
+// Format: "## <timestamp> · <role>" or "## <timestamp> · tool · <name>"
+func isMessageHeading(line string) bool {
+	if !strings.HasPrefix(line, "## ") {
+		return false
+	}
+	h := line[3:]
+	parts := strings.Split(h, " · ")
+	if len(parts) < 2 {
+		return false
+	}
+	if parseTime(strings.TrimSpace(parts[0])).IsZero() {
+		return false
+	}
+	role := strings.TrimSpace(parts[1])
+	switch role {
+	case "user", "assistant", "tool", "system", "error", "harness", "attachment":
+		return true
+	default:
+		return false
+	}
+}
+
+func stripContentHeadingEscapes(s string) string {
+	if !strings.Contains(s, "\u200b") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "\u200b## ") {
+			lines[i] = line[len("\u200b"):]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // heading: "2026-07-16T20:01:02-04:00 · user" or "… · tool · list_files"
+// Caller must only pass lines that passed isMessageHeading.
 func parseHeading(h string) *TranscriptMessage {
 	m := &TranscriptMessage{CreatedAt: time.Now()}
 	parts := strings.Split(h, " · ")
@@ -239,6 +298,7 @@ func parseHeading(h string) *TranscriptMessage {
 		m.ToolName = strings.TrimSpace(parts[2])
 	}
 	if m.Role == "" {
+		// Should not happen for isMessageHeading-validated lines; keep a safe default.
 		m.Role = "assistant"
 	}
 	return m
