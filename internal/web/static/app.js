@@ -139,8 +139,10 @@
   }
 
   /**
-   * Inject progress into the transcript after the user message that started the turn,
-   * so order is: user → progress → tools → assistant (not sticky at the window bottom).
+   * Keep the live turn card at the bottom of the transcript while tools run so
+   * scroll follows: user → tools… → turn card → final assistant.
+   * (Previously the card sat right after the user bubble and scrollIntoView
+   * yanked the viewport up every time a tool message was appended.)
    */
   function placeTurnCardInTranscript(p) {
     if (!els.turnCard || !els.transcript) return;
@@ -151,34 +153,28 @@
     }
 
     const startKey = isZeroTime(p.turn_started_at) ? "" : p.turn_started_at;
-    const newTurn = p.active && startKey && startKey !== lastPlacedTurnStart;
-    const notInTranscript = els.turnCard.parentElement !== els.transcript;
+    if (p.active && startKey) lastPlacedTurnStart = startKey;
 
-    if (newTurn || notInTranscript) {
-      const users = els.transcript.querySelectorAll(".bubble.user");
-      const lastUser = users[users.length - 1];
-      if (lastUser) {
-        lastUser.after(els.turnCard);
-      } else {
-        // before any assistant/tool if present, else end
-        const firstOther = els.transcript.querySelector(
-          ".bubble.assistant, .bubble.tool, .bubble.harness, .bubble.system-error"
-        );
-        if (firstOther) els.transcript.insertBefore(els.turnCard, firstOther);
-        else els.transcript.appendChild(els.turnCard);
-      }
-      if (p.active && startKey) lastPlacedTurnStart = startKey;
+    if (p.active) {
+      // Sink to end so tool bubbles stay above the card.
+      els.transcript.appendChild(els.turnCard);
+    } else if (els.turnCard.parentElement !== els.transcript) {
+      // Completed but detached (e.g. after full re-render): sit before last assistant if any.
+      const assistants = els.transcript.querySelectorAll(".bubble.assistant");
+      const lastAsst = assistants[assistants.length - 1];
+      if (lastAsst) els.transcript.insertBefore(els.turnCard, lastAsst);
+      else els.transcript.appendChild(els.turnCard);
     }
 
     els.turnCard.classList.remove("tp-parked");
     els.turnCard.hidden = false;
 
-    // Keep the live card visible as the turn works (tools still append below it)
+    // Follow the stream downward; do not scroll the card into view mid-transcript.
     if (p.active) {
       const nearBottom =
-        els.transcript.scrollHeight - els.transcript.scrollTop - els.transcript.clientHeight < 120;
+        els.transcript.scrollHeight - els.transcript.scrollTop - els.transcript.clientHeight < 160;
       if (nearBottom) {
-        els.turnCard.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        els.transcript.scrollTop = els.transcript.scrollHeight;
       }
     }
   }
@@ -640,10 +636,19 @@
     messages.push(m);
     const empty = els.transcript.querySelector(".empty");
     if (empty) empty.remove();
-    // Always append at end. Progress sits after the user bubble; later tools/assistant
-    // land after it, preserving: user → progress → tools → assistant.
     if (m.role === "user") lastPlacedTurnStart = null;
     els.transcript.appendChild(bubbleEl(m));
+    // While a turn is live, keep the progress card under tools/harness so order is
+    // tools → turn card → final assistant (assistant appends after without re-sinking the card).
+    if (
+      turnProgress &&
+      turnProgress.active &&
+      els.turnCard &&
+      m.role !== "user" &&
+      m.role !== "assistant"
+    ) {
+      els.transcript.appendChild(els.turnCard);
+    }
     els.transcript.scrollTop = els.transcript.scrollHeight;
   }
 
@@ -717,11 +722,41 @@
     });
   }
 
-  async function selectSession(id) {
+  /** Path form: /s/{sessionId} — shareable deep link (SPA fallback serves index). */
+  function sessionIdFromURL() {
+    const path = (location.pathname || "/").replace(/\/+$/, "") || "/";
+    let m = path.match(/^\/s\/([A-Za-z0-9_-]{4,64})$/);
+    if (m) return m[1];
+    // hash fallback: #/s/{id} or #s/{id}
+    const h = (location.hash || "").replace(/^#/, "");
+    m = h.match(/^\/?s\/([A-Za-z0-9_-]{4,64})$/);
+    if (m) return m[1];
+    const q = new URLSearchParams(location.search).get("session");
+    if (q && /^[A-Za-z0-9_-]{4,64}$/.test(q)) return q;
+    return null;
+  }
+
+  function syncURLToSession(id, { replace } = {}) {
+    if (!id) return;
+    const target = `/s/${id}`;
+    if (location.pathname === target) return;
+    const state = { sessionId: id };
+    try {
+      if (replace) history.replaceState(state, "", target);
+      else history.pushState(state, "", target);
+    } catch {
+      /* ignore (file:// etc.) */
+    }
+  }
+
+  async function selectSession(id, opts) {
     hideCtx();
     activeId = id;
     renderSessionList();
     setSessionInfoEnabled(!!id);
+    if (!(opts && opts.skipURL)) {
+      syncURLToSession(id, { replace: !!(opts && opts.replaceURL) });
+    }
     const data = await api(`/api/sessions/${id}`);
     const sum = data.session || {};
     els.title.textContent = `${sum.title || id} · ${id}`;
@@ -885,16 +920,37 @@
     }
   });
 
+  window.addEventListener("popstate", (ev) => {
+    const id =
+      (ev.state && ev.state.sessionId) || sessionIdFromURL();
+    if (id && id !== activeId) {
+      selectSession(id, { skipURL: true }).catch((e) => alert(e.message));
+    }
+  });
+
   setComposerEnabled(false);
   setSessionInfoEnabled(false);
   refreshHealth();
   refreshSessions()
     .then(async () => {
+      const fromURL = sessionIdFromURL();
+      if (fromURL) {
+        const known = sessions.some((s) => s.id === fromURL);
+        if (known || true) {
+          // EnsureLoaded on server if id exists on disk; 404 → fall through
+          try {
+            await selectSession(fromURL, { replaceURL: true });
+            return;
+          } catch (e) {
+            console.warn("session from URL not found:", fromURL, e.message);
+          }
+        }
+      }
       const open = sessions.find((x) => x.status !== "closed");
       if (open) {
-        await selectSession(open.id);
+        await selectSession(open.id, { replaceURL: true });
       } else if (sessions.length && showClosed) {
-        await selectSession(sessions[0].id);
+        await selectSession(sessions[0].id, { replaceURL: true });
       } else {
         await createSession();
       }
