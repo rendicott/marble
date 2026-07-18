@@ -1,0 +1,78 @@
+{
+  "adr": "0013",
+  "title": "System Prompt Viewer & Every-Turn Context (soul)",
+  "answered_at": "2026-07-18T17:53:01.519Z",
+  "answers": {
+    "Q1": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Just icon",
+      "notes": "Eyeball icon only (no “Prompt” label text)"
+    },
+    "Q2": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Order: Sessions · folder · eyeball · gear · +"
+    },
+    "Q3": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Modal title: System prompt & every-turn context"
+    },
+    "Q4": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Second system message when non-empty (not string-concat into first)"
+    },
+    "Q5": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Global $MEMORY/soul.md for all user sessions"
+    },
+    "Q6": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "No soul inject for system-agent / compaction sessions"
+    },
+    "Q7": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Omit soul message entirely when blank"
+    },
+    "Q8": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "$MEMORY/soul.md only for v1 (limp-safe, soul.md mental model)"
+    },
+    "Q9": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "GET/PUT /api/prompt — PUT accepts soul only"
+    },
+    "Q10": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "64 KiB max soul"
+    },
+    "Q11": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Live apply after Save (re-read / short TTL) — no restart"
+    },
+    "Q12": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Show character count and cap in soul editor"
+    },
+    "Q13": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Confirm discard if soul editor dirty on close"
+    },
+    "Q14": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Tooltip on ? and short blurb under title"
+    }
+  }
+}

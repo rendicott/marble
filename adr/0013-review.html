@@ -34,7 +34,7 @@
     }
     .status {
       font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
-      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
       font-family: var(--mono);
     }
     nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
@@ -46,7 +46,6 @@
     }
     h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
     h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
-    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
     .muted { color: var(--muted); }
     .lede { color: var(--muted); max-width: 72ch; }
     table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
@@ -67,7 +66,7 @@
     }
     .chip strong { color: var(--text); }
     .callout {
-      border-left: 3px solid var(--accent); background: var(--panel-2);
+      border-left: 3px solid var(--ok); background: var(--panel-2);
       padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
     }
     .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
@@ -84,145 +83,85 @@
     <div class="brand">
       <div class="mark"></div>
       <span>Marble · ADR-0013</span>
-      <span class="status">PROPOSED · review</span>
+      <span class="status">ACCEPTED · ready to implement</span>
     </div>
     <nav class="toc">
-      <a href="#ui">UI</a>
+      <a href="#decisions">Decisions</a>
       <a href="#compose">Compose</a>
-      <a href="#questions">Questions</a>
       <a href="0007-review.html">0007</a>
     </nav>
   </header>
 
   <main>
     <section>
-      <h1>System prompt viewer &amp; every-turn context</h1>
+      <h1>System prompt &amp; every-turn context</h1>
       <p class="lede">
-        Eyeball next to Settings: see the <strong>immutable</strong> harness system prompt,
-        and edit optional <strong>soul</strong> / every-turn context (like <code>soul.md</code>).
+        Answers from <code>0013-answers.json</code> applied. Eyeball icon opens modal:
+        immutable system prompt + editable global soul (<code>$MEMORY/soul.md</code>).
       </p>
       <div class="meta-row">
-        <div class="meta"><b>Date</b>2026-07-18</div>
-        <div class="meta"><b>Source</b><code>adr/0013-system-prompt-and-soul.md</code></div>
+        <div class="meta"><b>Answered</b>2026-07-18T17:53:01.519Z</div>
+        <div class="meta"><b>Source</b><code>adr/0013-answers.json</code></div>
       </div>
       <div class="chips">
-        <span class="chip"><strong>entry</strong> 👁 by ⚙</span>
-        <span class="chip"><strong>system</strong> immutable</span>
-        <span class="chip"><strong>soul</strong> every turn</span>
-        <span class="chip"><strong>store</strong> $MEMORY/soul.md</span>
+        <span class="chip"><strong>entry</strong> 👁 icon only</span>
+        <span class="chip"><strong>order</strong> folder · eye · gear · +</span>
+        <span class="chip"><strong>soul</strong> second system msg</span>
+        <span class="chip"><strong>store</strong> soul.md · 64KiB</span>
       </div>
-    </section>
-
-    <section id="ui">
-      <h2>1. UI sketch</h2>
-      <p class="muted">Sidebar: <code>Sessions · 📁 · 👁 · ⚙ · +</code></p>
-      <pre class="mock">┌ System prompt &amp; context ──────── [?] [Save soul] [×] ┐
-│ Tooltip: system = harness (read-only); soul = your    │
-│ every-turn house rules / persona (optional).          │
-│                                                        │
-│ ── System prompt (immutable) ─────────────────────── │
-│ [read-only pre / textarea]                             │
-│                                                        │
-│ ── Every-turn context (soul) ─────────────────────── │
-│ [editable textarea + char count]                       │
-│ Saved to $MEMORY/soul.md — not chat transcript.        │
-└────────────────────────────────────────────────────────┘</pre>
     </section>
 
     <section id="compose">
-      <h2>2. Composition (each model call)</h2>
-      <pre class="mock">1. [system]  immutable defaultSystemPrompt
-2. [system]  soul.md contents   (omit if empty)
+      <h2>1. Composition (locked)</h2>
+      <pre class="mock">1. [system] immutable harness prompt
+2. [system] soul.md (omit if blank)
 3. … conversation / tools …
-4. [system]  ephemeral advisories (existing loop)</pre>
-      <div class="callout">
-        Soul is not written into session Markdown as chat turns. Changing soul affects future model calls only.
-      </div>
+4. [system] ephemeral advisories
+
+User sessions only — no soul for system agents / compaction.
+Live apply after Save. Not part of chat Markdown transcript.</pre>
     </section>
 
-    <section id="questions">
-      <h2>3. Open questions</h2>
-      <p class="muted">Toolbar: <strong>Use rec</strong> / Custom / Defer → Save <code>0013-answers.json</code>.</p>
-
-      <h3>Placement &amp; chrome</h3>
-      <div class="q" data-qid="Q1" data-status="open" data-rec="👁 icon with title/tooltip next to Settings">
-        <strong>Q1</strong> Icon only vs labeled “Prompt” button?
-        <div class="rec">Rec: 👁 icon + title.</div>
-      </div>
-      <div class="q" data-qid="Q2" data-status="open" data-rec="Order: Sessions · folder · eyeball · gear · +">
-        <strong>Q2</strong> Eyeball left of gear or right?
-        <div class="rec">Rec: immediately left of gear.</div>
-      </div>
-      <div class="q" data-qid="Q3" data-status="open" data-rec="Modal title: System prompt &amp; every-turn context">
-        <strong>Q3</strong> Modal title string?
-        <div class="rec">Rec: “System prompt &amp; every-turn context”.</div>
-      </div>
-
-      <h3>Soul semantics</h3>
-      <div class="q" data-qid="Q4" data-status="open" data-rec="Second system message when non-empty (not string-concat into first)">
-        <strong>Q4</strong> Second system message vs concatenate into one?
-        <div class="rec">Rec: second system message.</div>
-      </div>
-      <div class="q" data-qid="Q5" data-status="open" data-rec="Global $MEMORY/soul.md for all user sessions">
-        <strong>Q5</strong> Global soul vs per-session?
-        <div class="rec">Rec: global under memory leaf.</div>
-      </div>
-      <div class="q" data-qid="Q6" data-status="open" data-rec="No soul inject for system-agent / compaction sessions">
-        <strong>Q6</strong> Inject soul into system agents?
-        <div class="rec">Rec: no — user sessions only.</div>
-      </div>
-      <div class="q" data-qid="Q7" data-status="open" data-rec="Omit soul message entirely when blank">
-        <strong>Q7</strong> Empty soul: omit message or send empty system?
-        <div class="rec">Rec: omit entirely.</div>
-      </div>
-
-      <h3>Storage &amp; API</h3>
-      <div class="q" data-qid="Q8" data-status="open" data-rec="$MEMORY/soul.md only for v1 (limp-safe, soul.md mental model)">
-        <strong>Q8</strong> soul.md file vs SQLite vs both?
-        <div class="rec">Rec: file only v1.</div>
-      </div>
-      <div class="q" data-qid="Q9" data-status="open" data-rec="GET/PUT /api/prompt — PUT accepts soul only">
-        <strong>Q9</strong> API shape?
-        <div class="rec">Rec: GET/PUT /api/prompt.</div>
-      </div>
-      <div class="q" data-qid="Q10" data-status="open" data-rec="64 KiB max soul">
-        <strong>Q10</strong> Max soul size?
-        <div class="rec">Rec: 64 KiB.</div>
-      </div>
-      <div class="q" data-qid="Q11" data-status="open" data-rec="Live apply after Save (re-read / short TTL) — no restart">
-        <strong>Q11</strong> Restart required after Save?
-        <div class="rec">Rec: no — live apply.</div>
-      </div>
-
-      <h3>UI details</h3>
-      <div class="q" data-qid="Q12" data-status="open" data-rec="Show character count and cap in soul editor">
-        <strong>Q12</strong> Char count / cap display?
-        <div class="rec">Rec: yes.</div>
-      </div>
-      <div class="q" data-qid="Q13" data-status="open" data-rec="Confirm discard if soul editor dirty on close">
-        <strong>Q13</strong> Confirm discard on close when dirty?
-        <div class="rec">Rec: yes.</div>
-      </div>
-      <div class="q" data-qid="Q14" data-status="open" data-rec="Tooltip on ? and short blurb under title">
-        <strong>Q14</strong> Tooltip only vs also static help blurb?
-        <div class="rec">Rec: both.</div>
+    <section id="decisions">
+      <h2>2. Decisions locked (Q1–Q14)</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td>Q1</td><td>Just icon (👁)</td></tr>
+          <tr><td>Q2</td><td>Sessions · folder · eyeball · gear · +</td></tr>
+          <tr><td>Q3</td><td>Title: System prompt &amp; every-turn context</td></tr>
+          <tr><td>Q4</td><td>Second system message when non-empty</td></tr>
+          <tr><td>Q5</td><td>Global $MEMORY/soul.md</td></tr>
+          <tr><td>Q6</td><td>No soul for system agents</td></tr>
+          <tr><td>Q7</td><td>Omit when blank</td></tr>
+          <tr><td>Q8</td><td>File only (soul.md)</td></tr>
+          <tr><td>Q9</td><td>GET/PUT /api/prompt (PUT soul only)</td></tr>
+          <tr><td>Q10</td><td>64 KiB max</td></tr>
+          <tr><td>Q11</td><td>Live apply — no restart</td></tr>
+          <tr><td>Q12</td><td>Char count + cap</td></tr>
+          <tr><td>Q13</td><td>Confirm discard if dirty</td></tr>
+          <tr><td>Q14</td><td>Tooltip + blurb under title</td></tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        Full text: <code>adr/0013-system-prompt-and-soul.md</code> ·
+        answers: <code>adr/0013-answers.json</code>
       </div>
     </section>
 
     <section>
-      <h2>4. Implementation order (post-accept)</h2>
+      <h2>3. Implementation order</h2>
       <ol>
-        <li>Export system prompt + soul file IO</li>
-        <li><code>GET/PUT /api/prompt</code></li>
-        <li>Inject soul in <code>runTurn</code> prompt build</li>
-        <li>Eyeball modal + tooltip + save</li>
+        <li>SystemPrompt() + soul.md IO</li>
+        <li>GET/PUT /api/prompt</li>
+        <li>Inject soul in user-session runTurn</li>
+        <li>👁 modal + save + tooltip/blurb + dirty confirm</li>
         <li>Tests</li>
       </ol>
-      <div class="callout">Full text: <code>adr/0013-system-prompt-and-soul.md</code></div>
     </section>
   </main>
 
-  <footer>Marble · ADR-0013 design review · not an implementation</footer>
+  <footer>Marble · ADR-0013 accepted · ready to implement</footer>
   <script src="review-kit.js"></script>
 </body>
 </html>
