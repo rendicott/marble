@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0013 System Prompt &amp; Soul</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #312e81 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #1e293b 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #a78bfa, #5eead4);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 72ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--accent); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+  </style>
+</head>
+<body data-adr="0013" data-adr-title="System Prompt Viewer &amp; Soul">
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0013</span>
+      <span class="status">PROPOSED · review</span>
+    </div>
+    <nav class="toc">
+      <a href="#ui">UI</a>
+      <a href="#compose">Compose</a>
+      <a href="#questions">Questions</a>
+      <a href="0007-review.html">0007</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>System prompt viewer &amp; every-turn context</h1>
+      <p class="lede">
+        Eyeball next to Settings: see the <strong>immutable</strong> harness system prompt,
+        and edit optional <strong>soul</strong> / every-turn context (like <code>soul.md</code>).
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Date</b>2026-07-18</div>
+        <div class="meta"><b>Source</b><code>adr/0013-system-prompt-and-soul.md</code></div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>entry</strong> 👁 by ⚙</span>
+        <span class="chip"><strong>system</strong> immutable</span>
+        <span class="chip"><strong>soul</strong> every turn</span>
+        <span class="chip"><strong>store</strong> $MEMORY/soul.md</span>
+      </div>
+    </section>
+
+    <section id="ui">
+      <h2>1. UI sketch</h2>
+      <p class="muted">Sidebar: <code>Sessions · 📁 · 👁 · ⚙ · +</code></p>
+      <pre class="mock">┌ System prompt &amp; context ──────── [?] [Save soul] [×] ┐
+│ Tooltip: system = harness (read-only); soul = your    │
+│ every-turn house rules / persona (optional).          │
+│                                                        │
+│ ── System prompt (immutable) ─────────────────────── │
+│ [read-only pre / textarea]                             │
+│                                                        │
+│ ── Every-turn context (soul) ─────────────────────── │
+│ [editable textarea + char count]                       │
+│ Saved to $MEMORY/soul.md — not chat transcript.        │
+└────────────────────────────────────────────────────────┘</pre>
+    </section>
+
+    <section id="compose">
+      <h2>2. Composition (each model call)</h2>
+      <pre class="mock">1. [system]  immutable defaultSystemPrompt
+2. [system]  soul.md contents   (omit if empty)
+3. … conversation / tools …
+4. [system]  ephemeral advisories (existing loop)</pre>
+      <div class="callout">
+        Soul is not written into session Markdown as chat turns. Changing soul affects future model calls only.
+      </div>
+    </section>
+
+    <section id="questions">
+      <h2>3. Open questions</h2>
+      <p class="muted">Toolbar: <strong>Use rec</strong> / Custom / Defer → Save <code>0013-answers.json</code>.</p>
+
+      <h3>Placement &amp; chrome</h3>
+      <div class="q" data-qid="Q1" data-status="open" data-rec="👁 icon with title/tooltip next to Settings">
+        <strong>Q1</strong> Icon only vs labeled “Prompt” button?
+        <div class="rec">Rec: 👁 icon + title.</div>
+      </div>
+      <div class="q" data-qid="Q2" data-status="open" data-rec="Order: Sessions · folder · eyeball · gear · +">
+        <strong>Q2</strong> Eyeball left of gear or right?
+        <div class="rec">Rec: immediately left of gear.</div>
+      </div>
+      <div class="q" data-qid="Q3" data-status="open" data-rec="Modal title: System prompt &amp; every-turn context">
+        <strong>Q3</strong> Modal title string?
+        <div class="rec">Rec: “System prompt &amp; every-turn context”.</div>
+      </div>
+
+      <h3>Soul semantics</h3>
+      <div class="q" data-qid="Q4" data-status="open" data-rec="Second system message when non-empty (not string-concat into first)">
+        <strong>Q4</strong> Second system message vs concatenate into one?
+        <div class="rec">Rec: second system message.</div>
+      </div>
+      <div class="q" data-qid="Q5" data-status="open" data-rec="Global $MEMORY/soul.md for all user sessions">
+        <strong>Q5</strong> Global soul vs per-session?
+        <div class="rec">Rec: global under memory leaf.</div>
+      </div>
+      <div class="q" data-qid="Q6" data-status="open" data-rec="No soul inject for system-agent / compaction sessions">
+        <strong>Q6</strong> Inject soul into system agents?
+        <div class="rec">Rec: no — user sessions only.</div>
+      </div>
+      <div class="q" data-qid="Q7" data-status="open" data-rec="Omit soul message entirely when blank">
+        <strong>Q7</strong> Empty soul: omit message or send empty system?
+        <div class="rec">Rec: omit entirely.</div>
+      </div>
+
+      <h3>Storage &amp; API</h3>
+      <div class="q" data-qid="Q8" data-status="open" data-rec="$MEMORY/soul.md only for v1 (limp-safe, soul.md mental model)">
+        <strong>Q8</strong> soul.md file vs SQLite vs both?
+        <div class="rec">Rec: file only v1.</div>
+      </div>
+      <div class="q" data-qid="Q9" data-status="open" data-rec="GET/PUT /api/prompt — PUT accepts soul only">
+        <strong>Q9</strong> API shape?
+        <div class="rec">Rec: GET/PUT /api/prompt.</div>
+      </div>
+      <div class="q" data-qid="Q10" data-status="open" data-rec="64 KiB max soul">
+        <strong>Q10</strong> Max soul size?
+        <div class="rec">Rec: 64 KiB.</div>
+      </div>
+      <div class="q" data-qid="Q11" data-status="open" data-rec="Live apply after Save (re-read / short TTL) — no restart">
+        <strong>Q11</strong> Restart required after Save?
+        <div class="rec">Rec: no — live apply.</div>
+      </div>
+
+      <h3>UI details</h3>
+      <div class="q" data-qid="Q12" data-status="open" data-rec="Show character count and cap in soul editor">
+        <strong>Q12</strong> Char count / cap display?
+        <div class="rec">Rec: yes.</div>
+      </div>
+      <div class="q" data-qid="Q13" data-status="open" data-rec="Confirm discard if soul editor dirty on close">
+        <strong>Q13</strong> Confirm discard on close when dirty?
+        <div class="rec">Rec: yes.</div>
+      </div>
+      <div class="q" data-qid="Q14" data-status="open" data-rec="Tooltip on ? and short blurb under title">
+        <strong>Q14</strong> Tooltip only vs also static help blurb?
+        <div class="rec">Rec: both.</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. Implementation order (post-accept)</h2>
+      <ol>
+        <li>Export system prompt + soul file IO</li>
+        <li><code>GET/PUT /api/prompt</code></li>
+        <li>Inject soul in <code>runTurn</code> prompt build</li>
+        <li>Eyeball modal + tooltip + save</li>
+        <li>Tests</li>
+      </ol>
+      <div class="callout">Full text: <code>adr/0013-system-prompt-and-soul.md</code></div>
+    </section>
+  </main>
+
+  <footer>Marble · ADR-0013 design review · not an implementation</footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>
