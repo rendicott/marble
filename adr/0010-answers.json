@@ -1,0 +1,78 @@
+{
+  "adr": "0010",
+  "title": "Agent Loop Transparency & Turn Control",
+  "answered_at": "2026-07-18T08:20:10.670Z",
+  "answers": {
+    "Q1": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Both — transcript footer card for detail + enriched header pill"
+    },
+    "Q2": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — same progress + stop for system-agent sessions"
+    },
+    "Q3": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Progress steps persist during the turn; at turn end they collapse; UI can expand to inspect what was done in that turn",
+      "notes": "Not fully ephemeral — retain a collapsible turn summary after completion"
+    },
+    "Q4": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "200 chars single-line args preview"
+    },
+    "Q5": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — show last completed model latency on the card"
+    },
+    "Q6": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — show estimated context usage % during the turn"
+    },
+    "Q7": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Name + short result tail (120 chars) for last tool"
+    },
+    "Q8": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "No confirm — Stop immediately while busy"
+    },
+    "Q9": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Kill shell process group (SIGTERM then SIGKILL), best-effort"
+    },
+    "Q10": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Label: Stop"
+    },
+    "Q11": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Keep 409 busy on close; document Stop first (defer stop-and-close)"
+    },
+    "Q12": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Keep partial tool bubbles already in the transcript"
+    },
+    "Q13": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "New SSE type turn; keep coarse status events"
+    },
+    "Q14": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Both GET /progress (hydrate) and SSE turn updates"
+    }
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0006",
+  "title": "MCP Client (Model Context Protocol)",
+  "updated_at": "2026-07-18T01:34:43.803Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "$MEMORY/mcp.json primary; --mcp-config override",
+      "notes": "",
+      "question": "Q1 Config file location?",
+      "rec": "$MEMORY/mcp.json primary; --mcp-config override"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Cursor-compatible mcpServers map",
+      "notes": "",
+      "question": "Q2 Config shape?",
+      "rec": "Cursor-compatible mcpServers map"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "mcp_server_tool sanitized names",
+      "notes": "",
+      "question": "Q3 Tool name prefix?",
+      "rec": "mcp_server_tool sanitized names"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "stdio and HTTP/SSE both in v1 (not stdio-only)",
+      "notes": "Stdio and http/sse now",
+      "question": "Q4 Transports in v1?",
+      "rec": "stdio only in v1; HTTP/SSE next"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No native web_search in this ADR; MCP recipe for Tavily/SearXNG",
+      "notes": "",
+      "question": "Q5 Native web_search in same ADR?",
+      "rec": "No native web_search in this ADR; MCP recipe for Tavily/SearXNG"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "MCP works in limp mode (independent of SQLite)",
+      "notes": "",
+      "question": "Q6 MCP tools when limp mode?",
+      "rec": "MCP works in limp mode (independent of SQLite)"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Process-global MCP connections; tools for all sessions",
+      "notes": "",
+      "question": "Q7 Per-session MCP vs process-global?",
+      "rec": "Process-global MCP connections; tools for all sessions"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Per-server enabled flag; no remote config download",
+      "notes": "",
+      "question": "Q8 Server allow policy?",
+      "rec": "Per-server enabled flag; no remote config download"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Soft cap 64 MCP tools total",
+      "notes": "",
+      "question": "Q9 Max MCP tools registered?",
+      "rec": "Soft cap 64 MCP tools total"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "60s default MCP tool call timeout",
+      "notes": "",
+      "question": "Q10 Default tool call timeout?",
+      "rec": "60s default MCP tool call timeout"
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "v1 includes tools, resources, and prompts (not tools-only)",
+      "notes": "Yes, resources, prompts, and tools",
+      "question": "Q11 Resources / prompts in v1?",
+      "rec": "No resources/prompts/sampling in v1"
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Health JSON + small UI chip MCP: n servers; settings UI later",
+      "notes": "",
+      "question": "Q12 UI for MCP status?",
+      "rec": "Health JSON + small UI chip MCP: n servers; settings UI later"
+    },
+    "Q13": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Prefer small maintained Go client; else minimal JSON-RPC subset in-tree",
+      "notes": "",
+      "question": "Q13 Go MCP library strategy?",
+      "rec": "Prefer small maintained Go client; else minimal JSON-RPC subset in-tree"
+    },
+    "Q14": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Do not fail harness start if MCP server fails; degrade + health",
+      "notes": "",
+      "question": "Q14 Fail harness start if MCP fails?",
+      "rec": "Do not fail harness start if MCP server fails; degrade + health"
+    },
+    "Q15": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Keep all built-ins; namespace prevents collision",
+      "notes": "",
+      "question": "Q15 Drop built-ins when MCP overlaps?",
+      "rec": "Keep all built-ins; namespace prevents collision"
+    }
+  }
+}

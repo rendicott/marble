@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0004 Design Review</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #1a3040 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #2a1f14 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      backdrop-filter: blur(12px);
+      background: rgba(15,17,21,0.9);
+      border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem;
+      display: flex; gap: 1rem; align-items: center; justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 0.75rem; font-weight: 700; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #fbbf24, #7c9cff);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    nav.toc a:hover { color: var(--text); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+    }
+    h1 { font-size: 1.65rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.1rem; margin: 0 0 0.85rem; }
+    h3 { font-size: 0.95rem; margin: 0.9rem 0 0.4rem; color: var(--accent-2); }
+    p, li { color: #d5dbeb; }
+    .muted { color: var(--muted); }
+    .lede { font-size: 1.05rem; color: var(--muted); max-width: 74ch; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td {
+      text-align: left; padding: 0.48rem 0.5rem;
+      border-bottom: 1px solid var(--border); vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em;
+      background: var(--chip); padding: 0.12rem 0.35rem; border-radius: 5px;
+      border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.75rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; line-height: 1.45;
+      white-space: pre; margin: 0.5rem 0 0; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border);
+      padding: 0.2rem 0.5rem; border-radius: 999px; color: var(--muted);
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: var(--panel-2);
+      padding: 0.75rem 1rem;
+      border-radius: 0 10px 10px 0;
+      margin: 0.75rem 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .callout.ok { border-left-color: var(--ok); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .q {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.6rem 0.8rem; margin: 0.4rem 0; background: #141824; font-size: 0.9rem;
+    }
+    .q strong { color: var(--warn); font-family: var(--mono); font-size: 0.78rem; }
+    .q .rec { color: var(--muted); font-size: 0.84rem; margin-top: 0.2rem; }
+    .mock-ui {
+      border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+      background: #0c0e13; font-size: 0.82rem;
+    }
+    .mock-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border);
+      background: #12151c;
+    }
+    .mock-body { display: grid; grid-template-columns: 200px 1fr; min-height: 180px; }
+    .mock-list { border-right: 1px solid var(--border); padding: 0.5rem; color: var(--muted); }
+    .mock-list div { padding: 0.25rem 0.35rem; border-radius: 6px; }
+    .mock-list .sel { background: rgba(124,156,255,0.15); color: var(--text); }
+    .mock-ed { padding: 0.65rem; color: #a7f3d0; font-family: var(--mono); font-size: 0.78rem; white-space: pre-wrap; }
+    .icon-row {
+      display: inline-flex; gap: 0.35rem; align-items: center;
+      background: #12151c; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.4rem 0.55rem; font-size: 0.85rem;
+    }
+    .icon-row span {
+      width: 28px; height: 28px; display: grid; place-items: center;
+      border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2);
+    }
+    .checklist label {
+      display: flex; gap: 0.55rem; align-items: flex-start;
+      padding: 0.4rem 0; border-bottom: 1px solid rgba(42,49,66,0.5);
+      font-size: 0.9rem;
+    }
+    .checklist input { margin-top: 0.3rem; accent-color: var(--accent); }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0004</span>
+      <span class="status">ACCEPTED · implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="#goal">Goal</a>
+      <a href="#ui">UI</a>
+      <a href="#menus">Menus</a>
+      <a href="#dnd">DnD</a>
+      <a href="#api">API</a>
+      <a href="#security">Security</a>
+      <a href="#questions">Questions</a>
+      <a href="#accept">Accept</a>
+      <a href="0003-review.html">0003</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Workspace file explorer modal</h1>
+      <p class="lede">
+        Operator UI to browse the harness <code>--workspace</code>: open from a folder icon
+        next to New session, view/edit text files, context menus, upload/download
+        (folders as <code>.tar.gz</code>), and refresh — all jailed to the launch workspace.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Date</b>2026-07-17</div>
+        <div class="meta"><b>Source</b><code>adr/0004-workspace-file-explorer.md</code></div>
+        <div class="meta"><b>Root</b><code>--workspace</code> only (not memory)</div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>entry</strong> 📁 next to +</span>
+        <span class="chip"><strong>edit</strong> text split view</span>
+        <span class="chip"><strong>folder ↓</strong> tar.gz</span>
+        <span class="chip"><strong>DnD</strong> in=upload out=download</span>
+        <span class="chip"><strong>jail</strong> shared with tools</span>
+      </div>
+    </section>
+
+    <section id="decided">
+      <h2>0. Locked so far (Q1–Q4)</h2>
+      <table>
+        <thead><tr><th>Q</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Q1</strong></td><td>Menu shows <strong>both</strong>: Copy relative path · Copy absolute path</td></tr>
+          <tr><td><strong>Q2</strong></td><td>Dirty close → prompt <strong>Save / Discard / Cancel</strong></td></tr>
+          <tr><td><strong>Q3</strong></td><td><strong>Remember</strong> last directory (<code>sessionStorage</code>)</td></tr>
+          <tr><td><strong>Q4</strong></td><td><strong>Breadcrumbs</strong> + flat list of current dir (no tree pane v1)</td></tr>
+        </tbody>
+      </table>
+      <p class="muted">Nav: clickable crumbs from workspace root → cwd. List shows only that folder’s entries.</p>
+    </section>
+
+    <section id="goal">
+      <h2>1. Goal</h2>
+      <div class="grid-2">
+        <div>
+          <p>Give operators the same tree the agent tools use, without leaving Marble.</p>
+          <ul>
+            <li>Browse, create, rename, delete</li>
+            <li>View/edit non-binary text</li>
+            <li>Upload / download / archive folders</li>
+            <li>Copy paths into chat</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Out of scope</h3>
+          <ul class="muted">
+            <li>Browsing <code>--memory</code></li>
+            <li>Git / LSP / multi-root IDE</li>
+            <li>Binary hex editor</li>
+            <li>Auth (inherits current open UI trust model)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="ui">
+      <h2>2. Entry &amp; modal</h2>
+      <p class="muted">Sidebar head — folder between Sessions and New session:</p>
+      <div class="icon-row" style="margin:0.5rem 0 1rem">
+        Sessions ▾ &nbsp; <span title="explorer">📁</span> <span title="new session">+</span>
+      </div>
+
+      <h3>Split view (text file selected) — breadcrumbs + list</h3>
+      <div class="mock-ui">
+        <div class="mock-bar">
+          <span><code>workspace</code> / <code>internal</code> / <strong>README.md</strong></span>
+          <span class="muted">[Save] [↻] [×]</span>
+        </div>
+        <div class="mock-body">
+          <div class="mock-list">
+            <div class="muted" style="font-size:0.72rem;margin-bottom:0.35rem">cwd listing</div>
+            <div>📁 api/</div>
+            <div>📁 db/</div>
+            <div class="sel">📄 README.md</div>
+            <div>📄 go.mod</div>
+          </div>
+          <div class="mock-ed"># Marble
+
+A small, ownable agent harness…</div>
+        </div>
+      </div>
+      <ul>
+        <li><strong>Text file</strong> → list + editor; Save when dirty</li>
+        <li><strong>Binary / oversize</strong> → metadata + download only</li>
+        <li><strong>↻ Refresh</strong> reloads listing (and file if not dirty)</li>
+      </ul>
+    </section>
+
+    <section id="menus">
+      <h2>3. Context menus</h2>
+      <div class="grid-2">
+        <div>
+          <h3>File / folder</h3>
+          <table>
+            <tr><th>Action</th><th>Notes</th></tr>
+            <tr><td>Copy relative path</td><td>Locked Q1</td></tr>
+            <tr><td>Copy absolute path</td><td>Locked Q1</td></tr>
+            <tr><td>Delete</td><td>Confirm</td></tr>
+            <tr><td>Rename</td><td>Same parent</td></tr>
+            <tr><td>Download</td><td>File as-is; folder as <code>.tar.gz</code></td></tr>
+          </table>
+        </div>
+        <div>
+          <h3>Empty space</h3>
+          <table>
+            <tr><th>Action</th><th>Notes</th></tr>
+            <tr><td>New folder</td><td>Prompt name</td></tr>
+            <tr><td>New file</td><td>Prompt name; maybe open editor</td></tr>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="dnd">
+      <h2>4. Drag &amp; drop</h2>
+      <table>
+        <thead><tr><th>Direction</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Into</strong> modal</td><td>Upload into current directory</td></tr>
+          <tr><td><strong>Out of</strong> modal</td><td>Download file / tar.gz folder (best-effort by browser)</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn">
+        Drag-<em>out</em> downloads are inconsistent across browsers. Context-menu Download remains the reliable path.
+      </div>
+    </section>
+
+    <section id="api">
+      <h2>5. API sketch</h2>
+      <pre class="mock">GET  /api/workspace
+GET  /api/workspace/list?path=
+GET  /api/workspace/read?path=
+PUT  /api/workspace/write          {path, content}
+POST /api/workspace/mkdir          {path}
+POST /api/workspace/rename         {from, to}
+DELETE /api/workspace?path=
+GET  /api/workspace/download?path=
+GET  /api/workspace/archive?path=  → application/gzip tar.gz
+POST /api/workspace/upload?path=   multipart</pre>
+      <p>Paths jailed to <code>--workspace</code> (shared helper with agent tools).</p>
+    </section>
+
+    <section id="security">
+      <h2>6. Security</h2>
+      <ul>
+        <li>Same trust model as today: unauthenticated UI ⇒ full workspace R/W if port is exposed</li>
+        <li>No symlink escape; no <code>..</code> jailbreak</li>
+        <li>Caps on edit/upload/archive size (see questions)</li>
+      </ul>
+    </section>
+
+    <section id="questions">
+      <h2>7. Decisions Q5–Q18 (locked)</h2>
+      <p class="muted">Q1–Q4 locked above. Recs still apply for the rest.</p>
+
+      <h3>UX</h3>
+      <div class="q"><strong>Q5</strong> Editor: textarea vs highlight library?
+        <div class="rec">Rec: textarea v1 (no new deps).</div></div>
+      <div class="q"><strong>Q6</strong> Show dotfiles by default?
+        <div class="rec">Rec: yes (sysadmin-friendly), with toggle to hide.</div></div>
+      <div class="q"><strong>Q7</strong> Delete non-empty folders?
+        <div class="rec">Rec: yes with strong confirm.</div></div>
+      <div class="q"><strong>Q8</strong> New file → auto-open editor?
+        <div class="rec">Rec: yes.</div></div>
+      <div class="q"><strong>Q9</strong> Mobile long-press for context menu?
+        <div class="rec">Rec: yes (same as sessions).</div></div>
+
+      <h3>Limits / API</h3>
+      <div class="q"><strong>Q10</strong> Max editable size?
+        <div class="rec">Rec: 1 MiB.</div></div>
+      <div class="q"><strong>Q11</strong> Max upload per file?
+        <div class="rec">Rec: 50 MiB (stream to disk).</div></div>
+      <div class="q"><strong>Q12</strong> Overwrite policy?
+        <div class="rec">Rec: upload conflict → confirm; Save overwrites open file.</div></div>
+      <div class="q"><strong>Q13</strong> Symlinks?
+        <div class="rec">Rec: list; follow only if target stays in jail.</div></div>
+      <div class="q"><strong>Q14</strong> tar.gz caps?
+        <div class="rec">Rec: ~200 MiB / 10k files — abort with error.</div></div>
+      <div class="q"><strong>Q15</strong> Huge file download?
+        <div class="rec">Rec: stream; no extra cap.</div></div>
+
+      <h3>Product</h3>
+      <div class="q"><strong>Q16</strong> <code>--workspace-readonly</code>?
+        <div class="rec">Rec: defer.</div></div>
+      <div class="q"><strong>Q17</strong> Audit deletes/uploads to SQLite?
+        <div class="rec">Rec: defer.</div></div>
+      <div class="q"><strong>Q18</strong> Notify agent on operator edit?
+        <div class="rec">Rec: no.</div></div>
+    </section>
+
+    <section>
+      <h2>8. Implementation order (post-accept)</h2>
+      <ol>
+        <li><code>internal/workspacefs</code> — jail + list/read/write/mkdir/rename/delete/archive</li>
+        <li>HTTP routes</li>
+        <li>Modal UI: browse, open text, save, refresh</li>
+        <li>Context menus + new file/folder</li>
+        <li>Upload / download / tar.gz</li>
+        <li>DnD in (+ out best-effort)</li>
+        <li>Tests for escape and archive</li>
+      </ol>
+    </section>
+
+    <section id="accept">
+      <h2>9. Checklist</h2>
+      <div class="checklist">
+        <label><input type="checkbox" checked disabled /> Q1–Q4 locked</label>
+        <label><input type="checkbox" /> Folder icon + menus + tar.gz + DnD OK</label>
+        <label><input type="checkbox" /> Q5–Q18 answered or “defaults OK”</label>
+        <label><input type="checkbox" /> Ready to implement</label>
+      </div>
+      <div class="callout ok" style="margin-top:1rem">
+        Full text: <code>adr/0004-workspace-file-explorer.md</code>
+      </div>
+    </section>
+  </main>
+
+  <footer>Marble · ADR-0004 design review · not an implementation</footer>
+</body>
+</html>

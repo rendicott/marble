@@ -1,0 +1,231 @@
+/* Marble ADR review kit — answer controls + toolbar */
+
+.adr-toolbar {
+  position: sticky;
+  top: 56px;
+  z-index: 15;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem 1rem;
+  margin: 0 0 1.25rem;
+  background: rgba(23, 26, 33, 0.95);
+  border: 1px solid var(--border, #2a3142);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+.adr-toolbar .left,
+.adr-toolbar .right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.adr-toolbar .progress {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  color: var(--muted, #9aa3b5);
+  min-width: 9rem;
+}
+
+.adr-toolbar .progress strong {
+  color: var(--text, #e8ecf4);
+}
+
+.adr-toolbar .bar {
+  width: 120px;
+  height: 6px;
+  border-radius: 999px;
+  background: #0c0e13;
+  border: 1px solid var(--border, #2a3142);
+  overflow: hidden;
+}
+
+.adr-toolbar .bar > i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #4ade80, #7c9cff);
+  transition: width 0.2s ease;
+}
+
+.adr-btn {
+  font-family: var(--sans, system-ui, sans-serif);
+  font-size: 0.78rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a3142);
+  background: var(--panel-2, #1e2330);
+  color: var(--text, #e8ecf4);
+  cursor: pointer;
+}
+
+.adr-btn:hover {
+  border-color: var(--accent, #7c9cff);
+  color: #fff;
+}
+
+.adr-btn.primary {
+  background: rgba(124, 156, 255, 0.18);
+  border-color: #3d4f7a;
+  color: #c7d6ff;
+}
+
+.adr-btn.ok {
+  background: rgba(74, 222, 128, 0.12);
+  border-color: #2d6a4f;
+  color: #a7f3d0;
+}
+
+.adr-btn.warn {
+  background: rgba(251, 191, 36, 0.1);
+  border-color: #6b5420;
+  color: #fde68a;
+}
+
+.adr-toast {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 50;
+  max-width: 28rem;
+  padding: 0.7rem 1rem;
+  border-radius: 10px;
+  background: #1a2336;
+  border: 1px solid #3d4f7a;
+  color: #e8ecf4;
+  font-size: 0.85rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.adr-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Question cards enhanced by kit */
+.q[data-qid] {
+  position: relative;
+}
+
+.q[data-qid].is-answered {
+  border-color: #2d6a4f;
+  background: #121a16;
+}
+
+.q[data-qid].is-locked {
+  border-color: #2d6a4f;
+  background: #121a16;
+}
+
+.q[data-qid].is-open:not(.is-answered) {
+  border-color: var(--border, #2a3142);
+}
+
+.q .adr-answer {
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+  border-top: 1px dashed rgba(42, 49, 66, 0.85);
+}
+
+.q .adr-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.45rem;
+}
+
+.q .adr-choices label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--muted, #9aa3b5);
+  background: #0c0e13;
+  border: 1px solid var(--border, #2a3142);
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.q .adr-choices label:has(input:checked) {
+  border-color: #3d4f7a;
+  color: #c7d6ff;
+  background: rgba(124, 156, 255, 0.1);
+}
+
+.q .adr-choices input {
+  accent-color: var(--accent, #7c9cff);
+  margin: 0;
+}
+
+.q .adr-notes {
+  width: 100%;
+  min-height: 2.4rem;
+  resize: vertical;
+  font-family: var(--sans, system-ui, sans-serif);
+  font-size: 0.84rem;
+  color: var(--text, #e8ecf4);
+  background: #0c0e13;
+  border: 1px solid var(--border, #2a3142);
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+}
+
+.q .adr-notes:focus {
+  outline: none;
+  border-color: var(--accent, #7c9cff);
+}
+
+.q .adr-notes::placeholder {
+  color: #5c6578;
+}
+
+.q .adr-decision-preview {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  color: #a7f3d0;
+  margin-top: 0.35rem;
+  white-space: pre-wrap;
+}
+
+.q .adr-locked-badge {
+  display: inline-block;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: #a7f3d0;
+  border: 1px solid #2d6a4f;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+}
+
+.q.is-locked .adr-answer-controls {
+  display: none;
+}
+
+.adr-help {
+  font-size: 0.82rem;
+  color: var(--muted, #9aa3b5);
+  margin: 0.35rem 0 0.75rem;
+}
+
+.adr-help code {
+  font-size: 0.8em;
+}
+
+/* hidden file input */
+.adr-hidden {
+  display: none !important;
+}

@@ -1,0 +1,67 @@
+{
+  "adr": "0008",
+  "title": "Session Info Feature",
+  "answered_at": "2026-07-18T07:26:53.188Z",
+  "answers": {
+    "Q1": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Header ⓘ for active session + session list context menu “Session info”"
+    },
+    "Q2": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Modal (consistent with Settings and Explorer)"
+    },
+    "Q3": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Explicit open only — never auto-open"
+    },
+    "Q4": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "30 recent events"
+    },
+    "Q5": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes, truncate error strings to 500 chars"
+    },
+    "Q6": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes if cheap COUNT of blob_id"
+    },
+    "Q7": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — same panel for system-agent sessions"
+    },
+    "Q8": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer token cost / pricing"
+    },
+    "Q9": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Metadata only when limp; partial true; no fake tokens"
+    },
+    "Q10": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — Close session action with existing confirm"
+    },
+    "Q11": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer rename-from-info"
+    },
+    "Q12": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer JSON export of info"
+    }
+  }
+}

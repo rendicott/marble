@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0003 Final Design Review</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --danger: #f87171; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(1000px 500px at 5% -10%, #1a2840 0%, transparent 50%),
+        radial-gradient(800px 400px at 100% 0%, #0f2a28 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      backdrop-filter: blur(12px);
+      background: rgba(15,17,21,0.9);
+      border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem;
+      display: flex; gap: 1rem; align-items: center; justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 0.75rem; font-weight: 700; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #a78bfa, var(--accent-2));
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    nav.toc a:hover { color: var(--text); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+    }
+    h1 { font-size: 1.65rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.1rem; margin: 0 0 0.85rem; }
+    h3 { font-size: 0.95rem; margin: 0.9rem 0 0.4rem; color: var(--accent-2); }
+    p, li { color: #d5dbeb; }
+    .muted { color: var(--muted); }
+    .lede { font-size: 1.05rem; color: var(--muted); max-width: 74ch; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td {
+      text-align: left; padding: 0.48rem 0.5rem;
+      border-bottom: 1px solid var(--border); vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em;
+      background: var(--chip); padding: 0.12rem 0.35rem; border-radius: 5px;
+      border: 1px solid var(--border); }
+    pre.tree {
+      font-family: var(--mono); font-size: 0.78rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.9rem 1rem; overflow-x: auto; line-height: 1.5;
+      white-space: pre; margin: 0.5rem 0 0; color: #c8d0e0;
+    }
+    .tree .dir { color: var(--accent-2); }
+    .tree .cmt { color: #6b7385; }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border);
+      padding: 0.2rem 0.5rem; border-radius: 999px; color: var(--muted);
+    }
+    .chip strong { color: var(--text); }
+    .chip.ok { border-color: #2d6a4f; color: #a7f3d0; }
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: var(--panel-2);
+      padding: 0.75rem 1rem;
+      border-radius: 0 10px 10px 0;
+      margin: 0.75rem 0;
+    }
+    .callout.ok { border-left-color: var(--ok); }
+    .callout.warn { border-left-color: var(--warn); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .banner-demo {
+      border: 1px solid #6b5420; background: #2a220f; color: #fde68a;
+      border-radius: 10px; padding: 0.65rem 0.85rem; font-size: 0.88rem;
+    }
+    .q {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.6rem 0.8rem; margin: 0.4rem 0; background: #141824; font-size: 0.9rem;
+    }
+    .q strong { color: var(--muted); font-family: var(--mono); font-size: 0.78rem; }
+    .q .def { color: #a7f3d0; font-size: 0.85rem; margin-top: 0.2rem; }
+    .checklist label {
+      display: flex; gap: 0.55rem; align-items: flex-start;
+      padding: 0.4rem 0; border-bottom: 1px solid rgba(42,49,66,0.5);
+      font-size: 0.9rem;
+    }
+    .checklist input { margin-top: 0.3rem; accent-color: var(--accent); }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0003</span>
+      <span class="status">READY · all recs locked</span>
+    </div>
+    <nav class="toc">
+      <a href="#locked">Locked</a>
+      <a href="#layout">Layout</a>
+      <a href="#limp">Limp</a>
+      <a href="#prune">Prune</a>
+      <a href="#schema">Schema</a>
+      <a href="#optional">Optional Qs</a>
+      <a href="#accept">Accept</a>
+      <a href="0002-review.html">0002</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>SQLite memory DB — ready for accept</h1>
+      <p class="lede">
+        All Round-2 recommendations are adopted. Files stay first-class; DB is dual-write supplemental.
+        Only a few optional defaults remain if you care; otherwise say <strong>implement</strong>.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Updated</b>2026-07-17</div>
+        <div class="meta"><b>Source</b><code>adr/0003-sqlite-memory-db.md</code></div>
+        <div class="meta"><b>DB</b><code>$MEMORY/marble.db</code></div>
+      </div>
+      <div class="chips">
+        <span class="chip ok">files first</span>
+        <span class="chip ok">dual-write</span>
+        <span class="chip ok">32KiB spill</span>
+        <span class="chip ok">blobs 4d</span>
+        <span class="chip ok">closed prune 4d</span>
+        <span class="chip ok">keep .md on prune</span>
+        <span class="chip ok">limp mode</span>
+        <span class="chip ok">single lock</span>
+        <span class="chip ok">UTC</span>
+      </div>
+    </section>
+
+    <section id="locked">
+      <h2>1. Locked policy (high signal)</h2>
+      <table>
+        <thead><tr><th>Topic</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td>Authority</td><td>Markdown/files first-class; DB supplemental dual-write</td></tr>
+          <tr><td>DB file</td><td><code>marble.db</code>, create if missing</td></tr>
+          <tr><td>Bodies</td><td>In DB + MD until <strong>purge</strong> (close keeps rows)</td></tr>
+          <tr><td>Spill</td><td>Inline ≤ 32 KiB; else <code>blobs/</code> + truncate flag</td></tr>
+          <tr><td>Blob GC</td><td>Unreferenced; age setting default 4d; session prune deletes its blobs now</td></tr>
+          <tr><td>Closed</td><td><code>status=closed</code>; prune after 4d; <strong>keep</strong> <code>session/*.md</code></td></tr>
+          <tr><td>Tokens</td><td>reported + est columns</td></tr>
+          <tr><td>Base URL</td><td>CLI only — never in DB</td></tr>
+          <tr><td>Time</td><td>UTC <code>Z</code> in DB</td></tr>
+          <tr><td>Lock</td><td>One harness per memory dir; busy → fatal</td></tr>
+          <tr><td>Mismatch</td><td>Migrate if steps exist; else limp</td></tr>
+          <tr><td>UI</td><td>Hide closed by default + toggle</td></tr>
+          <tr><td>Settings</td><td>DB-seeded defaults; no new CLI for retention in v1</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="layout">
+      <h2>2. Layout</h2>
+      <pre class="tree"><span class="dir">$MEMORY/</span>
+├── marble.db
+├── marble.lock              <span class="cmt"># PID lock (+ SQLite)</span>
+├── <span class="dir">session/</span>&lt;id&gt;.md
+├── <span class="dir">daily/</span>
+└── <span class="dir">blobs/</span>&lt;blob_id&gt;</pre>
+    </section>
+
+    <section id="limp">
+      <h2>3. Limp mode</h2>
+      <div class="banner-demo">
+        ⚠ Limp mode: database schema incompatible — writes disabled. Chat, tools, and Markdown sessions still work.
+      </div>
+      <div class="grid-2" style="margin-top:0.75rem">
+        <div>
+          <h3>On</h3>
+          <ul>
+            <li>Chat (CLI model)</li>
+            <li>Workspace tools</li>
+            <li>New sessions → Markdown</li>
+            <li>List from <code>session/*.md</code></li>
+            <li>MD flush daemon</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Off</h3>
+          <ul>
+            <li>All DB writes</li>
+            <li>DB dual-write events</li>
+            <li>If DB newer than binary: ignore DB entirely</li>
+          </ul>
+          <p class="muted">Lock conflict → exit, not limp.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="prune">
+      <h2>4. Close · prune · blobs</h2>
+      <table>
+        <thead><tr><th>Event</th><th>DB</th><th>Markdown</th><th>Blobs</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Close</td>
+            <td><code>closed</code> + keep events</td>
+            <td>flush, keep file</td>
+            <td>keep</td>
+          </tr>
+          <tr>
+            <td>Prune (closed &gt; 4d)</td>
+            <td>delete session + events</td>
+            <td><strong>keep</strong> <code>.md</code></td>
+            <td>delete session blobs now</td>
+          </tr>
+          <tr>
+            <td>Blob GC</td>
+            <td>—</td>
+            <td>—</td>
+            <td>unreferenced (+ age eligibility)</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="muted">Prune runs every daemon sweep. Retention knobs in <code>settings</code>.</p>
+    </section>
+
+    <section id="schema">
+      <h2>5. Tables</h2>
+      <p class="pill-row">
+        <span class="chip"><strong>schema_meta</strong></span>
+        <span class="chip"><strong>settings</strong></span>
+        <span class="chip"><strong>sessions</strong></span>
+        <span class="chip"><strong>session_events</strong></span>
+        <span class="chip"><strong>blobs</strong></span>
+        <span class="chip"><strong>daemon_state</strong></span>
+      </p>
+      <h3>Default settings</h3>
+      <table>
+        <thead><tr><th>Key</th><th>Default</th></tr></thead>
+        <tbody>
+          <tr><td><code>db_inline_max_bytes</code></td><td>32768</td></tr>
+          <tr><td><code>blob_max_age_days</code></td><td>4</td></tr>
+          <tr><td><code>closed_session_max_age_days</code></td><td>4</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="optional">
+      <h2>6. Optional remaining questions</h2>
+      <p class="muted">Won’t block if you accept defaults.</p>
+      <div class="q">
+        <strong>O1 · Blob id scheme</strong>
+        <div class="def">Default: UUID v4 filename; optional sha256 column for later dedup.</div>
+      </div>
+      <div class="q">
+        <strong>O2 · Limp banner severity</strong>
+        <div class="def">Default: warning (amber), non-blocking.</div>
+      </div>
+      <div class="q">
+        <strong>O3 · Health JSON field names</strong>
+        <div class="def">Default: <code>mode</code>, <code>schema_version_db</code>, <code>schema_version_binary</code>, <code>limp_reason</code>.</div>
+      </div>
+      <div class="q">
+        <strong>O4 · Auto-close stale active sessions?</strong>
+        <div class="def">Default: no — only explicit close.</div>
+      </div>
+      <div class="q">
+        <strong>O5 · Two harnesses, different <code>--memory</code> paths?</strong>
+        <div class="def">Default: allowed (lock is per directory).</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>7. Implement after accept</h2>
+      <ol>
+        <li><code>internal/db</code> — create/open, v1 schema, settings, lock</li>
+        <li>Normal vs limp in <code>main</code> + health + UI banner</li>
+        <li>Dual-write events/bodies/tokens from agent loop</li>
+        <li>Blob spill + GC + closed prune in daemon</li>
+        <li>Show-closed toggle in UI</li>
+      </ol>
+    </section>
+
+    <section id="accept">
+      <h2>8. Checklist</h2>
+      <div class="checklist">
+        <label><input type="checkbox" checked disabled /> Q1–Q10 + all R2 recs locked</label>
+        <label><input type="checkbox" /> Optional O1–O5 defaults OK (or overrides noted)</label>
+        <label><input type="checkbox" /> <strong>Accept ADR-0003 — implement</strong></label>
+      </div>
+      <div class="callout ok" style="margin-top:1rem">
+        Full text: <code>adr/0003-sqlite-memory-db.md</code>.
+        Reply <strong>implement</strong> (and any O1–O5 overrides) to start coding.
+      </div>
+    </section>
+  </main>
+
+  <footer>Marble · ADR-0003 · ready for implementation approval</footer>
+</body>
+</html>

@@ -1,0 +1,113 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0009",
+  "title": "mpub — agent-published documents",
+  "updated_at": "2026-07-18T08:04:17.322Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Separate mpub_publish / list / get / unpublish tools",
+      "notes": "",
+      "rec": "Separate mpub_publish / list / get / unpublish tools"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Primary format is HTML; markdown also supported with server-side HTML rendering when served",
+      "notes": "The primary format is HTML, but a markdown renderer would be nice too",
+      "rec": "Markdown default; optional content_type"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Serve markdown as simple HTML page for browser reading",
+      "notes": "",
+      "rec": "Serve markdown as simple HTML page for browser reading"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Default overwrite; optional if_exists=fail",
+      "notes": "",
+      "rec": "Default overwrite; optional if_exists=fail"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Max body 2 MiB",
+      "notes": "",
+      "rec": "Max body 2 MiB"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Allow text/html; document XSS; no sanitizer v1",
+      "notes": "",
+      "rec": "Allow text/html; document XSS; no sanitizer v1"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes — simple HTML index at /mpub",
+      "notes": "",
+      "rec": "Yes — simple HTML index at /mpub"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Publishing agent determines slug as part of tool call (required; no auto-slug)",
+      "notes": "Publishing agent determines slug as part of tool call",
+      "rec": "Require slug always — no auto-slug from title"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Record session_id in meta when available",
+      "notes": "",
+      "rec": "Record session_id in meta when available"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Defer SPA browser; HTTP pages enough v1",
+      "notes": "",
+      "rec": "Defer SPA browser; HTTP pages enough v1"
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes mpub_unpublish in v1",
+      "notes": "",
+      "rec": "Yes mpub_unpublish in v1"
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Single slug segment only (no /mpub/foo/bar)",
+      "notes": "",
+      "rec": "Single slug segment only (no /mpub/foo/bar)"
+    },
+    "Q13": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No append mode in v1 — full replace only",
+      "notes": "",
+      "rec": "No append mode in v1 — full replace only"
+    },
+    "Q14": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Tool returns http://127.0.0.1{port}/mpub/{slug} from --addr",
+      "notes": "",
+      "rec": "Tool returns http://127.0.0.1{port}/mpub/{slug} from --addr"
+    },
+    "Q15": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "mpub works in limp mode (disk + HTTP only)",
+      "notes": "",
+      "rec": "mpub works in limp mode (disk + HTTP only)"
+    }
+  }
+}

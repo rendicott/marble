@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0009 Design Review — mpub</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #14302a 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #1a2038 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      backdrop-filter: blur(12px);
+      background: rgba(15,17,21,0.92);
+      border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem;
+      display: flex; gap: 1rem; align-items: center; justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 0.75rem; font-weight: 700; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #5eead4, #7c9cff);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.55rem; flex-wrap: wrap; font-size: 0.82rem; }
+    nav.toc a { color: var(--muted); }
+    nav.toc a:hover { color: var(--text); }
+    main { max-width: 1080px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+    }
+    h1 { font-size: 1.65rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.1rem; margin: 0 0 0.85rem; }
+    h3 { font-size: 0.95rem; margin: 1rem 0 0.45rem; color: var(--accent-2); }
+    p, li { color: #d5dbeb; }
+    .muted { color: var(--muted); }
+    .lede { font-size: 1.05rem; color: var(--muted); max-width: 78ch; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td {
+      text-align: left; padding: 0.48rem 0.5rem;
+      border-bottom: 1px solid var(--border); vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em;
+      background: var(--chip); padding: 0.12rem 0.35rem; border-radius: 5px;
+      border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.75rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; line-height: 1.45;
+      white-space: pre; margin: 0.5rem 0 0; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border);
+      padding: 0.2rem 0.5rem; border-radius: 999px; color: var(--muted);
+    }
+    .chip strong { color: var(--text); }
+    .chip.ok { border-color: #2d6a4f; color: #a7f3d0; }
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: var(--panel-2);
+      padding: 0.75rem 1rem;
+      border-radius: 0 10px 10px 0;
+      margin: 0.75rem 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .callout.ok { border-left-color: var(--ok); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .q {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.6rem 0.8rem; margin: 0.4rem 0; background: #141824; font-size: 0.9rem;
+    }
+    .q strong { color: var(--warn); font-family: var(--mono); font-size: 0.78rem; }
+    .q .rec { color: var(--muted); font-size: 0.84rem; margin-top: 0.2rem; }
+    .checklist label {
+      display: flex; gap: 0.55rem; align-items: flex-start;
+      padding: 0.4rem 0; border-bottom: 1px solid rgba(42,49,66,0.5);
+      font-size: 0.9rem;
+    }
+    .checklist input { margin-top: 0.3rem; accent-color: var(--accent); }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+    .flow { font-family: var(--mono); font-size: 0.8rem; color: #c8d0e0; line-height: 1.6; }
+  </style>
+  <link rel="stylesheet" href="review-kit.css" />
+</head>
+<body data-adr="0009" data-adr-title="mpub — agent-published documents">
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0009</span>
+      <span class="status" style="background:#1a3a28;color:var(--ok);border-color:#2d6a4f">ACCEPTED · Q1–Q15 locked</span>
+    </div>
+    <nav class="toc">
+      <a href="#locked">Locked</a>
+      <a href="#goal">Goal</a>
+      <a href="#flow">Flow</a>
+      <a href="#layout">Layout</a>
+      <a href="#tools">Tools</a>
+      <a href="#http">HTTP</a>
+      <a href="#questions">Questions</a>
+      <a href="#accept">Accept</a>
+      <a href="0008-review.html">0008</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>mpub — publish agent content to /mpub/…</h1>
+      <p class="lede">
+        Every agent gets tools to publish content into <code>$MEMORY/mpub/</code>.
+        The harness HTTP server exposes it at <code>&lt;marble-URL&gt;/mpub/&lt;slug&gt;</code>
+        so “do research on foo and mpub it” becomes a durable, shareable page.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Date</b>2026-07-18</div>
+        <div class="meta"><b>Source</b><code>adr/0009-mpub.md</code></div>
+        <div class="meta"><b>Store</b><code>$MEMORY/mpub/</code></div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>tool</strong> mpub_*</span>
+        <span class="chip"><strong>disk</strong> memory leaf</span>
+        <span class="chip ok"><strong>GET</strong> /mpub/slug</span>
+        <span class="chip"><strong>not</strong> workspace</span>
+        <span class="chip ok"><strong>primary</strong> HTML</span>
+        <span class="chip ok"><strong>Q1–Q15</strong> locked</span>
+      </div>
+    </section>
+
+    <section id="locked">
+      <h2>0. Locked decisions (Q1–Q15)</h2>
+      <p class="muted">Source: <code>0009-answers.json</code> · 2026-07-18T08:04:17Z · <strong>Accepted</strong></p>
+      <div class="callout ok">
+        <strong>Notable:</strong> primary format is <strong>HTML</strong> (markdown still supported + HTML render on serve).
+      </div>
+      <table>
+        <thead><tr><th>Q</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Q1</strong></td><td>Separate mpub_publish / list / get / unpublish tools</td></tr>
+          <tr><td><strong>Q2</strong></td><td>Primary format is HTML; markdown also supported with server-side HTML rendering when served</td></tr>
+          <tr><td><strong>Q3</strong></td><td>Serve markdown as simple HTML page for browser reading</td></tr>
+          <tr><td><strong>Q4</strong></td><td>Default overwrite; optional if_exists=fail</td></tr>
+          <tr><td><strong>Q5</strong></td><td>Max body 2 MiB</td></tr>
+          <tr><td><strong>Q6</strong></td><td>Allow text/html; document XSS; no sanitizer v1</td></tr>
+          <tr><td><strong>Q7</strong></td><td>Yes — simple HTML index at /mpub</td></tr>
+          <tr><td><strong>Q8</strong></td><td>Publishing agent determines slug as part of tool call (required; no auto-slug)</td></tr>
+          <tr><td><strong>Q9</strong></td><td>Record session_id in meta when available</td></tr>
+          <tr><td><strong>Q10</strong></td><td>Defer SPA browser; HTTP pages enough v1</td></tr>
+          <tr><td><strong>Q11</strong></td><td>Yes mpub_unpublish in v1</td></tr>
+          <tr><td><strong>Q12</strong></td><td>Single slug segment only (no /mpub/foo/bar)</td></tr>
+          <tr><td><strong>Q13</strong></td><td>No append mode in v1 — full replace only</td></tr>
+          <tr><td><strong>Q14</strong></td><td>Tool returns http://127.0.0.1{port}/mpub/{slug} from --addr</td></tr>
+          <tr><td><strong>Q15</strong></td><td>mpub works in limp mode (disk + HTTP only)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="goal">
+      <h2>1. Goal</h2>
+      <div class="grid-2">
+        <div>
+          <ul>
+            <li>Built-in tools (all sessions)</li>
+            <li>Files under harness memory, not the project jail</li>
+            <li>Same process / port as Marble UI</li>
+            <li>Stable slugs for re-open after session close</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Not this ADR</h3>
+          <ul class="muted">
+            <li>Auth / multi-tenant ACLs</li>
+            <li>Full site generator / media gallery</li>
+            <li>Version history of pubs</li>
+            <li>Replacing <code>memory_write</code> or session transcripts</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="flow">
+      <h2>2. Flow</h2>
+      <div class="flow">
+user: research foo and mpub it
+  → agent tools (grep, shell, …)
+  → mpub_publish(slug="foo-research", title="…", content="## …")
+  → write $MEMORY/mpub/foo-research/
+  → tool result: path=/mpub/foo-research url=http://127.0.0.1:8080/mpub/foo-research
+operator opens link in browser
+      </div>
+      <div class="callout ok">
+        mpub = <strong>human-facing</strong> pages. <code>memory_write</code> = agent long-term knowledge.
+        Workspace files = code/config the agent edits for the project.
+      </div>
+    </section>
+
+    <section id="layout">
+      <h2>3. On-disk layout (proposed)</h2>
+      <pre class="mock">$MEMORY/mpub/
+└── foo-research/
+    ├── meta.json      # slug, title, session_id, times, content_type
+    └── content.md     # body (or .html / .txt)</pre>
+    </section>
+
+    <section id="tools">
+      <h2>4. Tools (proposed)</h2>
+      <table>
+        <thead><tr><th>Tool</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>mpub_publish</code></td><td>Create/update by slug</td></tr>
+          <tr><td><code>mpub_list</code></td><td>List slugs + titles</td></tr>
+          <tr><td><code>mpub_get</code></td><td>Read back for agent</td></tr>
+          <tr><td><code>mpub_unpublish</code></td><td>Delete (Q11)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="http">
+      <h2>5. HTTP</h2>
+      <pre class="mock">GET /mpub              → index listing
+GET /mpub/{slug}       → document (HTML shell for markdown)
+GET /mpub/{slug}/raw   → optional raw body</pre>
+      <div class="callout warn">
+        Same unauthenticated trust model as the dashboard. If <code>:8080</code> is reachable, pubs are too.
+      </div>
+    </section>
+
+    <section>
+      <h2>6. Implementation order (post-accept)</h2>
+      <ol>
+        <li><code>internal/mpub</code> store + slug rules + tests</li>
+        <li>Tools wired into registry</li>
+        <li>HTTP handlers (before SPA fallback)</li>
+        <li>MD→simple HTML template</li>
+        <li>System prompt blurb + docs</li>
+      </ol>
+    </section>
+
+    <section id="questions">
+      <h2>7. Questions (all locked)</h2>
+      <p class="muted">All Q1–Q15 locked. Ready to implement.</p>
+
+      <h3>API &amp; format</h3>
+      <div class="q" data-qid="Q1" data-status="locked"
+           data-rec="Separate mpub_publish / list / get / unpublish tools" data-decision="Separate mpub_publish / list / get / unpublish tools">
+        <strong>Q1</strong> Tool API shape?
+        <div class="rec">Rec: separate tools (not one mega-action enum).</div>
+      </div>
+      <div class="q" data-qid="Q2" data-status="locked"
+           data-rec="Markdown default; optional content_type" data-decision="Primary format is HTML; markdown also supported with server-side HTML rendering when served">
+        <strong>Q2</strong> Default content format?
+        <div class="rec">Rec: markdown; optional content_type.</div>
+      </div>
+      <div class="q" data-qid="Q3" data-status="locked"
+           data-rec="Serve markdown as simple HTML page for browser reading" data-decision="Serve markdown as simple HTML page for browser reading">
+        <strong>Q3</strong> Serve markdown as HTML or raw?
+        <div class="rec">Rec: HTML shell with basic styling.</div>
+      </div>
+      <div class="q" data-qid="Q4" data-status="locked"
+           data-rec="Default overwrite; optional if_exists=fail" data-decision="Default overwrite; optional if_exists=fail">
+        <strong>Q4</strong> Create vs overwrite default?
+        <div class="rec">Rec: overwrite by default; optional fail-if-exists.</div>
+      </div>
+      <div class="q" data-qid="Q13" data-status="locked"
+           data-rec="No append mode in v1 — full replace only" data-decision="No append mode in v1 — full replace only">
+        <strong>Q13</strong> Append mode?
+        <div class="rec">Rec: no v1 — full replace only.</div>
+      </div>
+
+      <h3>Limits &amp; safety</h3>
+      <div class="q" data-qid="Q5" data-status="locked"
+           data-rec="Max body 2 MiB" data-decision="Max body 2 MiB">
+        <strong>Q5</strong> Max body size?
+        <div class="rec">Rec: 2 MiB.</div>
+      </div>
+      <div class="q" data-qid="Q6" data-status="locked"
+           data-rec="Allow text/html; document XSS; no sanitizer v1" data-decision="Allow text/html; document XSS; no sanitizer v1">
+        <strong>Q6</strong> Allow agent-authored HTML?
+        <div class="rec">Rec: yes for local trust; document XSS; no sanitizer v1.</div>
+      </div>
+      <div class="q" data-qid="Q12" data-status="locked"
+           data-rec="Single slug segment only (no /mpub/foo/bar)" data-decision="Single slug segment only (no /mpub/foo/bar)">
+        <strong>Q12</strong> Nested subpaths?
+        <div class="rec">Rec: no — one slug segment v1.</div>
+      </div>
+
+      <h3>Product</h3>
+      <div class="q" data-qid="Q7" data-status="locked"
+           data-rec="Yes — simple HTML index at /mpub" data-decision="Yes — simple HTML index at /mpub">
+        <strong>Q7</strong> Index page at /mpub?
+        <div class="rec">Rec: yes.</div>
+      </div>
+      <div class="q" data-qid="Q8" data-status="locked"
+           data-rec="Require slug always — no auto-slug from title" data-decision="Publishing agent determines slug as part of tool call (required; no auto-slug)">
+        <strong>Q8</strong> Auto-slug from title?
+        <div class="rec">Rec: no — require explicit slug.</div>
+      </div>
+      <div class="q" data-qid="Q9" data-status="locked"
+           data-rec="Record session_id in meta when available" data-decision="Record session_id in meta when available">
+        <strong>Q9</strong> Store session_id in meta?
+        <div class="rec">Rec: yes.</div>
+      </div>
+      <div class="q" data-qid="Q10" data-status="locked"
+           data-rec="Defer SPA browser; HTTP pages enough v1" data-decision="Defer SPA browser; HTTP pages enough v1">
+        <strong>Q10</strong> In-app mpub browser UI?
+        <div class="rec">Rec: defer; HTTP is enough.</div>
+      </div>
+      <div class="q" data-qid="Q11" data-status="locked"
+           data-rec="Yes mpub_unpublish in v1" data-decision="Yes mpub_unpublish in v1">
+        <strong>Q11</strong> Delete tool in v1?
+        <div class="rec">Rec: yes.</div>
+      </div>
+      <div class="q" data-qid="Q14" data-status="locked"
+           data-rec="Tool returns http://127.0.0.1{port}/mpub/{slug} from --addr" data-decision="Tool returns http://127.0.0.1{port}/mpub/{slug} from --addr">
+        <strong>Q14</strong> Public URL host in tool result?
+        <div class="rec">Rec: 127.0.0.1 + listen port; document host rewrite for Tailscale.</div>
+      </div>
+      <div class="q" data-qid="Q15" data-status="locked"
+           data-rec="mpub works in limp mode (disk + HTTP only)" data-decision="mpub works in limp mode (disk + HTTP only)">
+        <strong>Q15</strong> Limp mode behavior?
+        <div class="rec">Rec: fully works without SQLite.</div>
+      </div>
+    </section>
+
+    <section id="accept">
+      <h2>8. Checklist</h2>
+      <div class="checklist">
+        <label><input type="checkbox" checked disabled /> Q1–Q15 locked</label>
+        <label><input type="checkbox" checked disabled /> HTML primary · MD render · /mpub index</label>
+        <label><input type="checkbox" checked disabled /> Ready to implement</label>
+      </div>
+      <div class="callout ok" style="margin-top:1rem">
+        Full text: <code>adr/0009-mpub.md</code>
+      </div>
+    </section>
+  </main>
+
+  <footer>Marble · ADR-0009 design review · not an implementation</footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>

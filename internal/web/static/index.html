@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="ctx-menu" role="menu" aria-hidden="true">
+    <button type="button" data-action="info">Session info</button>
+    <button type="button" data-action="close" class="danger">Close session</button>
+  </div>
+  <div id="session-info-modal" class="fs-modal" hidden>
+    <div class="fs-dialog session-info-dialog" id="session-info-dialog">
+      <div class="fs-top">
+        <div class="fs-title" id="session-info-title">Session info</div>
+        <div class="fs-top-actions">
+          <button type="button" id="session-info-close-sess" class="icon-btn" title="Close session">Close session</button>
+          <button type="button" id="session-info-refresh" class="icon-btn" title="Refresh">↻</button>
+          <button type="button" id="session-info-close" class="icon-btn" title="Close">×</button>
+        </div>
+      </div>
+      <div id="session-info-partial" class="si-banner" hidden></div>
+      <div id="session-info-body" class="session-info-body"></div>
+    </div>
+  </div>
+  <div id="fs-menu" class="ctx-menu" role="menu" aria-hidden="true" hidden></div>
+  <div id="settings-modal" class="fs-modal" hidden>
+    <div class="fs-dialog settings-dialog" id="settings-dialog">
+      <div class="fs-top">
+        <div class="fs-title">Settings</div>
+        <div class="fs-top-actions">
+          <span id="settings-shell-chip" class="settings-chip muted">Shell: —</span>
+          <button type="button" id="settings-reset" class="icon-btn" title="Reset section defaults">Reset</button>
+          <button type="button" id="settings-save" class="icon-btn" title="Save" disabled>Save</button>
+          <button type="button" id="settings-close" class="icon-btn" title="Close">×</button>
+        </div>
+      </div>
+      <div class="settings-body">
+        <nav class="settings-nav" id="settings-nav">
+          <button type="button" data-sec="runtime" class="sel">Runtime</button>
+          <button type="button" data-sec="memory">Memory &amp; DB</button>
+          <button type="button" data-sec="shell">Shell</button>
+          <button type="button" data-sec="agent">Agent</button>
+          <button type="button" data-sec="mcp">MCP</button>
+          <button type="button" data-sec="ui">UI</button>
+          <button type="button" data-sec="about">About</button>
+        </nav>
+        <div class="settings-pane" id="settings-pane"></div>
+      </div>
+      <div id="settings-banner" class="settings-banner" hidden></div>
+    </div>
+  </div>
+  <div id="fs-modal" class="fs-modal" hidden>
+    <div class="fs-dialog" id="fs-dialog">
+      <div class="fs-top">
+        <div class="fs-title">Workspace</div>
+        <div class="fs-top-actions">
+          <label class="fs-toggle"><input type="checkbox" id="fs-hidden" checked /> Dotfiles</label>
+          <button type="button" id="fs-refresh" class="icon-btn" title="Refresh">↻</button>
+          <button type="button" id="fs-save" class="icon-btn" title="Save" disabled>Save</button>
+          <button type="button" id="fs-close" class="icon-btn" title="Close">×</button>
+        </div>
+      </div>
+      <nav class="fs-crumbs" id="fs-crumbs"></nav>
+      <div class="fs-body" id="fs-body">
+        <div class="fs-list-wrap" id="fs-list-wrap">
+          <div class="fs-list" id="fs-list"></div>
+        </div>
+        <div class="fs-editor-wrap" id="fs-editor-wrap" hidden>
+          <div class="fs-editor-path" id="fs-editor-path"></div>
+          <textarea id="fs-editor" spellcheck="false"></textarea>
+          <div class="fs-meta" id="fs-meta" hidden></div>
+        </div>
+      </div>
+      <div class="fs-drop-hint" id="fs-drop-hint" hidden>Drop files to upload</div>
+    </div>
+  </div>
+  <div id="app">
+    <div id="limp-banner" class="limp-banner" hidden></div>
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <div class="brand">
+          <div class="mark"></div>
+          <span>Marble</span>
+        </div>
+        <div class="sidebar-actions">
+          <button id="btn-sessions" class="icon-btn" type="button" aria-expanded="false" aria-controls="session-panel" title="Sessions">
+            Sessions
+            <span class="chevron" aria-hidden="true">▾</span>
+          </button>
+          <button id="btn-explorer" class="icon-btn" type="button" title="Workspace files" aria-label="Workspace files">📁</button>
+          <a id="btn-mpub" class="icon-btn" href="/mpub" target="_blank" rel="noopener noreferrer" title="mpub — published pages" aria-label="Open mpub published pages">🚀</a>
+          <button id="btn-settings" class="icon-btn" type="button" title="Settings" aria-label="Settings">⚙</button>
+          <button id="btn-new" class="icon-btn" title="New session" type="button">+</button>
+        </div>
+      </div>
+      <div id="session-panel">
+        <label id="show-closed-wrap" class="show-closed">
+          <input type="checkbox" id="show-closed" />
+          Show closed
+        </label>
+        <div id="session-list"></div>
+        <div id="system-agents">
+          <button type="button" id="sys-agents-toggle" class="sys-agents-head" aria-expanded="true">
+            <span>▾ System agents</span>
+            <span id="sys-agents-count" class="muted">0</span>
+          </button>
+          <div id="system-list"></div>
+        </div>
+        <div id="sidebar-foot">
+          <div id="model-label" class="muted">…</div>
+          <div id="mcp-chip" class="muted mcp-chip" title="MCP servers">MCP: —</div>
+          <div id="health" class="muted"></div>
+        </div>
+      </div>
+    </aside>
+    <main id="main">
+      <header id="main-head">
+        <div id="session-title">Select or create a session</div>
+        <div class="main-head-right">
+          <button type="button" id="btn-session-info" class="icon-btn" title="Session info" aria-label="Session info" disabled>ⓘ</button>
+          <div id="status-pill" class="pill idle">idle</div>
+        </div>
+      </header>
+      <div id="transcript"></div>
+      <!-- Host only: JS injects into #transcript after the user message for that turn -->
+      <div id="turn-progress" class="turn-progress tp-parked" hidden>
+        <div class="tp-bar">
+          <div class="tp-title" id="tp-title">Turn</div>
+          <div class="tp-actions">
+            <button type="button" id="tp-expand" class="icon-btn" hidden title="Expand steps">▸</button>
+            <button type="button" id="tp-stop" class="tp-stop" title="Stop turn">■ Stop</button>
+          </div>
+        </div>
+        <div class="tp-body" id="tp-body"></div>
+        <div class="tp-steps" id="tp-steps" hidden></div>
+      </div>
+      <form id="composer">
+        <textarea id="input" rows="2" placeholder="Message Marble…" disabled></textarea>
+        <button id="btn-send" type="submit" disabled>Send</button>
+      </form>
+    </main>
+  </div>
+  <script src="/marked.min.js"></script>
+  <script src="/purify.min.js"></script>
+  <script src="/explorer.js"></script>
+  <script src="/settings.js"></script>
+  <script src="/session-info.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

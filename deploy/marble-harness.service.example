@@ -1,0 +1,24 @@
+[Unit]
+Description=Marble agent harness (web UI + agent loop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Tool jail: often the home directory or a project root
+WorkingDirectory=%h
+EnvironmentFile=-%h/.config/marble/env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Adjust ExecStart path to where you cloned/built Marble
+ExecStart=%h/src/marble/bin/marble-harness \
+  --workspace %h \
+  --memory %h/.marble \
+  --base-url http://127.0.0.1:8000/v1 \
+  --model YourLocalModelId \
+  --addr :8080
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

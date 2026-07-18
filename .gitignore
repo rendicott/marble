@@ -1,0 +1,12 @@
+/bin/
+*.exe
+*.test
+*.out
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+# local operator overrides (never commit)
+/deploy/*.service
+!/deploy/*.service.example

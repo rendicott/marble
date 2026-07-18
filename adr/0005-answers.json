@@ -1,0 +1,256 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0005",
+  "title": "Expanded tools & robust agent loop",
+  "updated_at": "2026-07-17T17:55:38.280Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Hard tool-round stop 80; soft advisory 65",
+      "notes": "",
+      "question": "Q1 Hard stop tool rounds?",
+      "rec": "Hard tool-round stop 80; soft advisory 65"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Soft wall-clock 3 minutes continuous tool rounds → advisory",
+      "notes": "",
+      "question": "Q2 Soft wall-clock without final reply?",
+      "rec": "Soft wall-clock 3 minutes continuous tool rounds → advisory"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Auto-compact only if usage ≥85% for 3 consecutive rounds; else tool-driven session_compact",
+      "notes": "",
+      "question": "Q3 Auto-compact without explicit tool?",
+      "rec": "Auto-compact only if usage ≥85% for 3 consecutive rounds; else tool-driven session_compact"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "LLM summary via system agents (daemon-scheduled). UI: separate System agents list at bottom of left pane — collapsible, short session ids, open/close like user sessions",
+      "notes": "",
+      "question": "Q4 Compaction engine?",
+      "rec": "LLM summary via system agents (daemon-scheduled). UI: separate System agents list at bottom of left pane"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "usage_ratio = est_prompt / (context_limit − max_output − reserve)",
+      "notes": "",
+      "question": "Q5 usage_ratio definition?",
+      "rec": "usage_ratio = est_prompt / (context_limit − max_output − reserve)"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Advisories: collapsible UI chips; omit from session MD; keep in DB session_events",
+      "notes": "",
+      "question": "Q6 Harness advisories persistence?",
+      "rec": "Advisories: collapsible UI chips; omit from session MD; keep in DB session_events"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "/bin/bash -lc if present, else /bin/sh -c",
+      "notes": "",
+      "question": "Q7 Shell binary / invocation?",
+      "rec": "/bin/bash -lc if present, else /bin/sh -c"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "deny_list with strong seed patterns (powerful but foot-gun resistant)",
+      "notes": "",
+      "question": "Q8 Default policy mode?",
+      "rec": "deny_list with strong seed patterns (powerful but foot-gun resistant)"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Only with explicit shell_allow_sudo=true + remove from deny — still no privilege beyond harness",
+      "notes": "",
+      "question": "Q9 Can operators ever allow sudo?",
+      "rec": "Only with explicit shell_allow_sudo=true + remove from deny — still no privilege beyond harness"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes v1 (same as host user); document trust model. Sandbox later ADR",
+      "notes": "",
+      "question": "Q10 Network access unrestricted?",
+      "rec": "Yes v1 (same as host user); document trust model. Sandbox later ADR"
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No cwd outside workspace when shell_cwd_strict=true (default)",
+      "notes": "",
+      "question": "Q11 cwd outside workspace?",
+      "rec": "No cwd outside workspace when shell_cwd_strict=true (default)"
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Filtered parent inherit + limited tool env overlay; drop dangerous bash hooks",
+      "notes": "",
+      "question": "Q12 Environment variables?",
+      "rec": "Filtered parent inherit + limited tool env overlay; drop dangerous bash hooks"
+    },
+    "Q13": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Best-effort path heuristics on by default (block shell targeting --memory)",
+      "notes": "",
+      "question": "Q13 Block shell targeting --memory?",
+      "rec": "Best-effort path heuristics on by default (block shell targeting --memory)"
+    },
+    "Q14": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "--disable-shell CLI plus DB shell_enabled",
+      "notes": "",
+      "question": "Q14 CLI kill-switch?",
+      "rec": "--disable-shell CLI plus DB shell_enabled"
+    },
+    "Q15": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "512 KiB combined stdout/stderr; spill rest to blob; always include exit + timing",
+      "notes": "",
+      "question": "Q15 Output capture limits?",
+      "rec": "512 KiB combined stdout/stderr; spill rest to blob; always include exit + timing"
+    },
+    "Q15b": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Start deny seed with destructive disk + privilege + power control; expand after first week of use. Standard file deletion allowed; block catastrophic patterns like rm -rf /",
+      "notes": "Standard deletion of files should be allowed but no \"rm -rf /\" or anything like that",
+      "question": "Q15b Anything else mandatory on the deny seed list?",
+      "rec": "Start deny seed with destructive disk + privilege + power control; expand after first week of use"
+    },
+    "Q16": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No v1; boot marks orphaned BG tasks dead",
+      "notes": "",
+      "question": "Q16 BG tasks survive harness restart?",
+      "rec": "No v1; boot marks orphaned BG tasks dead"
+    },
+    "Q17": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Max 8 concurrent BG tasks per session",
+      "notes": "",
+      "question": "Q17 Max concurrent BG tasks per session?",
+      "rec": "Max 8 concurrent BG tasks per session"
+    },
+    "Q18": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Continuation max delay 24 hours",
+      "notes": "",
+      "question": "Q18 Continuation max delay?",
+      "rec": "Continuation max delay 24 hours"
+    },
+    "Q19": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Fire on whichever comes first (delay_sec or wait_for_task); require at least one",
+      "notes": "",
+      "question": "Q19 Both delay_sec and wait_for_task?",
+      "rec": "Fire on whichever comes first (delay_sec or wait_for_task); require at least one"
+    },
+    "Q20": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Cancel continuations on session close",
+      "notes": "",
+      "question": "Q20 Continuations when session closed?",
+      "rec": "Cancel continuations on session close"
+    },
+    "Q21": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Persist schedules to SQLite in normal mode; in-memory only when limp",
+      "notes": "",
+      "question": "Q21 Persist schedules to SQLite?",
+      "rec": "Persist schedules to SQLite in normal mode; in-memory only when limp"
+    },
+    "Q22": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Prior-read required for apply_patch update; not for add/delete",
+      "notes": "",
+      "question": "Q22 Prior-read for apply_patch?",
+      "rec": "Prior-read required for apply_patch update; not for add/delete"
+    },
+    "Q23": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Fail if old_string matches more than once unless replace_all",
+      "notes": "",
+      "question": "Q23 Non-unique old_string?",
+      "rec": "Fail if old_string matches more than once unless replace_all"
+    },
+    "Q24": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Temp files + rename; reverse ops for deletes; test multi-file failure mid-batch",
+      "notes": "",
+      "question": "Q24 Rollback implementation style?",
+      "rec": "Temp files + rename; reverse ops for deletes; test multi-file failure mid-batch"
+    },
+    "Q25": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "memory_write only under $MEMORY/knowledge/",
+      "notes": "",
+      "question": "Q25 Where may memory_write create files?",
+      "rec": "memory_write only under $MEMORY/knowledge/"
+    },
+    "Q26": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Skill roots: $MEMORY/skills + $WORKSPACE/.marble/skills",
+      "notes": "",
+      "question": "Q26 Skill discovery roots?",
+      "rec": "Skill roots: $MEMORY/skills + $WORKSPACE/.marble/skills"
+    },
+    "Q27": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "attach_file is UI event only; does not inject bytes into model context",
+      "notes": "",
+      "question": "Q27 Does attach_file inject bytes into model context?",
+      "rec": "attach_file is UI event only; does not inject bytes into model context"
+    },
+    "Q28": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Keep both list_files and glob",
+      "notes": "",
+      "question": "Q28 Keep list_files alongside glob?",
+      "rec": "Keep both list_files and glob"
+    },
+    "Q29": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Register full tool suite always in v1; tool profiles later if schema tax hurts",
+      "notes": "",
+      "question": "Q29 Always register full tool suite?",
+      "rec": "Register full tool suite always in v1; tool profiles later if schema tax hurts"
+    },
+    "Q30": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "CLI --max-tool-iters hard default 80; soft 65 via setting/constant",
+      "notes": "",
+      "question": "Q30 CLI --max-tool-iters default?",
+      "rec": "CLI --max-tool-iters hard default 80; soft 65 via setting/constant"
+    }
+  }
+}

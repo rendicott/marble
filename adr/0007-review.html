@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0007 Settings UI</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 10% -10%, #1a2848 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #1a2e24 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #94a3b8, var(--accent));
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 72ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid #2d6a4f; color: #a7f3d0;
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .callout {
+      border-left: 3px solid var(--ok); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+  </style>
+</head>
+<body data-adr="0007" data-adr-title="Settings UI">
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0007</span>
+      <span class="status">ACCEPTED · ready to implement</span>
+    </div>
+    <nav class="toc">
+      <a href="#locked">Locked</a>
+      <a href="#sections">Sections</a>
+      <a href="#impl">Implement</a>
+      <a href="0006-review.html">0006 MCP</a>
+      <a href="0003-review.html">0003 DB</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Settings UI — decisions locked</h1>
+      <p class="lede">
+        Answers from <code>0007-answers.json</code> applied. Gear modal with runtime
+        read-only CLI, editable DB settings, shell policy, UI prefs, and <strong>MCP included in v1</strong>.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Answered</b>2026-07-18T02:29:38Z</div>
+        <div class="meta"><b>Source</b><code>adr/0007-answers.json</code></div>
+        <div class="meta"><b>ADR</b><code>adr/0007-settings-ui.md</code></div>
+      </div>
+      <div class="chips">
+        <span class="chip">⚙ next to 📁</span>
+        <span class="chip">modal</span>
+        <span class="chip">left nav / mobile tabs</span>
+        <span class="chip">CLI model/URL RO</span>
+        <span class="chip">MCP in v1</span>
+        <span class="chip">shell confirm</span>
+      </div>
+    </section>
+
+    <section id="locked">
+      <h2>Locked decisions (Q1–Q15)</h2>
+      <table>
+        <thead><tr><th>Q</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td>Q1</td><td>Sidebar: Sessions · folder · <strong>gear</strong> · +</td></tr>
+          <tr><td>Q2</td><td>Modal (like explorer)</td></tr>
+          <tr><td>Q3</td><td>Left nav desktop; top tabs mobile</td></tr>
+          <tr><td>Q4</td><td>Model + base_url CLI-only, read-only in UI</td></tr>
+          <tr><td>Q5</td><td>Label: “from launch flags — restart to change”</td></tr>
+          <tr><td>Q6</td><td>Agent loop thresholds CLI/code; read-only if cheap</td></tr>
+          <tr><td>Q7</td><td>Multi-line patterns → JSON array in DB</td></tr>
+          <tr><td>Q8</td><td>Confirm Save if any <code>shell_*</code> key changes</td></tr>
+          <tr><td>Q9</td><td>Effective shell status chip</td></tr>
+          <tr><td>Q10</td><td>Unknown PUT keys → 400</td></tr>
+          <tr><td>Q11</td><td>Reset defaults for Memory &amp; Shell</td></tr>
+          <tr><td>Q12</td><td>No export/import UI</td></tr>
+          <tr><td>Q13</td><td>Live-apply shell settings from DB</td></tr>
+          <tr><td>Q14</td><td><strong>Include MCP in Settings v1</strong> (custom vs original “later”)</td></tr>
+          <tr><td>Q15</td><td>UI prefs defaults in Settings; in-context toggles remain</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="sections">
+      <h2>Sections to build</h2>
+      <table>
+        <thead><tr><th>Section</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td>Runtime</td><td>Read-only CLI + limp/schema</td></tr>
+          <tr><td>Memory &amp; DB</td><td>Edit retention / inline max; Reset</td></tr>
+          <tr><td>Shell</td><td>Edit policy; confirm Save; chip; Reset</td></tr>
+          <tr><td>Agent</td><td>Read-only loop thresholds</td></tr>
+          <tr><td>MCP / Integrations</td><td>Manage <code>mcp.json</code> servers (ADR-0006)</td></tr>
+          <tr><td>UI</td><td>Default prefs (dotfiles, show closed, …)</td></tr>
+          <tr><td>About</td><td>Health, paths, MCP summary</td></tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        Reply <strong>implement</strong> when you want coding to start.
+      </div>
+    </section>
+
+    <section id="impl">
+      <h2>Implementation order</h2>
+      <ol>
+        <li>DB settings list/set + validation</li>
+        <li><code>GET/PUT /api/settings</code> + shell_effective</li>
+        <li>MCP config API for UI (if gaps after ADR-0006)</li>
+        <li>Modal + gear + all sections</li>
+        <li>Confirms, limp, reset, tests</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer>Marble · ADR-0007 · accepted</footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>
