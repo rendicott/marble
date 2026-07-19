@@ -34,7 +34,7 @@
     }
     .status {
       font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
-      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
       font-family: var(--mono);
     }
     nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
@@ -46,7 +46,6 @@
     }
     h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
     h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
-    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
     .muted { color: var(--muted); }
     .lede { color: var(--muted); max-width: 72ch; }
     table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
@@ -67,7 +66,7 @@
     }
     .chip strong { color: var(--text); }
     .callout {
-      border-left: 3px solid var(--accent); background: var(--panel-2);
+      border-left: 3px solid var(--ok); background: var(--panel-2);
       padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
     }
     .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
@@ -76,8 +75,6 @@
       border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
     }
     .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
     footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
   </style>
 </head>
@@ -86,13 +83,11 @@
     <div class="brand">
       <div class="mark"></div>
       <span>Marble · ADR-0014</span>
-      <span class="status">PROPOSED · review</span>
+      <span class="status">ACCEPTED · ready to implement</span>
     </div>
     <nav class="toc">
-      <a href="#why">Why</a>
+      <a href="#locked">Decisions</a>
       <a href="#tool">Tool</a>
-      <a href="#drivers">Drivers</a>
-      <a href="#questions">Questions</a>
       <a href="0005-review.html">0005</a>
       <a href="0010-review.html">0010</a>
     </nav>
@@ -100,167 +95,80 @@
 
   <main>
     <section>
-      <h1><code>call_agent_process</code> — external harnesses</h1>
+      <h1><code>call_agent_process</code></h1>
       <p class="lede">
-        Keep Marble’s multi-session UX; delegate deep coding work to headless
-        <strong>Claude Code</strong> / <strong>Grok Build</strong> (and future CLIs) via a
-        generic tool + driver adapters.
+        Answers from <code>0014-answers.json</code> applied. Generic tool + grok/claude drivers;
+        <strong>auto-approve</strong>, <strong>BG-first</strong> long runs, <strong>workdir</strong> isolation, cap 10/session.
       </p>
       <div class="meta-row">
-        <div class="meta"><b>Date</b>2026-07-18</div>
-        <div class="meta"><b>Source</b><code>adr/0014-call-agent-process.md</code></div>
+        <div class="meta"><b>Answered</b>2026-07-19T00:36:16.626Z</div>
+        <div class="meta"><b>Source</b><code>adr/0014-answers.json</code></div>
       </div>
       <div class="chips">
-        <span class="chip"><strong>tool</strong> call_agent_process</span>
-        <span class="chip"><strong>format</strong> grok | claude</span>
-        <span class="chip"><strong>mode</strong> headless -p</span>
-        <span class="chip"><strong>cwd</strong> workspace jail</span>
-      </div>
-    </section>
-
-    <section id="why">
-      <h2>1. Why</h2>
-      <div class="grid-2">
-        <div>
-          <h3>Marble</h3>
-          <ul>
-            <li>Sessions, memory, soul, MCP, progress UI</li>
-            <li>Operator cockpit</li>
-          </ul>
-        </div>
-        <div>
-          <h3>External harnesses</h3>
-          <ul>
-            <li>Deep multi-file agent loops</li>
-            <li>Specialized models/tools/permissions</li>
-            <li>Headless: <code>claude -p</code>, <code>grok -p … --output-format json</code></li>
-          </ul>
-        </div>
-      </div>
-      <div class="callout">
-        Not arbitrary shell — dedicated tool + allowlisted drivers, argv built in-process (no shell injection).
+        <span class="chip"><strong>format</strong> grok\|claude</span>
+        <span class="chip"><strong>auto-approve</strong> default</span>
+        <span class="chip"><strong>bg</strong> preferred</span>
+        <span class="chip"><strong>workdir</strong> easy</span>
+        <span class="chip"><strong>cap</strong> 10/session</span>
       </div>
     </section>
 
     <section id="tool">
-      <h2>2. Tool sketch</h2>
+      <h2>1. Tool (locked)</h2>
       <pre class="mock">call_agent_process({
-  format: "grok" | "claude",   // driver
-  prompt: "…",                 // required
-  cwd?: "rel/path",            // under workspace
-  output_format?: "plain"|"json",
-  timeout_sec?: number,
-  extra_args?: string[]        // driver-allowlisted
-})
-
-→ {
-  format, ok, exit_code, duration_ms, cwd,
-  summary,   // primary text for Marble model
-  raw?,      // parsed vendor JSON if any
-  stderr_tail?
-}</pre>
+  format: "grok" | "claude",
+  prompt: "…",
+  cwd?: "…",
+  workdir?: "dedicated/subdir",  // mkdir under workspace
+  background?: true,             // preferred for long runs
+  output_format?: "json"|"plain",
+  timeout_sec?: number,          // high defaults (e.g. 30m)
+  model?: string,
+  extra_args?: string[]
+})</pre>
+      <div class="callout">
+        System prompt: use <code>background=true</code> / bgtask for multi-minute external agents;
+        auto-approve is on — scope prompt + workdir carefully.
+      </div>
     </section>
 
-    <section id="drivers">
-      <h2>3. Drivers (illustrative argv)</h2>
-      <pre class="mock"># Grok Build (local --help)
-grok -p "$PROMPT" --output-format json --cwd "$CWD" …
-
-# Claude Code (ecosystem; verify at implement)
-claude -p "$PROMPT" …</pre>
-      <p class="muted">Config: <code>$MEMORY/agent_process.json</code> — enable drivers, command path, default_args, timeouts.</p>
+    <section id="locked">
+      <h2>2. Decisions locked (Q1–Q14)</h2>
       <table>
-        <thead><tr><th>Concern</th><th>Rec</th></tr></thead>
+        <thead><tr><th>ID</th><th>Decision</th></tr></thead>
         <tbody>
-          <tr><td>cwd</td><td>Must resolve inside Marble workspace</td></tr>
-          <tr><td>Cancel</td><td>Turn Stop → process group kill (like shell)</td></tr>
-          <tr><td>Concurrency</td><td>1 external agent per session (v1)</td></tr>
-          <tr><td>Streaming</td><td>Wait for exit in v1</td></tr>
+          <tr><td>Q1</td><td><code>call_agent_process</code></td></tr>
+          <tr><td>Q2</td><td><code>format</code> = grok \| claude</td></tr>
+          <tr><td>Q3</td><td>Both drivers if binary resolves</td></tr>
+          <tr><td>Q4</td><td>Prefer json</td></tr>
+          <tr><td>Q5</td><td><strong>BG-first</strong> + high timeouts + prompt nudge</td></tr>
+          <tr><td>Q6</td><td><strong>Default auto-approve</strong></td></tr>
+          <tr><td>Q7</td><td>Cap <strong>10</strong> / session</td></tr>
+          <tr><td>Q8</td><td>Stop kills PG</td></tr>
+          <tr><td>Q9</td><td>No sandbox; easy <strong>workdir</strong></td></tr>
+          <tr><td>Q10</td><td>Defer resume</td></tr>
+          <tr><td>Q11</td><td><code>agent_process.json</code></td></tr>
+          <tr><td>Q12</td><td>User sessions; system optional off</td></tr>
+          <tr><td>Q13</td><td>Optional model / extra_args</td></tr>
+          <tr><td>Q14</td><td>Defer worktree flag</td></tr>
         </tbody>
       </table>
-    </section>
-
-    <section id="questions">
-      <h2>4. Open questions</h2>
-      <p class="muted">Toolbar: <strong>Use rec</strong> / Custom / Defer → Save <code>0014-answers.json</code>.</p>
-
-      <h3>Scope &amp; API</h3>
-      <div class="q" data-qid="Q1" data-status="open" data-rec="call_agent_process">
-        <strong>Q1</strong> Tool name?
-        <div class="rec">Rec: call_agent_process.</div>
-      </div>
-      <div class="q" data-qid="Q2" data-status="open" data-rec="format (grok|claude) as driver key">
-        <strong>Q2</strong> Parameter name: format vs driver vs harness?
-        <div class="rec">Rec: format.</div>
-      </div>
-      <div class="q" data-qid="Q3" data-status="open" data-rec="Both grok and claude drivers in v1; enable if binary resolves">
-        <strong>Q3</strong> Which drivers in v1?
-        <div class="rec">Rec: both interfaces; enable if present.</div>
-      </div>
-      <div class="q" data-qid="Q4" data-status="open" data-rec="Prefer json when driver supports it, else plain">
-        <strong>Q4</strong> Default output_format?
-        <div class="rec">Rec: json when supported.</div>
-      </div>
-      <div class="q" data-qid="Q5" data-status="open" data-rec="Wait-only v1; design for streaming-json later">
-        <strong>Q5</strong> Streaming child output in v1?
-        <div class="rec">Rec: wait-only.</div>
-      </div>
-
-      <h3>Process &amp; safety</h3>
-      <div class="q" data-qid="Q6" data-status="open" data-rec="Configurable default_args; document auto-approve risk; no forced always-approve in core">
-        <strong>Q6</strong> Default permission / auto-approve flags?
-        <div class="rec">Rec: config default_args only.</div>
-      </div>
-      <div class="q" data-qid="Q7" data-status="open" data-rec="Max 1 concurrent external agent per session in v1">
-        <strong>Q7</strong> Concurrency cap?
-        <div class="rec">Rec: 1 per session.</div>
-      </div>
-      <div class="q" data-qid="Q8" data-status="open" data-rec="Yes — Stop kills process group">
-        <strong>Q8</strong> Kill child on Marble turn Stop?
-        <div class="rec">Rec: yes.</div>
-      </div>
-      <div class="q" data-qid="Q9" data-status="open" data-rec="Defer OS sandbox; optional via driver default_args">
-        <strong>Q9</strong> Extra sandbox for child?
-        <div class="rec">Rec: defer.</div>
-      </div>
-
-      <h3>Product</h3>
-      <div class="q" data-qid="Q10" data-status="open" data-rec="Defer resume/continue; always new headless run in v1">
-        <strong>Q10</strong> Resume external sessions?
-        <div class="rec">Rec: defer.</div>
-      </div>
-      <div class="q" data-qid="Q11" data-status="open" data-rec="$MEMORY/agent_process.json v1; Settings UI later">
-        <strong>Q11</strong> Config file vs Settings UI?
-        <div class="rec">Rec: file v1.</div>
-      </div>
-      <div class="q" data-qid="Q12" data-status="open" data-rec="Available on user sessions; optional disable for system agents">
-        <strong>Q12</strong> System agents may call external harnesses?
-        <div class="rec">Rec: user yes; system optional disable.</div>
-      </div>
-      <div class="q" data-qid="Q13" data-status="open" data-rec="Optional model field or allowlisted extra_args">
-        <strong>Q13</strong> Passthrough --model?
-        <div class="rec">Rec: optional / extra_args.</div>
-      </div>
-      <div class="q" data-qid="Q14" data-status="open" data-rec="Defer dedicated worktree flag; extra_args for grok --worktree">
-        <strong>Q14</strong> Worktree isolation first-class?
-        <div class="rec">Rec: defer / extra_args.</div>
-      </div>
+      <p class="muted">Full text: <code>adr/0014-call-agent-process.md</code></p>
     </section>
 
     <section>
-      <h2>5. Implementation order (post-accept)</h2>
+      <h2>3. Implementation order</h2>
       <ol>
-        <li>Driver interface + config load</li>
-        <li>grok + claude BuildCmd / ParseResult</li>
-        <li>call_agent_process tool + PGroup kill</li>
-        <li>System prompt line + example config</li>
-        <li>Tests + manual grok -p smoke</li>
+        <li>Driver interface + agent_process.json</li>
+        <li>grok/claude + auto-approve argv</li>
+        <li>Tool: workdir, background, concurrency 10, Stop kill</li>
+        <li>System prompt nudge</li>
+        <li>Tests + manual smoke</li>
       </ol>
-      <div class="callout">Full text: <code>adr/0014-call-agent-process.md</code></div>
     </section>
   </main>
 
-  <footer>Marble · ADR-0014 design review · not an implementation</footer>
+  <footer>Marble · ADR-0014 accepted · ready to implement</footer>
   <script src="review-kit.js"></script>
 </body>
 </html>

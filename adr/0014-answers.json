@@ -1,0 +1,80 @@
+{
+  "adr": "0014",
+  "title": "call_agent_process — Drive External Agent Harnesses",
+  "answered_at": "2026-07-19T00:36:16.626Z",
+  "answers": {
+    "Q1": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "call_agent_process"
+    },
+    "Q2": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "format (grok|claude) as driver key"
+    },
+    "Q3": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Both grok and claude drivers in v1; enable if binary resolves"
+    },
+    "Q4": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Prefer json when driver supports it, else plain"
+    },
+    "Q5": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Wait only, but almost every call would be bgtask. Tool needs to know this and likely very high timeouts and system prompt nudges to call it as bgtask",
+      "notes": "Synchronous wait in tool implementation; operators/model should wrap via start_background_task for long runs; high default timeouts; system prompt nudge"
+    },
+    "Q6": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Default auto approve, can't have it blocking asking for permission",
+      "notes": "Drivers pass non-interactive auto-approve flags by default (e.g. grok --always-approve / equivalent claude flags)"
+    },
+    "Q7": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Cap at 10 per session"
+    },
+    "Q8": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — Stop kills process group"
+    },
+    "Q9": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "No sandbox, but a way to give it a dedicated directory easily is desired",
+      "notes": "No OS sandbox; first-class easy dedicated work directory (under workspace) for the child agent"
+    },
+    "Q10": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer resume/continue; always new headless run in v1"
+    },
+    "Q11": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "$MEMORY/agent_process.json v1; Settings UI later"
+    },
+    "Q12": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Available on user sessions; optional disable for system agents"
+    },
+    "Q13": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Optional model field or allowlisted extra_args"
+    },
+    "Q14": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer dedicated worktree flag; extra_args for grok --worktree"
+    }
+  }
+}

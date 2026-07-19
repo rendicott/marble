@@ -2,143 +2,101 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Proposed |
+| **Status** | Accepted (ready to implement) |
 | **Date** | 2026-07-18 |
 | **Deciders** | Project owner |
 | **Tags** | tools, subprocess, agents, claude-code, grok-build, orchestration |
 | **Extends** | ADR-0005 (tools / shell / BG), ADR-0010 (turn cancel / timeouts), ADR-0001 (inner loop) |
+| **Answers** | `adr/0014-answers.json` (`2026-07-19T00:36:16.626Z`) |
 
 ## Context
 
-Marble is strong at **ergonomics**: multi-session UI, memory, soul, MCP, turn progress, workspace jail, mpub. Other harnesses (e.g. **Claude Code**, **Grok Build**) are strong at **deep coding loops**, specialized tools, models, and permission UIs.
+Marble is strong at **ergonomics** (sessions, memory, soul, MCP, progress UI). External harnesses (**Claude Code**, **Grok Build**) are strong at **deep coding loops**. Operators want both: stay in Marble while delegating hard work to a headless external agent, then fold results back.
 
-Operators want **both**: stay in Marble’s chat UX while occasionally **delegating hard work** to an external headless agent process, then fold the result back into the Marble session.
+Headless entry points (illustrative):
 
-Both ecosystems already expose **print / single-shot** style CLIs suitable for subprocess driving:
-
-| Harness | Typical headless entry | Notes |
-|---------|------------------------|--------|
-| **Claude Code** | `claude -p "…"` (print / non-interactive) | Common pattern for scripted one-shot agent runs; flags evolve — driver must version-check |
-| **Grok Build** | `grok -p "…" --output-format json` (also `--single`) | Confirmed locally: `-p, --single` “prints the response to stdout and exits”; `--output-format` ∈ `plain`, `json`, `streaming-json`; also `grok agent`, `--cwd`, `--max-turns`, `--permission-mode`, `--always-approve`, etc. |
-
-**Similarities:** prompt in → agent work → text/JSON out; cwd matters; long runtime; need timeouts/cancel.  
-**Differences:** flag names, permission models, output schemas, auth, streaming, resume/session ids.
-
-A **generic tool** with a **driver** argument keeps Marble from hard-coding one vendor forever.
+| Harness | Headless |
+|---------|----------|
+| **Grok Build** | `grok -p "…" --output-format json` |
+| **Claude Code** | `claude -p "…"` (verify flags at implement) |
 
 ## Goals
 
-1. Add a first-class tool **`call_agent_process`** that spawns a configured external agent CLI.  
-2. **`format` / driver** argument selects an adapter (`claude`, `grok`, later others).  
-3. Capture **stdout/stderr**, exit code, duration; return a **normalized result** to the Marble model.  
-4. Prefer **structured output** when the driver supports it (`json` / streaming later).  
-5. Honor **workspace cwd**, **timeouts**, **turn cancel** (ADR-0010), and shell-like **safety** (allowlist of formats, no arbitrary shell).  
-6. Preserve Marble UX: tool bubble + optional progress while the child runs.
+1. Tool **`call_agent_process`** with **`format`**: `grok` | `claude` (**Q1**, **Q2**).  
+2. Both drivers in v1 if binary resolves (**Q3**).  
+3. Prefer **json** output when supported (**Q4**).  
+4. **Auto-approve** by default — never block on interactive permission prompts (**Q6**).  
+5. **High timeouts**; tool designed for **background-task** usage; system prompt nudges `start_background_task` for long runs (**Q5**).  
+6. Cap **10** concurrent/tracked external agents per session (**Q7**).  
+7. Turn **Stop** kills process group (**Q8**).  
+8. **No OS sandbox**; easy **dedicated directory** under workspace for the child (**Q9**).  
+9. Config: `$MEMORY/agent_process.json` (**Q11**).
 
 ## Non-goals (v1)
 
-- Embedding Claude/Grok SDKs as libraries (subprocess CLI only).  
-- Fully interactive TUI attach from the browser.  
-- Bidirectional multi-turn “remote control” of a live TUI session (resume/continue is open Q).  
-- Replacing Marble’s own agent loop.  
-- Arbitrary `exec` of unregistered binaries.
+- Resume/continue external sessions (**Q10** deferred)  
+- Dedicated git worktree flag (**Q14** — use `extra_args` / grok `--worktree`)  
+- Settings UI for agent_process (**Q11** later)  
+- Streaming child stdout into turn steps (wait for exit)  
+- Arbitrary shell exec  
 
-## Decision (proposed)
+## Decision
 
-### 1. Tool name & schema
+### Tool
 
 ```json
 {
   "name": "call_agent_process",
-  "description": "Run an external coding agent harness (headless) and return its result. Use for deep multi-file coding, refactors, or tasks better handled by Claude Code or Grok Build. Prefer Marble tools for simple FS/shell. Requires format (driver) and prompt.",
   "parameters": {
-    "type": "object",
-    "properties": {
-      "format": {
-        "type": "string",
-        "enum": ["grok", "claude"],
-        "description": "Driver / harness family"
-      },
-      "prompt": {
-        "type": "string",
-        "description": "Task prompt for the external agent"
-      },
-      "cwd": {
-        "type": "string",
-        "description": "Working directory relative to Marble workspace (default: workspace root)"
-      },
-      "output_format": {
-        "type": "string",
-        "enum": ["plain", "json"],
-        "description": "Preferred child output (driver maps to CLI flags). Default json when supported, else plain"
-      },
-      "timeout_sec": {
-        "type": "integer",
-        "description": "Wall timeout (clamped by harness max)"
-      },
-      "extra_args": {
-        "type": "array",
-        "items": { "type": "string" },
-        "description": "Optional allowlisted extra CLI args (driver-validated)"
-      }
+    "format": { "enum": ["grok", "claude"] },
+    "prompt": { "type": "string" },
+    "cwd": { "type": "string", "description": "Rel path under workspace; default root" },
+    "workdir": {
+      "type": "string",
+      "description": "Optional dedicated subdir under workspace created if missing (easy isolation — Q9)"
     },
-    "required": ["format", "prompt"]
-  }
+    "output_format": { "enum": ["plain", "json"] },
+    "timeout_sec": { "type": "integer" },
+    "model": { "type": "string" },
+    "extra_args": { "type": "array", "items": { "type": "string" } },
+    "background": {
+      "type": "boolean",
+      "description": "If true, spawn via background-task style and return task id immediately (preferred for long runs — Q5)"
+    }
+  },
+  "required": ["format", "prompt"]
 }
 ```
 
-Name is intentionally **generic** (`call_agent_process` + `format`), not `call_claude` / `call_grok`.
+**Rec implementation note for Q5:**  
+- Tool supports **sync wait** (default for short probes) **and** **`background: true`** (or always recommend BG) that uses the existing BG task machinery / same process group tracking.  
+- **Default timeout** high (e.g. **15–30 minutes**); max higher (e.g. **2 hours**) via config.  
+- System prompt: *for non-trivial external agent work, call with background=true (or start_background_task wrapping) so Marble turn is not blocked for half an hour.*
 
-### 2. Driver interface (in-process adapters)
+### Drivers
 
-```text
-Driver {
-  Name() string                    // "grok" | "claude"
-  ResolveBinary() (path, error)    // PATH or config override
-  BuildCmd(req) (argv, env, cwd)   // argv only — no shell
-  ParseResult(stdout, stderr, code) NormalizedResult
-  SupportsJSON() bool
-}
-```
+- **grok** + **claude** adapters; enable if `command` resolves on PATH (**Q3**).  
+- Default argv includes **auto-approve / non-interactive permission** flags so the child never waits on TTY (**Q6**).  
+  - Grok: e.g. `--always-approve` and/or `--permission-mode bypassPermissions` (confirm best non-blocking combo at implement).  
+  - Claude: equivalent print/non-interactive permission flags (verify at implement).  
+- Default `output_format`: **json** if driver supports, else **plain** (**Q4**).  
+- Optional **`model`** field or allowlisted **`extra_args`** (**Q13**).  
+- **No resume** — always new headless run (**Q10**).
 
-**Normalized result (tool return text / JSON):**
+### Dedicated directory (Q9)
 
-```json
-{
-  "format": "grok",
-  "ok": true,
-  "exit_code": 0,
-  "duration_ms": 12345,
-  "cwd": "/abs/path",
-  "summary": "…primary assistant text…",
-  "raw": { },
-  "stderr_tail": "…"
-}
-```
+- No OS sandbox.  
+- First-class **`workdir`** (or `dedicated_dir`) argument: resolve under workspace, **mkdir -p**, set child **cwd** there.  
+- Makes “give the agent its own folder” one field without inventing shell mkdir steps.  
+- Still no dedicated git worktree flag (**Q14** deferred).
 
-Drivers map vendor JSON → `summary` + optional `raw`.
+### Concurrency & cancel
 
-### 3. Example argv (illustrative; exact flags owned by driver + version)
+- **Max 10** external agent processes per Marble session (**Q7**).  
+- Marble turn **Stop** → SIGTERM/SIGKILL process group (**Q8**).  
+- BG mode: `KillSession` / existing BG kill paths also terminate children.
 
-**Grok Build (confirmed shape):**
-
-```bash
-grok -p "$PROMPT" --output-format json --cwd "$CWD" [--max-turns N] …
-# equivalent: grok --single "$PROMPT" --output-format json
-```
-
-**Claude Code (ecosystem convention — verify at implement time):**
-
-```bash
-claude -p "$PROMPT" [--output-format json] …
-# or: claude --print "$PROMPT"
-```
-
-Drivers may probe `--help` / version once and cache capability bits.
-
-### 4. Configuration
-
-**Rec:** `$MEMORY/agent_process.json` (or Settings subsection later):
+### Config (`$MEMORY/agent_process.json`)
 
 ```json
 {
@@ -147,162 +105,95 @@ Drivers may probe `--help` / version once and cache capability bits.
       "enabled": true,
       "command": "grok",
       "default_output_format": "json",
-      "default_args": ["--permission-mode", "acceptEdits"],
-      "env": {}
+      "default_args": ["--always-approve"],
+      "auto_approve": true
     },
     "claude": {
       "enabled": true,
       "command": "claude",
-      "default_output_format": "plain",
+      "default_output_format": "json",
       "default_args": [],
-      "env": {}
+      "auto_approve": true
     }
   },
-  "max_timeout_sec": 900,
-  "default_timeout_sec": 300,
-  "max_output_bytes": 1048576
+  "default_timeout_sec": 1800,
+  "max_timeout_sec": 7200,
+  "max_per_session": 10,
+  "max_output_bytes": 1048576,
+  "system_agents_enabled": false
 }
 ```
 
-- Missing binary ⇒ clear tool error (“install claude / grok or set command path”).  
-- Secrets stay in process env / operator login for those CLIs — Marble does not store API keys for them in v1.
+System agents: tool available on **user** sessions; **optional disable** for system agents via config (**Q12** — default off for system).
 
-### 5. Safety
-
-| Concern | Proposal |
-|---------|----------|
-| Binary | Only registered drivers; resolve via config + PATH |
-| Args | Built by driver; `extra_args` filtered against allowlist |
-| cwd | Must resolve **inside** Marble workspace (same as shell jail) |
-| Timeout | Default 5m, max e.g. 15m; turn cancel kills process group |
-| Concurrency | Soft cap (e.g. 1–2 concurrent external agents per session) — open Q |
-| Permissions | Document that child may edit files under cwd with its own policy; Marble does not sandbox the child beyond cwd + process kill |
-| Output | Truncate to max tool result; spill large stdout to blob if needed |
-
-**Not** routed through `shell_execute` string — dedicated tool avoids shell injection and policy noise.
-
-### 6. UX / progress
-
-- While running: turn progress shows tool `call_agent_process` / phase `running_tool` (existing ADR-0010).  
-- Optional later: stream child `streaming-json` into progress steps (v2).  
-- v1: wait for process exit; return aggregated result.
-
-### 7. System prompt guidance
-
-Short policy:
+### System prompt nudge
 
 ```text
-External agents: use call_agent_process(format=grok|claude, prompt=…) for large multi-file coding or harness-specific strengths. Prefer Marble tools for simple reads/edits/shell. Pass a clear self-contained prompt and cwd under the workspace. Summarize the external result for the user; do not re-run blindly on failure — inspect stderr_tail.
+External agents: use call_agent_process(format=grok|claude, prompt=…) for large multi-file coding.
+For long runs set background=true (or use start_background_task) — do not block the Marble turn on multi-minute jobs.
+Use workdir for a dedicated subfolder under the workspace. Prefer Marble tools for simple edits.
+Auto-approve is on for the child; scope the prompt and workdir carefully.
 ```
 
-### 8. Relationship to existing tools
+## Decisions locked (Q1–Q14)
 
-| Tool | Use when |
-|------|----------|
-| Marble FS / edit / shell | Small, controlled changes |
-| MCP / web_fetch | Research |
-| **`call_agent_process`** | “Bring a bigger agent” for a scoped task |
-| `start_background_task` | Long shell jobs **without** agent loop |
+| ID | Decision |
+|----|----------|
+| **Q1** | Tool name: **`call_agent_process`** |
+| **Q2** | Driver key: **`format`** (`grok` \| `claude`) |
+| **Q3** | Both drivers in v1 if binary resolves |
+| **Q4** | Prefer **json**, else plain |
+| **Q5** | Wait-capable tool; **BG is the normal path** — high timeouts + prompt nudge to use as bgtask / `background=true` |
+| **Q6** | **Default auto-approve** (non-blocking) |
+| **Q7** | Cap **10** per session |
+| **Q8** | Stop kills process group |
+| **Q9** | **No sandbox**; easy **dedicated directory** (`workdir`) |
+| **Q10** | Defer resume/continue |
+| **Q11** | `$MEMORY/agent_process.json`; Settings later |
+| **Q12** | User sessions yes; system agents optional (default off) |
+| **Q13** | Optional `model` / allowlisted `extra_args` |
+| **Q14** | Defer worktree flag; `extra_args` for grok `--worktree` |
 
-## Architecture
+## Implementation sketch
 
-```
-Marble agent loop
-    │
-    ├─ tools.Execute("call_agent_process", …)
-    │       │
-    │       ▼
-    │  DriverRegistry.Get(format)
-    │       │
-    │       ├─ grokDriver.BuildCmd → exec.CommandContext (Setpgid)
-    │       └─ claudeDriver.BuildCmd → exec.CommandContext
-    │
-    ▼
-NormalizedResult → tool_result → model continues in Marble
-```
-
-## Open questions
-
-### Scope & API
-
-1. **Tool name:** `call_agent_process` vs `run_agent` vs `delegate_agent`?  
-   *Rec: `call_agent_process`.*  
-2. **Driver key name:** `format` vs `driver` vs `harness`?  
-   *Rec: `format` (your term) or `driver` — pick one; rec **`format`** for user wording.*  
-3. **v1 drivers:** grok + claude both, or grok-first (binary present here)?  
-   *Rec: both interfaces; enable whichever binary resolves.*  
-4. **Default `output_format`:** json when supported else plain?  
-   *Rec: yes.*  
-5. **Streaming:** v1 wait-only vs stream stderr/progress?  
-   *Rec: wait-only v1; design ParseResult for future streaming-json.*  
-
-### Process & safety
-
-6. **Auto-approve:** pass grok `--always-approve` / claude equivalent by default?  
-   *Rec: configurable default_args; document risk; default conservative or acceptEdits — open.*  
-7. **Max concurrent external agents per session?**  
-   *Rec: 1 in v1.*  
-8. **Kill on Marble turn Stop?**  
-   *Rec: yes — process group SIGTERM→SIGKILL (same as shell).*  
-9. **Network/FS sandbox for child?**  
-   *Rec: defer; rely on child CLI sandbox flags if operator sets them in default_args.*  
-
-### Product
-
-10. **Resume / continue external session** (`-c`, `--resume`)?  
-    *Rec: defer v1; always new headless run.*  
-11. **Config location:** `$MEMORY/agent_process.json` vs Settings UI?  
-    *Rec: file v1; Settings later.*  
-12. **Expose in system agents?**  
-    *Rec: yes if enabled (same tool registry); optional disable for system kind.*  
-13. **Cost / model selection** passthrough (`--model`)?  
-    *Rec: optional field or extra_args allowlist.*  
-14. **Worktree isolation** (grok `--worktree`)?  
-    *Rec: optional driver feature via extra_args or dedicated flag later.*  
-
-## Implementation sketch (post-accept)
-
-1. `internal/agentproc/` — Driver interface, config load, exec helper (PTY? no — pipes).  
-2. `grok` + `claude` drivers with BuildCmd/ParseResult.  
-3. Wire `call_agent_process` in tools registry + specs.  
-4. Config example + README.  
-5. System prompt line.  
-6. Tests: mock driver; cwd jail; timeout kill; JSON parse fixture.  
-7. Manual: `call_agent_process(format=grok, prompt="…")` against real CLI.
+1. `internal/agentproc/` — Driver interface, config, exec + PGroup kill.  
+2. grok + claude drivers with auto-approve defaults.  
+3. `call_agent_process` tool: sync + `background` path; `workdir` mkdir; session concurrency counter (max 10).  
+4. Wire kill to turn Stop / session close.  
+5. Example config + system prompt.  
+6. Tests: mock driver, cwd jail, workdir create, timeout kill, cap enforcement.
 
 ## Consequences
 
 ### Positive
 
-- Marble remains the **operator cockpit**; deep harnesses become **power tools**.  
-- Generic format/driver model extends to future CLIs (Codex, Aider, …) without new tool names.  
-- Clear separation of UX vs execution horsepower.
+- Marble cockpit + external horsepower.  
+- Non-blocking operator experience via BG + auto-approve.  
+- Easy isolation via `workdir` without full sandbox complexity.
 
 ### Trade-offs
 
-- Child agents can change the workspace aggressively.  
-- CLI flag drift requires driver maintenance.  
-- Long wall times vs Marble’s soft tool-round budgets (timeouts + progress).
+- Auto-approve is powerful — prompt/workdir discipline required.  
+- High timeouts mean resource use; concurrency cap 10.  
+- CLI flag drift needs driver updates.
 
 ### Risks
 
 | Risk | Mitigation |
 |------|------------|
-| Interactive auth hang | Headless flags; timeout; clear error |
-| Runaway cost | max_turns / timeout; concurrency 1 |
-| Prompt injection into child | Operator trust; cwd jail; no secrets in prompt by default |
-| Binary missing | Actionable tool error |
+| Child hangs on auth/TTY | Auto-approve flags; timeout; kill |
+| Workspace damage | workdir isolation; clear prompts |
+| Too many parallel agents | max 10 / session |
 
 ## Acceptance criteria
 
-- [ ] Open questions answered or defaulted  
-- [ ] Driver interface + config shape agreed  
-- [ ] Safety (cwd, kill, allowlist) agreed  
+- [x] Open questions answered (`0014-answers.json`)  
+- [x] BG/timeouts/auto-approve/workdir/cap locked  
 - [ ] Ready to implement  
 
 ## References
 
-- Grok Build CLI: `grok -p/--single`, `--output-format plain|json|streaming-json`, `grok agent`, permission modes  
-- Claude Code: `claude -p` / print mode (verify flags at implement)  
-- ADR-0005 shell / BG process patterns  
-- ADR-0010 turn cancel / process group kill  
+- `adr/0014-answers.json`  
+- Grok CLI: `-p/--single`, `--output-format`, `--always-approve`  
+- Claude Code: `-p` / print mode (verify at implement)  
+- ADR-0005 BG tasks; ADR-0010 Stop / PGroup kill  
