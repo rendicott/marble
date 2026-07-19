@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,9 +31,20 @@ func TestFileTools(t *testing.T) {
 		t.Fatalf("list: %s", out)
 	}
 
+	// absolute path under workspace is allowed
+	out = r.Execute("list_files", fmt.Sprintf(`{"path":%q}`, dir), nil)
+	if strings.HasPrefix(out, "error:") || !strings.Contains(out, "hello.txt") {
+		t.Fatalf("list abs: %s", out)
+	}
+
 	out = r.Execute("file_read", `{"path":"../secret"}`, nil)
 	if !strings.HasPrefix(out, "error:") {
 		t.Fatalf("expected escape error, got %s", out)
+	}
+	// absolute outside workspace rejected
+	out = r.Execute("list_files", `{"path":"/etc"}`, nil)
+	if !strings.HasPrefix(out, "error:") {
+		t.Fatalf("expected escape for /etc, got %s", out)
 	}
 
 	out = r.Execute("file_write", `{"path":"sub/a.txt","content":"nested"}`, nil)

@@ -1,0 +1,23 @@
+{
+  "drivers": {
+    "grok": {
+      "enabled": true,
+      "command": "grok",
+      "default_output_format": "json",
+      "default_args": [],
+      "auto_approve": true
+    },
+    "claude": {
+      "enabled": true,
+      "command": "claude",
+      "default_output_format": "json",
+      "default_args": [],
+      "auto_approve": true
+    }
+  },
+  "default_timeout_sec": 1800,
+  "max_timeout_sec": 7200,
+  "max_per_session": 10,
+  "max_output_bytes": 1048576,
+  "system_agents_enabled": false
+}

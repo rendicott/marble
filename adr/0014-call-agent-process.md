@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Accepted (ready to implement) |
+| **Status** | Accepted / Implemented |
 | **Date** | 2026-07-18 |
 | **Deciders** | Project owner |
 | **Tags** | tools, subprocess, agents, claude-code, grok-build, orchestration |
@@ -189,7 +189,7 @@ Auto-approve is on for the child; scope the prompt and workdir carefully.
 
 - [x] Open questions answered (`0014-answers.json`)  
 - [x] BG/timeouts/auto-approve/workdir/cap locked  
-- [ ] Ready to implement  
+- [x] Implemented (`call_agent_process`, drivers, agent_process.json)  
 
 ## References
 

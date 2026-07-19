@@ -228,6 +228,54 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"url"},
 			}),
+		// call_agent_process (ADR-0014) — external coding harnesses (grok/claude)
+		spec("call_agent_process", "Run an external coding agent harness headless (format=grok|claude). Prefer background=true for multi-minute jobs so the Marble turn is not blocked; poll with task_id. Use workdir for a dedicated subfolder under the workspace. Auto-approve is on for the child — scope prompt and workdir carefully. Prefer Marble tools for simple edits. Poll: {\"task_id\":\"…\"}.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"format": map[string]interface{}{
+						"type":        "string",
+						"description": "Driver: grok | claude",
+					},
+					"prompt": map[string]interface{}{
+						"type":        "string",
+						"description": "Self-contained task for the external agent",
+					},
+					"cwd": map[string]interface{}{
+						"type":        "string",
+						"description": "Working directory relative to Marble workspace (default root)",
+					},
+					"workdir": map[string]interface{}{
+						"type":        "string",
+						"description": "Dedicated subdir under cwd/workspace (created if missing) for isolation",
+					},
+					"background": map[string]interface{}{
+						"type":        "boolean",
+						"description": "If true, return agent_task_id immediately (preferred for long runs)",
+					},
+					"task_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Poll an existing background agent task",
+					},
+					"output_format": map[string]interface{}{
+						"type":        "string",
+						"description": "plain | json (default json when supported)",
+					},
+					"timeout_sec": map[string]interface{}{
+						"type":        "integer",
+						"description": "Wall timeout (default high, e.g. 1800s)",
+					},
+					"model": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional model id passed to the child CLI",
+					},
+					"extra_args": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Allowlisted extra CLI flags",
+					},
+				},
+			}),
 		// mpub (ADR-0009) — human-facing pages under $MEMORY/mpub, served at /mpub/{slug}
 		spec("mpub_publish", "Publish content to the Marble mpub server ($MEMORY/mpub). Primary format is HTML; markdown also supported. Returns URL like http://127.0.0.1:8080/mpub/{slug}. Not for workspace project files.",
 			map[string]interface{}{

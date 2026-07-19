@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/api"
 	"github.com/rendicott/marble/internal/bgtask"
 	"github.com/rendicott/marble/internal/config"
@@ -102,6 +103,12 @@ func main() {
 		os.Exit(2)
 	}
 
+	agents, err := agentproc.New(cfg.Memory, cfg.Workspace)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: agent_process: %v\n", err)
+		os.Exit(2)
+	}
+
 	client := model.New(cfg.BaseURL, cfg.Model, cfg.MaxOutput)
 	toolReg := &tools.Registry{
 		Workspace:      cfg.Workspace,
@@ -111,6 +118,7 @@ func main() {
 		Policy:         policy,
 		BG:             bg,
 		MCP:            mcpMgr,
+		Agents:         agents,
 		ShellDefault:   cfg.ShellDefaultTimeout,
 		ShellMax:       cfg.ShellMaxTimeout,
 	}
@@ -153,6 +161,7 @@ func main() {
 
 	reg.OnSessionClose = func(sessionID string) {
 		bg.KillSession(sessionID)
+		agents.KillSession(sessionID)
 		cont.CancelSession(sessionID)
 	}
 

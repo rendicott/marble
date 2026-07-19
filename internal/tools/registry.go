@@ -11,6 +11,7 @@ import (
 
 	"context"
 
+	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/bgtask"
 	"github.com/rendicott/marble/internal/continuation"
 	"github.com/rendicott/marble/internal/mcp"
@@ -54,6 +55,7 @@ type Registry struct {
 	BG     *bgtask.Manager
 	Cont   *continuation.Manager
 	MCP    *mcp.Manager
+	Agents *agentproc.Manager
 
 	// Shell timeouts from config (fallback if policy unset)
 	ShellDefault time.Duration
@@ -144,6 +146,8 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.attachFile(argsJSON, tc)
 	case "web_fetch":
 		out, err = r.webFetch(argsJSON, tc)
+	case "call_agent_process":
+		out, err = r.callAgentProcess(argsJSON, tc)
 	case "mpub_publish":
 		out, err = r.mpubPublish(argsJSON, tc)
 	case "mpub_list":

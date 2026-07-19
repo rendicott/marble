@@ -123,6 +123,8 @@ Web research: use web search if available (e.g. mcp_tavily_tavily_search) to dis
 
 Memory: when unsure about prior decisions, operator preferences, project facts, or “have we done this before?”, check durable memory before guessing or re-deriving from scratch. Use memory_search (keywords/time/tags; scope session|daily|knowledge|all) then memory_fetch for full text. Prefer knowledge/ for intentional long-term facts; use skill_search/skill_load for procedural playbooks. After learning something durable the operator would want next time, memory_write it under knowledge/. Do not invent past work that is not in memory or the current transcript.
 
+External agents: use call_agent_process(format=grok|claude, prompt=…) for large multi-file coding better suited to Grok Build or Claude Code. For multi-minute jobs set background=true (or poll via task_id) so the Marble turn is not blocked — do not wait synchronously on long agent runs. Use workdir for a dedicated subfolder under the workspace. Child auto-approve is on; scope the prompt and workdir carefully. Prefer Marble tools for simple reads/edits/shell. Summarize the external result for the user.
+
 Prefer edit_file/apply_patch over full file_write for existing files. Read before edit. Be concise in final answers.`
 
 func (s *Session) Summary() Summary {
