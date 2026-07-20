@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rendicott/marble/internal/auth"
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/mcp"
 	"github.com/rendicott/marble/internal/shellpolicy"
@@ -82,6 +83,12 @@ func (s *Server) settingsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	for k, v := range s.Cfg.ModelAuthPublic() {
 		runtime[k] = v
+	}
+	for k, v := range s.Cfg.AuthPublicSettings() {
+		runtime[k] = v
+	}
+	if u := auth.UserFromContext(r.Context()); u != nil {
+		runtime["current_user"] = u
 	}
 	if sqldb != nil && sqldb.Writable() {
 		if ver, err := s.readSchemaVer(sqldb); err == nil {

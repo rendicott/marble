@@ -2,7 +2,16 @@
 
 **Marble** is a small, ownable **agent harness** written in Go. It talks to a single **OpenAI-compatible** model endpoint (local or keyed cloud), runs a tool-using agent loop, and exposes a multi-session web UI.
 
-> **MVP status.** Marble is intentionally minimal. It supports **one model** (one `--base-url` + `--model` pair per process), a local-operator trust model (no multi-user auth), and a single writer per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
+> **MVP status.** Marble is intentionally minimal. It supports **one model** (one `--base-url` + `--model` pair per process), optional **Google OAuth** allowlist (shared full-admin sessions), and a single writer per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
+
+## What's new in v0.2.0
+
+- **Google OAuth + multi-user (ADR-0017)** — optional Sign in with Google, email allowlist (all full admins), identity on chat history (not sent to the model)
+- **Optional in-process TLS** — `--tls-cert-file` / `--tls-key-file`; reverse-proxy HTTPS still supported
+- **mpub visibility** — new pages default **private** (admins only when OAuth is on); set **public** only when asked; `mpub_set_visibility` to promote/demote
+- **GitHub Actions releases** — multi-arch binaries on tags (`linux-amd64`, `linux-arm64`, `darwin-arm64`)
+
+v0.1.x already included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0016).
 
 ## Features
 
@@ -21,6 +30,13 @@
 - **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` reads the key from the environment (never from argv); first non-empty env wins
 - **Health / Settings** show auth mode + env name + configured yes/no — never the secret
 
+### Auth & access (ADR-0017)
+- **open** (default) — no login; local-operator trust model
+- **google** — Sign in with Google when OAuth flags + allowlist are complete
+- Allowlisted users are **full admins**; chat sessions are **shared**
+- User identity on messages in UI/MD/events — **never** forwarded to the model
+- Optional **HTTPS** via cert/key files, or TLS termination at a reverse proxy
+
 ### Tools
 - **Filesystem** — `file_read` / `file_write`, `list_files`, `grep`, `glob`, `codebase_summary`
 - **Edits** — `edit_file` (prior-read), `apply_patch` (atomic multi-hunk)
@@ -34,7 +50,7 @@
 - **Context** — `get_context_usage`, `session_compact`
 - **Attachments** — `attach_file` (UI chips, not re-injected into the model)
 - **MCP** — optional stdio/HTTP servers from `$MEMORY/mcp.json` (e.g. Tavily web search)
-- **mpub** — publish HTML/markdown pages served at `/mpub/{slug}`
+- **mpub** — publish HTML/markdown at `/mpub/{slug}`; tools: `mpub_publish` / `list` / `get` / `unpublish` / `mpub_set_visibility`
 
 ### Sessions & memory
 - **Multi-session** web UI with short session ids
@@ -53,8 +69,9 @@
 - **Workspace explorer** modal (browse/edit/upload under the tool jail)
 - **System prompt & soul** modal (👁) — immutable system prompt + editable soul
 - **Cron jobs** modal (🕐) — list/create/edit/enable/run-now/history + next-fire preview
-- **Settings** modal (⚙) — runtime read-only (incl. model auth), DB settings, MCP, UI prefs
+- **Settings** modal (⚙) — runtime read-only (incl. model + OAuth auth), DB settings, MCP, UI prefs
 - SSE live updates for messages, tools, turn progress
+- Sign-in flow when Google mode is enabled
 
 ### Cron jobs (ADR-0015)
 - **Durable** SQLite schedules (survive restart); **not** a replacement for one-shot `schedule_continuation`
@@ -63,6 +80,15 @@
 - Missing session → **create** a new session and rebind the job; busy → **skip**; limp/model-down → pause fires
 - Caps: 50 jobs, 3 concurrent cron turns; run history pruned (last 50/job and/or 30 days)
 - Same store for UI and agent tools
+
+### mpub visibility
+| Visibility | Who can read `/mpub/{slug}` |
+|------------|----------------------------|
+| **private** (default for new publishes) | Allowlisted admins when Google auth is on; everyone in open mode |
+| **public** | Anyone (no login) |
+| Legacy docs (no `visibility` field) | Treated as **public** (old links keep working) |
+
+Agents should leave new pages **private** unless the user **explicitly** asks to make a page public. Use `mpub_set_visibility` to promote/demote without rewriting the body.
 
 ## Launch
 
@@ -136,6 +162,12 @@ Open **http://127.0.0.1:8080/** (or `http://host:8080/s/{session_id}` for a deep
 | `--base-url` | OpenAI-compatible API root | `http://127.0.0.1:8000/v1` |
 | `--model` | Single model id for this process | set explicitly for your stack |
 | `--api-key-env` | Env var name(s) for model API key (optional) | empty = no auth |
+| `--oauth-client-id` | Google OAuth client ID | empty = open mode |
+| `--oauth-client-secret-env` | Env var name for OAuth client secret | — |
+| `--oauth-redirect-url` | Public OAuth callback URL | — |
+| `--oauth-allow-emails` | Comma-separated allowlist | — |
+| `--oauth-allow-file` | Allowlist file path | — |
+| `--tls-cert-file` / `--tls-key-file` | Optional HTTPS PEM paths | empty = HTTP |
 | `--context-limit` | Model context window (tokens) | `262144` |
 | `--max-output` | Max generation tokens per model call | `32768` |
 | `--context-reserve` | Reserved for tools/formatting | `8192` |
@@ -200,7 +232,46 @@ systemctl --user restart marble-harness
 
 Put secrets (e.g. `TAVILY_API_KEY`, `GROK_API_KEY`) in `~/.config/marble/env` or the process environment — **not** in the unit `ExecStart` line, and **never** in git.
 
-### 5. Optional MCP
+### 5. Google OAuth + multi-user (ADR-0017)
+
+Default remains **open** (no login). Google mode turns on only when all of these are set:
+
+```bash
+export GOOGLE_OAUTH_CLIENT_SECRET=...   # never put secret on the CLI
+
+./bin/marble-harness \
+  ... \
+  --addr :8080 \
+  --oauth-client-id=YOUR_ID.apps.googleusercontent.com \
+  --oauth-client-secret-env=GOOGLE_OAUTH_CLIENT_SECRET \
+  --oauth-redirect-url=https://your-public-host:8080/auth/callback \
+  --oauth-allow-emails=you@example.com,friend@example.com \
+  --oauth-allow-file=/home/you/.config/marble/allowlist.txt
+```
+
+- All allowlisted users are **full admins**; sessions are **shared**.
+- User identity is stored on chat messages (UI/MD) but **not** sent to the model.
+- **`GET /api/health`** stays public (account *count* only).
+- **mpub**: *public* pages stay open; *private* pages require an allowlisted admin (default for new publishes).
+
+**OAuth redirect URL:** there is no separate OAuth port. The callback is on the **same HTTP listener** as the UI (`--addr`, default `:8080`), path **`/auth/callback`**. Register that full URL in Google Cloud Console (Authorized redirect URIs), and pass the same value as `--oauth-redirect-url`.
+
+| Setup | Example `--oauth-redirect-url` |
+|-------|--------------------------------|
+| Local HTTP | `http://127.0.0.1:8080/auth/callback` |
+| Public host + Marble TLS | `https://your-host:8080/auth/callback` |
+| Behind Caddy / ALB / Tailscale Serve | `https://your-public-hostname/auth/callback` |
+
+### 6. Optional TLS (ADR-0017)
+
+```bash
+--tls-cert-file=/path/to/fullchain.pem \
+--tls-key-file=/path/to/privkey.pem
+```
+
+Omit both for plain HTTP. Behind Caddy/ALB/Tailscale Serve you can leave TLS off on Marble and terminate HTTPS at the proxy (`--oauth-redirect-url` still uses the public `https://` URL). Automatic Let's Encrypt is not in-process yet.
+
+### 7. Optional MCP
 
 ```bash
 cp adr/mcp.json.example ~/.marble/mcp.json
@@ -209,7 +280,7 @@ cp adr/mcp.json.example ~/.marble/mcp.json
 
 Tools show up as `mcp_<server>_<tool>`.
 
-### 6. Optional external agents
+### 8. Optional external agents
 
 ```bash
 cp adr/agent_process.json.example ~/.marble/agent_process.json
@@ -244,23 +315,26 @@ Operator secrets (API keys) live **outside** the repo, typically:
 | Limitation | Notes |
 |------------|--------|
 | **One model per process** | Single `--base-url` + `--model`; optional one resolved API key; no multi-provider routing or hot model switch in v1 |
-| **No multi-tenant auth** | UI is local/operator trust (bind carefully; not public-internet hardened) |
+| **Auth is allowlist, not multi-tenant** | Optional Google OAuth; all allowlisted users full admin / shared sessions — not per-user isolation or RBAC |
 | **One harness per memory dir** | Second process fails on `marble.lock` |
 | **Shell is powerful** | Deny-list policy, not a full sandbox; same OS user as the harness |
 | **No token streaming** | Completions are request/response (progress UI covers loop phase, not token deltas) |
 | **Stop is cooperative** | Cancels turn context; shell process-group kill best-effort |
 | **Cron is session-bound** | Fires inject turns into sessions (create if missing); not OS crontab / shell-only jobs |
+| **Login sessions are in-memory** | OAuth cookies lost on harness restart (re-login) |
 
 ## Architecture (short)
 
 ```
 cmd/marble-harness/     # process entry
 internal/
-  config/               # CLI flags (incl. --api-key-env)
+  config/               # CLI flags (API key, OAuth, TLS)
+  auth/                 # Google OAuth, sessions, middleware (ADR-0017)
   model/                # OpenAI-compatible client + optional Bearer auth
   session/              # registry, agent loop, turn progress, daemon
   tools/                # tool implementations + catalog
   cron/                 # durable scheduler (ADR-0015)
+  mpub/                 # published pages + visibility
   agentproc/            # external agent drivers (ADR-0014)
   mcp/                  # MCP client
   memory/               # session markdown store, soul
@@ -282,10 +356,11 @@ Notable ADRs:
 | 0014 | `call_agent_process` |
 | 0015 | Cron jobs (UI + tools) |
 | 0016 | Optional model API key (`--api-key-env`) |
+| 0017 | Google OAuth, multi-user identity, optional TLS |
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`), for example `v0.1.0`.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.2.0](https://github.com/rendicott/marble/releases/tag/v0.2.0)**.
 
 | Asset | Platform |
 |-------|----------|
@@ -310,14 +385,14 @@ chmod +x marble-harness-linux-amd64
 **Publish a release** (maintainers — **GitHub Actions only**; do not upload locally built binaries):
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 # Workflow "Release" builds on ubuntu-latest, tests, and attaches assets
 ```
 
 If a tag already exists but the workflow failed (e.g. GitHub outage), re-run from the Actions tab:
 
-**Actions → Release → Run workflow** → enter tag `v0.1.0`.
+**Actions → Release → Run workflow** → enter tag (e.g. `v0.2.0`).
 
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 

@@ -339,10 +339,26 @@
   }
 
   async function api(path, opts) {
+    opts = opts || {};
+    const method = (opts.method || "GET").toUpperCase();
+    const headers = {
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    };
+    // ADR-0017 CSRF: mutating SPA calls
+    if (method !== "GET" && method !== "HEAD") {
+      headers["X-Marble-Requested-With"] = "fetch";
+    }
     const res = await fetch(path, {
-      headers: { "Content-Type": "application/json", ...(opts && opts.headers) },
       ...opts,
+      headers,
+      credentials: "same-origin",
     });
+    if (res.status === 401) {
+      const next = encodeURIComponent(location.pathname + location.search);
+      location.href = "/auth/login?next=" + next;
+      throw new Error("auth_required");
+    }
     if (!res.ok) {
       const t = await res.text();
       throw new Error(t || res.statusText);
@@ -351,6 +367,49 @@
     const ct = res.headers.get("content-type") || "";
     if (ct.includes("application/json")) return res.json();
     return res.text();
+  }
+
+  let currentUser = null;
+  let authMode = "open";
+
+  async function refreshAuth() {
+    try {
+      const me = await fetch("/auth/me", { credentials: "same-origin" }).then((r) => {
+        if (r.status === 401) return { auth_mode: "google", user: null };
+        return r.json();
+      });
+      authMode = me.auth_mode || "open";
+      currentUser = me.user || null;
+      renderAuthBar();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function renderAuthBar() {
+    const el = document.getElementById("auth-bar");
+    if (!el) return;
+    if (authMode !== "google") {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    if (currentUser) {
+      const label = currentUser.name || currentUser.email || "signed in";
+      el.innerHTML = `<span class="auth-user" title="${escapeHtml(currentUser.email || "")}">${escapeHtml(label)}</span>
+        <button type="button" id="btn-logout" class="icon-btn" title="Sign out">Logout</button>`;
+      const btn = document.getElementById("btn-logout");
+      if (btn) {
+        btn.addEventListener("click", async () => {
+          try {
+            await api("/auth/logout", { method: "POST", body: "{}" });
+          } catch { /* */ }
+          location.href = "/auth/login";
+        });
+      }
+    } else {
+      el.innerHTML = `<a class="icon-btn" href="/auth/login?next=${encodeURIComponent(location.pathname)}">Sign in</a>`;
+    }
   }
 
   async function refreshHealth() {
@@ -626,7 +685,14 @@
                 : "assistant");
     const label = document.createElement("span");
     label.className = "role";
-    label.textContent = role === "tool" ? m.tool_name || "tool" : role;
+    if (role === "user" && (m.user_email || m.user_name)) {
+      const who = m.user_name || m.user_email;
+      label.textContent = who;
+      label.title = m.user_email || who;
+      label.classList.add("user-actor");
+    } else {
+      label.textContent = role === "tool" ? m.tool_name || "tool" : role;
+    }
     div.appendChild(label);
     const body = document.createElement("div");
     body.className = "bubble-body";
@@ -634,7 +700,6 @@
     if (roleUsesMarkdown(role)) {
       body.classList.add("md");
       body.innerHTML = renderMarkdown(content);
-      // External links: new tab + noopener
       body.querySelectorAll("a[href]").forEach((a) => {
         const href = a.getAttribute("href") || "";
         if (/^https?:\/\//i.test(href)) {
@@ -972,6 +1037,7 @@
 
   setComposerEnabled(false);
   setSessionInfoEnabled(false);
+  refreshAuth().finally(() => {
   refreshHealth();
   refreshSessions()
     .then(async () => {
@@ -1001,5 +1067,6 @@
       els.health.textContent = e.message;
       els.health.style.color = "var(--danger)";
     });
+  });
   setInterval(refreshHealth, 30000);
 })();

@@ -35,10 +35,24 @@
   let editingId = null;
 
   function api(path, opts) {
+    opts = opts || {};
+    const method = (opts.method || "GET").toUpperCase();
+    const headers = {
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    };
+    if (method !== "GET" && method !== "HEAD") {
+      headers["X-Marble-Requested-With"] = "fetch";
+    }
     return fetch(path, {
-      headers: { "Content-Type": "application/json", ...(opts && opts.headers) },
       ...opts,
+      headers,
+      credentials: "same-origin",
     }).then(async (res) => {
+      if (res.status === 401) {
+        location.href = "/auth/login?next=" + encodeURIComponent(location.pathname);
+        throw new Error("auth_required");
+      }
       const text = await res.text();
       if (!res.ok) throw new Error(text || res.statusText);
       if (!text) return null;

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0017 Google OAuth, Multi-User &amp; TLS</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #1e3a5f 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #3b0764 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #60a5fa, #c084fc);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 78ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--ok); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+  </style>
+</head>
+<body data-adr="0017" data-adr-title="Google OAuth, Multi-User &amp; TLS">
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0017</span>
+      <span class="status">ACCEPTED · ready to implement</span>
+    </div>
+    <nav class="toc">
+      <a href="#locked">Decisions</a>
+      <a href="#flags">Flags</a>
+      <a href="#impl">Implement</a>
+      <a href="0009-review.html">0009</a>
+      <a href="0016-review.html">0016</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Google OAuth, multi-user identity &amp; TLS</h1>
+      <p class="lede">
+        All questions locked from <code>0017-answers.json</code> (2026-07-20T03:51:19.494Z).
+        Shared admins, identity on messages (not to the model), mpub public,
+        optional file TLS, reverse-proxy TLS OK with warn.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Source</b><code>adr/0017-answers.json</code></div>
+        <div class="meta"><b>ADR</b><code>adr/0017-google-oauth-auth.md</code></div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>auth</strong> open \| google</span>
+        <span class="chip"><strong>sessions</strong> shared</span>
+        <span class="chip"><strong>model</strong> no PII</span>
+        <span class="chip"><strong>tls</strong> optional files</span>
+        <span class="chip"><strong>proxy</strong> warn only</span>
+      </div>
+    </section>
+
+    <section id="flags">
+      <h2>1. Launch flags (locked)</h2>
+      <pre class="mock"># OAuth (google mode when all present)
+--oauth-client-id=….apps.googleusercontent.com
+--oauth-client-secret-env=GOOGLE_OAUTH_CLIENT_SECRET
+--oauth-redirect-url=https://public-host:8080/auth/callback
+--oauth-allow-emails=a@x.com,b@y.com
+--oauth-allow-file=/path/allowlist.txt
+
+# Optional in-process TLS (or terminate at Caddy/ALB/Tailscale)
+--tls-cert-file=/path/fullchain.pem
+--tls-key-file=/path/privkey.pem</pre>
+    </section>
+
+    <section id="locked">
+      <h2>2. Decisions locked (Q1–Q28b)</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td>Q1–Q3</td><td>open default; google if complete; partial OAuth fatal</td></tr>
+          <tr><td>Q4–Q6</td><td>allowlist union; shared sessions; single busy lock</td></tr>
+          <tr><td>Q7 / Q13</td><td>identity on user msgs; <strong>never</strong> to model</td></tr>
+          <tr><td>Q8 / Q14</td><td>health public (count); Settings shows emails</td></tr>
+          <tr><td>Q9–Q12</td><td>PKCE; 7d cookie; memory sessions; CSRF header</td></tr>
+          <tr><td>Q15–Q16</td><td>exact emails; no --auth-required</td></tr>
+          <tr><td>Q17</td><td><strong>A+B</strong> Stop/Run-now → log + session events</td></tr>
+          <tr><td>Q18–Q20</td><td>SSE cookie; explicit redirect; Secure rules</td></tr>
+          <tr><td>Q21–Q23</td><td>optional TLS files; no key-env v1</td></tr>
+          <tr><td>Q24–Q27</td><td>defer LE / :80 redirect / mTLS</td></tr>
+          <tr><td>Q28 / Q28b</td><td>proxy without certs OK; <strong>warn</strong> if https redirect + no TLS files</td></tr>
+        </tbody>
+      </table>
+      <div hidden>
+        <div class="q" data-qid="Q1" data-status="locked" data-decision="open mode when OAuth flags absent" data-rec="open mode when OAuth flags absent"></div>
+        <div class="q" data-qid="Q2" data-status="locked" data-decision="google mode only when fully configured" data-rec="google mode only when fully configured"></div>
+        <div class="q" data-qid="Q3" data-status="locked" data-decision="Fail startup on partial OAuth config" data-rec="Fail startup on partial OAuth config"></div>
+        <div class="q" data-qid="Q4" data-status="locked" data-decision="Both allow-emails and allow-file; union" data-rec="Both allow-emails and allow-file; union"></div>
+        <div class="q" data-qid="Q5" data-status="locked" data-decision="Shared sessions for all admins" data-rec="Shared sessions for all admins"></div>
+        <div class="q" data-qid="Q6" data-status="locked" data-decision="Single active turn per session" data-rec="Single active turn per session"></div>
+        <div class="q" data-qid="Q7" data-status="locked" data-decision="Store user_email, user_name, user_sub on user messages" data-rec="Store user_email, user_name, user_sub on user messages"></div>
+        <div class="q" data-qid="Q8" data-status="locked" data-decision="GET /api/health stays public" data-rec="GET /api/health stays public"></div>
+        <div class="q" data-qid="Q9" data-status="locked" data-decision="Authorization Code + PKCE + state" data-rec="Authorization Code + PKCE + state"></div>
+        <div class="q" data-qid="Q10" data-status="locked" data-decision="Cookie max-age 7 days absolute" data-rec="Cookie max-age 7 days absolute"></div>
+        <div class="q" data-qid="Q11" data-status="locked" data-decision="In-memory sessions; re-login after restart" data-rec="In-memory sessions; re-login after restart"></div>
+        <div class="q" data-qid="Q12" data-status="locked" data-decision="X-Marble-Requested-With on mutating SPA API calls" data-rec="X-Marble-Requested-With on mutating SPA API calls"></div>
+        <div class="q" data-qid="Q13" data-status="locked" data-decision="Do not send user identity to the model" data-rec="Do not send user identity to the model"></div>
+        <div class="q" data-qid="Q14" data-status="locked" data-decision="Settings shows allowlist emails; health shows account count only" data-rec="Settings shows allowlist emails; health shows account count only"></div>
+        <div class="q" data-qid="Q15" data-status="locked" data-decision="Exact emails only; no domain wildcards" data-rec="Exact emails only; no domain wildcards"></div>
+        <div class="q" data-qid="Q16" data-status="locked" data-decision="No extra --auth-required; mode from config" data-rec="No extra --auth-required; mode from config"></div>
+        <div class="q" data-qid="Q17" data-status="locked" data-decision="A+B — log and session events; no chat/model noise" data-rec="A+B — log and session events; no chat/model noise"></div>
+        <div class="q" data-qid="Q18" data-status="locked" data-decision="SSE cookie; 401 re-login" data-rec="SSE cookie; 401 re-login"></div>
+        <div class="q" data-qid="Q19" data-status="locked" data-decision="Explicit --oauth-redirect-url" data-rec="Explicit --oauth-redirect-url"></div>
+        <div class="q" data-qid="Q20" data-status="locked" data-decision="Secure=false only for localhost/127.0.0.1" data-rec="Secure=false only for localhost/127.0.0.1"></div>
+        <div class="q" data-qid="Q21" data-status="locked" data-decision="Yes — optional TLS via cert/key files" data-rec="Yes — optional TLS via cert/key files"></div>
+        <div class="q" data-qid="Q22" data-status="locked" data-decision="--tls-cert-file and --tls-key-file" data-rec="--tls-cert-file and --tls-key-file"></div>
+        <div class="q" data-qid="Q23" data-status="locked" data-decision="File only in v1" data-rec="File only in v1"></div>
+        <div class="q" data-qid="Q24" data-status="locked" data-decision="Defer automatic Let's Encrypt" data-rec="Defer automatic Let's Encrypt"></div>
+        <div class="q" data-qid="Q25" data-status="locked" data-decision="Fatal if only one of cert/key set" data-rec="Fatal if only one of cert/key set"></div>
+        <div class="q" data-qid="Q26" data-status="locked" data-decision="No :80 redirect in v1" data-rec="No :80 redirect in v1"></div>
+        <div class="q" data-qid="Q27" data-status="locked" data-decision="Defer mTLS" data-rec="Defer mTLS"></div>
+        <div class="q" data-qid="Q28" data-status="locked" data-decision="Reverse-proxy TLS without local certs is valid" data-rec="Reverse-proxy TLS without local certs is valid"></div>
+        <div class="q" data-qid="Q28b" data-status="locked" data-decision="Warn if https redirect and no in-process TLS" data-rec="Warn if https redirect and no in-process TLS"></div>
+      </div>
+    </section>
+
+    <section id="impl">
+      <h2>3. Implementation order</h2>
+      <ol>
+        <li>Config: OAuth + TLS flags; modes; allowlist; TLS validation</li>
+        <li><code>ListenAndServeTLS</code> when cert/key set; Q28b warn</li>
+        <li><code>internal/auth</code> — Google OAuth, PKCE, cookies, middleware, CSRF</li>
+        <li>Protect SPA/API; public mpub/health/auth</li>
+        <li>Message identity + UI; no model PII</li>
+        <li>Stop / cron run-now → log + events</li>
+        <li>Settings emails; health count; login UI; SSE 401</li>
+        <li>Tests + README</li>
+      </ol>
+      <div class="callout">
+        Reply <strong>implement</strong> when you want coding to start.
+      </div>
+    </section>
+  </main>
+
+  <footer>Marble · ADR-0017 accepted · ready to implement</footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>

@@ -21,8 +21,9 @@ type Runner struct {
 }
 
 // PostUserMessage appends a user message and runs the agent loop in a new goroutine.
-func (r *Runner) PostUserMessage(s *Session, text string) bool {
-	return r.postMessage(s, text, false)
+// actor may be nil (open mode / anonymous).
+func (r *Runner) PostUserMessage(s *Session, text string, actor *Actor) bool {
+	return r.postMessage(s, text, false, actor)
 }
 
 // PostContinuation injects a scheduled continuation prompt (same as user turn).
@@ -34,15 +35,15 @@ func (r *Runner) PostContinuation(s *Session, text string) bool {
 	if !strings.HasPrefix(text, "[scheduled continuation]") {
 		text = "[scheduled continuation]\n" + text
 	}
-	return r.postMessage(s, text, true)
+	return r.postMessage(s, text, true, nil)
 }
 
 // PostCron injects a cron fire prompt (ADR-0015). Caller supplies [cron:id name] prefix.
 func (r *Runner) PostCron(s *Session, text string) bool {
-	return r.postMessage(s, text, true)
+	return r.postMessage(s, text, true, nil)
 }
 
-func (r *Runner) postMessage(s *Session, text string, continuation bool) bool {
+func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *Actor) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return true
@@ -62,7 +63,13 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool) bool {
 		Content:   text,
 		CreatedAt: time.Now(),
 	}
+	if actor != nil {
+		um.UserEmail = actor.Email
+		um.UserName = actor.Name
+		um.UserSub = actor.Sub
+	}
 	s.appendUI(um)
+	// Model history: plain content only — never identity (ADR-0017 Q13).
 	s.history = append(s.history, model.Message{Role: "user", Content: text})
 	s.mu.Unlock()
 

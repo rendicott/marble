@@ -34,7 +34,20 @@
   let menuTarget = null; // { type: 'entry'|'blank', entry? }
 
   function api(path, opts) {
-    return fetch(path, opts).then(async (res) => {
+    opts = opts || {};
+    const method = (opts.method || "GET").toUpperCase();
+    const headers = { ...(opts.headers || {}) };
+    if (method !== "GET" && method !== "HEAD") {
+      headers["X-Marble-Requested-With"] = "fetch";
+    }
+    if (!headers["Content-Type"] && opts.body && typeof opts.body === "string") {
+      headers["Content-Type"] = "application/json";
+    }
+    return fetch(path, { ...opts, headers, credentials: "same-origin" }).then(async (res) => {
+      if (res.status === 401) {
+        location.href = "/auth/login?next=" + encodeURIComponent(location.pathname);
+        throw new Error("auth_required");
+      }
       if (!res.ok) {
         const t = await res.text();
         throw new Error(t || res.statusText);
@@ -493,7 +506,13 @@
     const res = await fetch("/api/workspace/upload?" + q.toString(), {
       method: "POST",
       body: fd,
+      credentials: "same-origin",
+      headers: { "X-Marble-Requested-With": "fetch" },
     });
+    if (res.status === 401) {
+      location.href = "/auth/login?next=" + encodeURIComponent(location.pathname);
+      throw new Error("auth_required");
+    }
     if (res.status === 409) {
       if (confirm("A file already exists. Overwrite?")) {
         return uploadFiles(fileList, true);

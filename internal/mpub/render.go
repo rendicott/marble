@@ -8,7 +8,19 @@ import (
 
 // RenderHTMLPage wraps body HTML in a simple Marble shell.
 func RenderHTMLPage(title, bodyHTML string) string {
+	return RenderHTMLPageVis(title, bodyHTML, "")
+}
+
+// RenderHTMLPageVis wraps body HTML; vis is "public"|"private"|"" for optional badge.
+func RenderHTMLPageVis(title, bodyHTML, vis string) string {
 	t := html.EscapeString(title)
+	badge := ""
+	switch strings.ToLower(strings.TrimSpace(vis)) {
+	case VisibilityPrivate:
+		badge = ` <span class="badge badge-private">private</span>`
+	case VisibilityPublic:
+		badge = ` <span class="badge badge-public">public</span>`
+	}
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -23,6 +35,9 @@ func RenderHTMLPage(title, bodyHTML string) string {
     header a { color: var(--muted); text-decoration:none; font-size:0.85rem; }
     header a:hover { color: var(--accent); }
     header .title { font-weight:600; }
+    .badge { display:inline-block; font-size:0.7rem; font-weight:600; text-transform:uppercase; letter-spacing:0.03em; padding:0.12rem 0.45rem; border-radius:999px; }
+    .badge-public { background:#1a3d2a; color:#7ddea0; border:1px solid #2d5a3f; }
+    .badge-private { background:#3d2a1a; color:#e0b07d; border:1px solid #5a3f2d; }
     main { max-width: 820px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
     article h1, article h2, article h3 { color: #c7d6ff; }
     article pre, article code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; }
@@ -39,7 +54,7 @@ func RenderHTMLPage(title, bodyHTML string) string {
 <body>
   <header>
     <a href="/mpub">← mpub</a>
-    <span class="title">%s</span>
+    <span class="title">%s</span>%s
   </header>
   <main><article>
 %s
@@ -47,7 +62,7 @@ func RenderHTMLPage(title, bodyHTML string) string {
   <footer>Published via Marble mpub</footer>
 </body>
 </html>
-`, t, t, bodyHTML)
+`, t, t, badge, bodyHTML)
 }
 
 // MarkdownToHTML is a small zero-dep markdown subset renderer (good enough for research notes).
@@ -204,6 +219,7 @@ func linkify(s string) string {
 
 // ServeBody returns Content-Type and bytes for HTTP response (document view).
 func ServeBody(doc *Doc) (contentType string, body []byte) {
+	vis := EffectiveVisibility(doc.Meta)
 	switch normalizeContentType(doc.Meta.ContentType) {
 	case "text/html":
 		// if content looks like a full document, pass through
@@ -211,21 +227,21 @@ func ServeBody(doc *Doc) (contentType string, body []byte) {
 		if strings.HasPrefix(strings.ToLower(c), "<!doctype") || strings.HasPrefix(strings.ToLower(c), "<html") {
 			return "text/html; charset=utf-8", []byte(doc.Content)
 		}
-		page := RenderHTMLPage(doc.Meta.Title, doc.Content)
+		page := RenderHTMLPageVis(doc.Meta.Title, doc.Content, vis)
 		return "text/html; charset=utf-8", []byte(page)
 	case "text/markdown":
 		inner := MarkdownToHTML(doc.Content)
-		page := RenderHTMLPage(doc.Meta.Title, inner)
+		page := RenderHTMLPageVis(doc.Meta.Title, inner, vis)
 		return "text/html; charset=utf-8", []byte(page)
 	default:
 		// plain as preformatted HTML for readable browser view
 		inner := "<pre>" + html.EscapeString(doc.Content) + "</pre>"
-		page := RenderHTMLPage(doc.Meta.Title, inner)
+		page := RenderHTMLPageVis(doc.Meta.Title, inner, vis)
 		return "text/html; charset=utf-8", []byte(page)
 	}
 }
 
-// IndexHTML builds the /mpub listing page.
+// IndexHTML builds the /mpub listing page (caller filters private docs for anonymous viewers).
 func IndexHTML(docs []Meta) string {
 	var items strings.Builder
 	if len(docs) == 0 {
@@ -237,10 +253,17 @@ func IndexHTML(docs []Meta) string {
 			if title == "" {
 				title = d.Slug
 			}
+			vis := EffectiveVisibility(d)
+			badgeClass := "badge-public"
+			if vis == VisibilityPrivate {
+				badgeClass = "badge-private"
+			}
 			items.WriteString(fmt.Sprintf(
-				`<li><a href="/mpub/%s"><strong>%s</strong></a> <span class="meta"><code>%s</code> · %s · %s</span></li>`+"\n",
+				`<li><a href="/mpub/%s"><strong>%s</strong></a> <span class="badge %s">%s</span> <span class="meta"><code>%s</code> · %s · %s</span></li>`+"\n",
 				html.EscapeString(d.Slug),
 				html.EscapeString(title),
+				badgeClass,
+				html.EscapeString(vis),
 				html.EscapeString(d.Slug),
 				html.EscapeString(d.ContentType),
 				html.EscapeString(d.UpdatedAt),
@@ -268,6 +291,9 @@ func IndexHTML(docs []Meta) string {
     .list a { color:var(--accent); text-decoration:none; }
     .list a:hover { text-decoration:underline; }
     .meta { display:block; margin-top:0.25rem; font-size:0.78rem; color:var(--muted); font-family:ui-monospace,monospace; }
+    .badge { display:inline-block; font-size:0.7rem; font-weight:600; text-transform:uppercase; letter-spacing:0.03em; padding:0.12rem 0.45rem; border-radius:999px; vertical-align:middle; margin-left:0.35rem; }
+    .badge-public { background:#1a3d2a; color:#7ddea0; border:1px solid #2d5a3f; }
+    .badge-private { background:#3d2a1a; color:#e0b07d; border:1px solid #5a3f2d; }
     .empty { color:var(--muted); }
     code { background:#252b3a; padding:0.1rem 0.35rem; border-radius:5px; font-size:0.88em; }
   </style>
@@ -276,7 +302,7 @@ func IndexHTML(docs []Meta) string {
   <header><a href="/">← Marble</a><span>mpub</span></header>
   <main>
     <h1>Published documents</h1>
-    <p class="sub">Agent-published pages under this harness memory.</p>
+    <p class="sub">Agent-published pages under this harness memory. Public pages are open; private pages are admin-only when OAuth is on.</p>
     %s
   </main>
 </body>

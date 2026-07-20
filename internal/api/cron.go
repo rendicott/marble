@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rendicott/marble/internal/auth"
 	"github.com/rendicott/marble/internal/cron"
 )
 
@@ -174,6 +175,12 @@ func (s *Server) handleCronJobRun(w http.ResponseWriter, r *http.Request, id str
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+	u := auth.UserFromContext(r.Context())
+	auth.LogAction("cron_run_now", "job="+id, u)
+	if s.Registry != nil {
+		// best-effort event on a dummy session id is not ideal; log is primary
+		_ = u
 	}
 	run, err := s.Cron.RunNow(id)
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/api"
+	"github.com/rendicott/marble/internal/auth"
 	"github.com/rendicott/marble/internal/bgtask"
 	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/continuation"
@@ -241,12 +242,42 @@ func main() {
 		os.Exit(2)
 	}
 
+	// ADR-0017 auth
+	var authMgr *auth.Manager
+	if cfg.AuthMode == "google" {
+		allow := make(map[string]struct{}, len(cfg.AuthAllowlist))
+		for _, e := range cfg.AuthAllowlist {
+			allow[e] = struct{}{}
+		}
+		authMgr = &auth.Manager{
+			Mode:   "google",
+			Secure: cfg.CookieSecure(),
+			Google: &auth.Google{
+				ClientID:     cfg.OAuthClientID,
+				ClientSecret: cfg.OAuthClientSecret,
+				RedirectURL:  cfg.OAuthRedirectURL,
+				Allowlist:    allow,
+			},
+			Store: auth.NewSessionStore(),
+		}
+		log.Printf("auth: mode=google allowlist=%d accounts redirect=%s", len(cfg.AuthAllowlist), cfg.OAuthRedirectURL)
+		if strings.HasPrefix(strings.ToLower(cfg.OAuthRedirectURL), "https://") && !cfg.TLSEnabled() {
+			log.Printf("WARNING: oauth redirect is https but --tls-cert-file/--tls-key-file not set — ensure a reverse proxy (Caddy/ALB/Tailscale Serve) terminates TLS")
+		}
+	} else {
+		log.Printf("auth: mode=open")
+	}
+
 	srv := api.New(cfg, client, reg, daemon, wsfs)
 	srv.MCP = mcpMgr
 	srv.Policy = policy
 	srv.Tools = toolReg
 	srv.Mpub = mpubStore
 	srv.Cron = cronMgr
+	srv.Auth = authMgr
+	if authMgr != nil {
+		authMgr.RegisterRoutes(srv.Mux)
+	}
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
@@ -277,7 +308,12 @@ func main() {
 
 	go func() {
 		log.Printf("version %s", versionString())
-		log.Printf("listening on http://%s", displayAddr(cfg.Addr))
+		scheme := "http"
+		if cfg.TLSEnabled() {
+			scheme = "https"
+			log.Printf("tls: cert=%s", cfg.TLSCertFile)
+		}
+		log.Printf("listening on %s://%s", scheme, displayAddr(cfg.Addr))
 		log.Printf("workspace=%s", cfg.Workspace)
 		log.Printf("memory=%s mode=%s", cfg.Memory, sqldb.Mode)
 		log.Printf("persist every %s", cfg.PersistEvery)
@@ -290,7 +326,13 @@ func main() {
 		}
 		log.Printf("mcp: config=%s servers_ok=%d tools=%d", mcpPath, mcpMgr.ServerOKCount(), mcpMgr.ToolCount())
 		log.Printf("mpub: /mpub · %d published · %s", mpubStore.Count(), mpubStore.Root)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if cfg.TLSEnabled() {
+			err = httpSrv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		} else {
+			err = httpSrv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
 	}()

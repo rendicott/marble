@@ -193,6 +193,27 @@ a.icon-btn {
 }
 .sess.system .title { color: var(--accent-2, #5eead4); }
 .sess.cron .title { color: var(--text); }
+.auth-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.auth-bar .auth-user {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.bubble .role.user-actor {
+  color: var(--accent-2);
+  text-transform: none;
+  font-weight: 600;
+}
 .cron-badge {
   display: inline-block;
   font-size: 0.85em;

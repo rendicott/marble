@@ -1,0 +1,240 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0017",
+  "title": "Google OAuth, Multi-User Identity & TLS",
+  "updated_at": "2026-07-20T03:51:19.494Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "open mode when OAuth flags absent",
+      "notes": "",
+      "question": "Q1 Default when OAuth is not configured?",
+      "rec": "open mode when OAuth flags absent"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "google mode only when fully configured",
+      "notes": "",
+      "question": "Q2 When is google mode on?",
+      "rec": "google mode only when fully configured"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Fail startup on partial OAuth config",
+      "notes": "",
+      "question": "Q3 Partial OAuth flags?",
+      "rec": "Fail startup on partial OAuth config"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Both allow-emails and allow-file; union",
+      "notes": "",
+      "question": "Q4 Allowlist source?",
+      "rec": "Both allow-emails and allow-file; union"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Shared sessions for all admins",
+      "notes": "",
+      "question": "Q5 Shared vs private chat sessions?",
+      "rec": "Shared sessions for all admins"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Single active turn per session",
+      "notes": "",
+      "question": "Q6 Concurrent turns?",
+      "rec": "Single active turn per session"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Store user_email, user_name, user_sub on user messages",
+      "notes": "",
+      "question": "Q7 Persist identity on messages?",
+      "rec": "Store user_email, user_name, user_sub on user messages"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "GET /api/health stays public",
+      "notes": "",
+      "question": "Q8 Protect health?",
+      "rec": "GET /api/health stays public"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Authorization Code + PKCE + state",
+      "notes": "",
+      "question": "Q9 PKCE?",
+      "rec": "Authorization Code + PKCE + state"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Cookie max-age 7 days absolute",
+      "notes": "",
+      "question": "Q10 Cookie lifetime?",
+      "rec": "Cookie max-age 7 days absolute"
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "In-memory sessions; re-login after restart",
+      "notes": "",
+      "question": "Q11 Survive restart?",
+      "rec": "In-memory sessions; re-login after restart"
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "X-Marble-Requested-With on mutating SPA API calls",
+      "notes": "",
+      "question": "Q12 CSRF?",
+      "rec": "X-Marble-Requested-With on mutating SPA API calls"
+    },
+    "Q13": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Do not send user identity to the model",
+      "notes": "",
+      "question": "Q13 Model sees identity?",
+      "rec": "Prefix model-facing user content with [email]"
+    },
+    "Q14": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Settings shows allowlist emails; health shows account count only",
+      "notes": "",
+      "question": "Q14 Settings vs health?",
+      "rec": "Settings count only"
+    },
+    "Q15": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Exact emails only; no domain wildcards",
+      "notes": "",
+      "question": "Q15 Domain wildcards?",
+      "rec": "Exact emails only; no domain wildcards"
+    },
+    "Q16": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No extra --auth-required; mode from config",
+      "notes": "",
+      "question": "Q16 --auth-required?",
+      "rec": "No extra --auth-required; mode from config"
+    },
+    "Q17": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "A+B — log and session events; no chat/model noise",
+      "notes": "Attribute Stop / cron Run-now to acting user in server log and session events only",
+      "question": "Q17 Attribute Stop / cron Run-now?",
+      "rec": "A+B — log and session events; no chat/model noise"
+    },
+    "Q18": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "SSE cookie; 401 re-login",
+      "notes": "",
+      "question": "Q18 SSE auth?",
+      "rec": "SSE cookie; 401 re-login"
+    },
+    "Q19": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Explicit --oauth-redirect-url",
+      "notes": "",
+      "question": "Q19 Redirect URL?",
+      "rec": "Explicit --oauth-redirect-url"
+    },
+    "Q20": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Secure=false only for localhost/127.0.0.1",
+      "notes": "",
+      "question": "Q20 Local cookies?",
+      "rec": "Secure=false only for localhost/127.0.0.1"
+    },
+    "Q21": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — optional TLS termination in Marble via cert/key files",
+      "notes": "",
+      "question": "Q21 TLS in process?",
+      "rec": "Yes — optional TLS termination in Marble via cert/key files"
+    },
+    "Q22": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "--tls-cert-file and --tls-key-file",
+      "notes": "",
+      "question": "Q22 TLS flag names?",
+      "rec": "--tls-cert-file and --tls-key-file"
+    },
+    "Q23": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "File only in v1; optional --tls-key-env later if needed",
+      "notes": "",
+      "question": "Q23 Key via env?",
+      "rec": "File only in v1; optional --tls-key-env later if needed"
+    },
+    "Q24": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer automatic Let's Encrypt; document file certs and reverse proxy",
+      "notes": "",
+      "question": "Q24 Let's Encrypt?",
+      "rec": "Defer automatic Let's Encrypt; document file certs and reverse proxy"
+    },
+    "Q25": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Fatal startup if only one of cert/key is set",
+      "notes": "",
+      "question": "Q25 Partial TLS flags?",
+      "rec": "Fatal startup if only one of cert/key is set"
+    },
+    "Q26": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "No automatic HTTP→HTTPS redirect listener on :80 in v1",
+      "notes": "",
+      "question": "Q26 Port 80 redirect?",
+      "rec": "No automatic HTTP→HTTPS redirect listener on :80 in v1"
+    },
+    "Q27": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer client-certificate mTLS",
+      "notes": "",
+      "question": "Q27 mTLS?",
+      "rec": "Defer client-certificate mTLS"
+    },
+    "Q28": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Allow reverse-proxy / load-balancer TLS termination without cert files on the harness; OAuth https redirect remains valid",
+      "notes": "Harness may sit behind Caddy, AWS ALB, etc. — oauth config valid without local certificate files",
+      "question": "Q28 https redirect without in-process TLS?",
+      "rec": "Fatal if oauth-redirect-url is https but TLS not configured"
+    },
+    "Q28b": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Warn if redirect is https and no in-process TLS; allow reverse-proxy setups",
+      "notes": "",
+      "question": "Q28b Warn not fatal for reverse proxy?",
+      "rec": "Warn if redirect is https and no in-process TLS; allow reverse-proxy setups"
+    }
+  }
+}

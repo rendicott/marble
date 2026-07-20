@@ -125,10 +125,24 @@
   }
 
   function api(path, opts) {
+    opts = opts || {};
+    const method = (opts.method || "GET").toUpperCase();
+    const headers = {
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    };
+    if (method !== "GET" && method !== "HEAD") {
+      headers["X-Marble-Requested-With"] = "fetch";
+    }
     return fetch(path, {
-      headers: { "Content-Type": "application/json", ...(opts && opts.headers) },
       ...opts,
+      headers,
+      credentials: "same-origin",
     }).then(async (res) => {
+      if (res.status === 401) {
+        location.href = "/auth/login?next=" + encodeURIComponent(location.pathname);
+        throw new Error("auth_required");
+      }
       if (!res.ok) throw new Error(await res.text());
       const ct = res.headers.get("content-type") || "";
       if (ct.includes("application/json")) return res.json();
@@ -291,6 +305,12 @@
           ${ro("Model auth", modelAuthLabel(r), "model_auth")}
           ${ro("API key env (--api-key-env)", r.model_auth_env || "—", "model_auth_env")}
           ${ro("API key configured", String(!!r.model_auth_configured), "model_auth_configured")}
+          ${ro("UI auth mode", r.auth_mode || "open", "auth_mode")}
+          ${r.auth_mode === "google" ? ro("OAuth client id", r.oauth_client_id || "—", "oauth_client_id") : ""}
+          ${r.auth_mode === "google" ? ro("OAuth redirect", r.oauth_redirect_url || "—", "oauth_redirect") : ""}
+          ${r.auth_mode === "google" ? ro("Allowlisted admins", (r.oauth_allow_emails && r.oauth_allow_emails.length) ? r.oauth_allow_emails.join(", ") : "—", "oauth_allow") : ""}
+          ${r.auth_mode === "google" && r.current_user ? ro("Signed in as", r.current_user.email || r.current_user.name || "—", "current_user") : ""}
+          ${ro("TLS enabled", String(!!r.tls_enabled), "tls_enabled")}
           ${ro("Context limit (tokens)", r.context_limit, "context_limit")}
           ${ro("Max output (tokens)", r.max_output, "max_output")}
           ${ro("Context reserve (tokens)", r.context_reserve, "context_reserve")}

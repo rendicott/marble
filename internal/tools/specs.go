@@ -341,8 +341,8 @@ func allSpecs() []model.ToolSpec {
 					},
 				},
 			}),
-		// mpub (ADR-0009) — human-facing pages under $MEMORY/mpub, served at /mpub/{slug}
-		spec("mpub_publish", "Publish content to the Marble mpub server ($MEMORY/mpub). Primary format is HTML; markdown also supported. Returns URL like http://127.0.0.1:8080/mpub/{slug}. Not for workspace project files.",
+		// mpub (ADR-0009 + visibility) — human-facing pages under $MEMORY/mpub
+		spec("mpub_publish", "Publish content to Marble mpub ($MEMORY/mpub). Default visibility is private (allowlisted admins only when OAuth is on). Set visibility=public only when the user explicitly asks to share openly. HTML preferred; markdown ok.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -360,11 +360,15 @@ func allSpecs() []model.ToolSpec {
 						"type":        "string",
 						"description": "overwrite (default) | fail",
 					},
+					"visibility": map[string]interface{}{
+						"type":        "string",
+						"description": "private (default for new) | public. Omit on overwrite to keep existing visibility.",
+					},
 					"tags": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 				},
 				"required": []string{"slug", "content"},
 			}),
-		spec("mpub_list", "List published mpub documents (slug, title, url).",
+		spec("mpub_list", "List published mpub documents (slug, title, url, visibility).",
 			map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}),
 		spec("mpub_get", "Fetch an mpub document by slug (meta + content).",
 			map[string]interface{}{
@@ -381,6 +385,15 @@ func allSpecs() []model.ToolSpec {
 					"slug": map[string]interface{}{"type": "string"},
 				},
 				"required": []string{"slug"},
+			}),
+		spec("mpub_set_visibility", "Set an mpub page to public or private (promote/demote without rewriting body).",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"slug":       map[string]interface{}{"type": "string"},
+					"visibility": map[string]interface{}{"type": "string", "description": "public | private"},
+				},
+				"required": []string{"slug", "visibility"},
 			}),
 	}
 }

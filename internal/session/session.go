@@ -48,6 +48,17 @@ type Message struct {
 	ToolName   string    `json:"tool_name,omitempty"`
 	ToolCallID string    `json:"tool_call_id,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+	// Actor identity for human user messages (ADR-0017); never injected into model history.
+	UserEmail string `json:"user_email,omitempty"`
+	UserName  string `json:"user_name,omitempty"`
+	UserSub   string `json:"user_sub,omitempty"`
+}
+
+// Actor is optional identity for a human-authored message.
+type Actor struct {
+	Email string
+	Name  string
+	Sub   string
 }
 
 // Summary is a list-view row.
@@ -121,7 +132,7 @@ You work inside a single workspace directory (tool jail). Memory is separate.
 
 Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), surgical edits (edit_file requires prior file_read in the same turn; apply_patch is atomic), shell_execute (policy-limited; prefer start_background_task for jobs >60s), background tasks, schedule_continuation, get_context_usage, session_compact when context is high, memory_* and skill_* for long-term knowledge, attach_file for UI-only file chips, web_fetch for HTTP(S) page retrieval.
 Cron: use cron_list/get/create/update/delete/run for durable recurring schedules (SQLite, survive restarts). schedule_continuation is one-shot delay or wait-for-background-task only. Prefer interval ≥ 60s; target a session_id for a known thread, or omit session_id so the first fire creates a session. Keep cron prompts short.
-mpub_publish / mpub_list / mpub_get / mpub_unpublish: publish human-facing pages under $MEMORY/mpub, served at /mpub/{slug} on this harness (primary content_type text/html; markdown also supported). Use for research notes and shareable results — not for project source files (use workspace tools) and not for agent memory_write knowledge.
+mpub_publish / mpub_list / mpub_get / mpub_unpublish / mpub_set_visibility: publish human-facing pages under $MEMORY/mpub, served at /mpub/{slug}. Default visibility is private (allowlisted admins only when OAuth is on). Set visibility=public only when the user explicitly asks to share openly. Use mpub_set_visibility to promote/demote without rewriting the body. Primary content_type text/html; markdown also supported. Use for research notes and shareable results — not for project source files (use workspace tools) and not for agent memory_write knowledge.
 MCP tools (if configured in mcp.json) appear as mcp_<server>_<tool> plus resource/prompt helpers — use them for web search (e.g. Tavily MCP) and other integrations.
 
 Web research: use web search if available (e.g. mcp_tavily_tavily_search) to discover real URLs, then use the web_fetch native tool for deeper analysis of chosen pages. Do not invent URLs. Prefer web_fetch over Tavily extract/crawl when a simple page fetch works; use extract/crawl/research only if fetch fails or multi-page crawl is needed.
@@ -311,6 +322,9 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 			ToolName:   m.ToolName,
 			ToolCallID: m.ToolCallID,
 			CreatedAt:  m.CreatedAt,
+			UserEmail:  m.UserEmail,
+			UserName:   m.UserName,
+			UserSub:    m.UserSub,
 		}
 	}
 	st := s.Status
@@ -381,9 +395,13 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 			ToolName:   m.ToolName,
 			ToolCallID: m.ToolCallID,
 			CreatedAt:  m.CreatedAt,
+			UserEmail:  m.UserEmail,
+			UserName:   m.UserName,
+			UserSub:    m.UserSub,
 		})
 		switch m.Role {
 		case "user":
+			// Model history: content only (ADR-0017 Q13)
 			s.history = append(s.history, model.Message{Role: "user", Content: m.Content})
 		case "assistant":
 			s.history = append(s.history, model.Message{Role: "assistant", Content: m.Content})

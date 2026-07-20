@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rendicott/marble/internal/auth"
 	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/cron"
 	"github.com/rendicott/marble/internal/mcp"
@@ -32,6 +33,7 @@ type Server struct {
 	Tools    *tools.Registry
 	Mpub     *mpub.Store
 	Cron     *cron.Manager
+	Auth     *auth.Manager
 	Mux      *http.ServeMux
 }
 
@@ -43,6 +45,9 @@ func New(cfg config.Config, client *model.Client, reg *session.Registry, daemon 
 }
 
 func (s *Server) routes() {
+	if s.Auth != nil {
+		s.Auth.RegisterRoutes(s.Mux)
+	}
 	s.Mux.HandleFunc("/api/health", s.handleHealth)
 	s.Mux.HandleFunc("/api/sessions", s.handleSessions)
 	s.Mux.HandleFunc("/api/sessions/", s.handleSessionSub)
@@ -59,14 +64,18 @@ func (s *Server) routes() {
 	s.Mux.Handle("/", web.Handler())
 }
 
-// Handler returns the root handler with logging.
+// Handler returns the root handler with auth middleware + logging.
 func (s *Server) Handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		lw := &statusWriter{ResponseWriter: w, code: 200}
 		s.Mux.ServeHTTP(lw, r)
 		log.Printf("%s %s %d %s", r.Method, r.URL.Path, lw.code, time.Since(start).Round(time.Millisecond))
 	})
+	if s.Auth != nil {
+		h = s.Auth.Middleware(h)
+	}
+	return h
 }
 
 type statusWriter struct {
@@ -113,6 +122,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"memory":          s.Cfg.Memory,
 	}
 	for k, v := range s.Cfg.ModelAuthPublic() {
+		out[k] = v
+	}
+	for k, v := range s.Cfg.AuthPublicHealth() {
 		out[k] = v
 	}
 	if store := s.Registry.Store(); store != nil {
@@ -300,6 +312,15 @@ func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request, id st
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	u := auth.UserFromContext(r.Context())
+	auth.LogAction("stop", "session="+id, u)
+	if s.Registry != nil {
+		email, name := "", ""
+		if u != nil {
+			email, name = u.Email, u.Name
+		}
+		s.Registry.LogActorEventEmail(id, "stop", email, name)
+	}
 	if err := s.Registry.Stop(id); err != nil {
 		if session.IsNotBusy(err) {
 			http.Error(w, "session not busy", http.StatusConflict)
@@ -347,7 +368,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request, id strin
 		http.Error(w, "content required", http.StatusBadRequest)
 		return
 	}
-	if err := s.Registry.PostUserMessage(id, body.Content); err != nil {
+	var actor *session.Actor
+	if u := auth.UserFromContext(r.Context()); u != nil {
+		actor = &session.Actor{Email: u.Email, Name: u.Name, Sub: u.Sub}
+	}
+	if err := s.Registry.PostUserMessage(id, body.Content, actor); err != nil {
 		if session.IsBusy(err) {
 			http.Error(w, "session busy", http.StatusConflict)
 			return

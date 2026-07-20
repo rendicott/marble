@@ -18,17 +18,54 @@ const (
 	DirName = "mpub"
 )
 
+// Visibility values for published pages (ADR-0017 follow-on).
+const (
+	VisibilityPublic  = "public"
+	VisibilityPrivate = "private"
+)
+
 // Meta is stored as meta.json beside the content file.
 type Meta struct {
 	Slug        string   `json:"slug"`
 	Title       string   `json:"title"`
 	ContentType string   `json:"content_type"`
+	// Visibility is "public" or "private". Empty in legacy meta → treated as public
+	// (preserve old links). New publishes default to private.
+	Visibility  string   `json:"visibility,omitempty"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
 	SessionID   string   `json:"session_id,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 	Bytes       int      `json:"bytes"`
 	Filename    string   `json:"filename"` // content.html | content.md | content.txt
+}
+
+// EffectiveVisibility returns public|private. Legacy empty → public.
+func EffectiveVisibility(m Meta) string {
+	switch strings.ToLower(strings.TrimSpace(m.Visibility)) {
+	case VisibilityPrivate:
+		return VisibilityPrivate
+	case VisibilityPublic:
+		return VisibilityPublic
+	default:
+		// Pre-visibility docs were fully public.
+		return VisibilityPublic
+	}
+}
+
+// ParseVisibility returns public|private or error. emptyOK: "" means unset (caller decides default).
+func ParseVisibility(v string, emptyOK bool) (string, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		if emptyOK {
+			return "", nil
+		}
+		return VisibilityPrivate, nil
+	}
+	if v == VisibilityPublic || v == VisibilityPrivate {
+		return v, nil
+	}
+	return "", fmt.Errorf("visibility must be public or private")
 }
 
 // Doc is a published document.
@@ -129,7 +166,8 @@ func normalizeContentType(ct string) string {
 
 // Publish writes or overwrites a document.
 // ifExistsFail: when true, fail if slug already exists (Q4).
-func (s *Store) Publish(slug, title, content, contentType, sessionID string, tags []string, ifExistsFail bool) (*Meta, error) {
+// visibility: "public" | "private" | "" (empty: new→private, overwrite→keep existing).
+func (s *Store) Publish(slug, title, content, contentType, sessionID string, tags []string, ifExistsFail bool, visibility string) (*Meta, error) {
 	dir, err := s.slugDir(slug)
 	if err != nil {
 		return nil, err
@@ -140,6 +178,10 @@ func (s *Store) Publish(slug, title, content, contentType, sessionID string, tag
 	ct := normalizeContentType(contentType)
 	if ct != "text/html" && ct != "text/markdown" && ct != "text/plain" {
 		return nil, fmt.Errorf("unsupported content_type %q (use text/html, text/markdown, text/plain)", contentType)
+	}
+	visIn, err := ParseVisibility(visibility, true)
+	if err != nil {
+		return nil, err
 	}
 
 	exists := false
@@ -152,9 +194,15 @@ func (s *Store) Publish(slug, title, content, contentType, sessionID string, tag
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	var created string
+	prevVis := VisibilityPrivate
 	if exists {
-		if old, err := s.ReadMeta(slug); err == nil && old.CreatedAt != "" {
-			created = old.CreatedAt
+		if old, err := s.ReadMeta(slug); err == nil {
+			if old.CreatedAt != "" {
+				created = old.CreatedAt
+			} else {
+				created = now
+			}
+			prevVis = EffectiveVisibility(*old)
 		} else {
 			created = now
 		}
@@ -162,6 +210,15 @@ func (s *Store) Publish(slug, title, content, contentType, sessionID string, tag
 		created = now
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
+		}
+	}
+
+	vis := visIn
+	if vis == "" {
+		if exists {
+			vis = prevVis
+		} else {
+			vis = VisibilityPrivate
 		}
 	}
 
@@ -181,6 +238,7 @@ func (s *Store) Publish(slug, title, content, contentType, sessionID string, tag
 		Slug:        slug,
 		Title:       title,
 		ContentType: ct,
+		Visibility:  vis,
 		CreatedAt:   created,
 		UpdatedAt:   now,
 		SessionID:   sessionID,
@@ -188,14 +246,40 @@ func (s *Store) Publish(slug, title, content, contentType, sessionID string, tag
 		Bytes:       len(content),
 		Filename:    fn,
 	}
-	b, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "meta.json"), append(b, '\n'), 0o644); err != nil {
+	if err := s.writeMeta(dir, &meta); err != nil {
 		return nil, err
 	}
 	return &meta, nil
+}
+
+// SetVisibility updates only visibility (public|private) and updated_at.
+func (s *Store) SetVisibility(slug, visibility string) (*Meta, error) {
+	vis, err := ParseVisibility(visibility, false)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := s.ReadMeta(slug)
+	if err != nil {
+		return nil, fmt.Errorf("slug %q not found", slug)
+	}
+	dir, err := s.slugDir(slug)
+	if err != nil {
+		return nil, err
+	}
+	meta.Visibility = vis
+	meta.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := s.writeMeta(dir, meta); err != nil {
+		return nil, err
+	}
+	return meta, nil
+}
+
+func (s *Store) writeMeta(dir string, meta *Meta) error {
+	b, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "meta.json"), append(b, '\n'), 0o644)
 }
 
 // ReadMeta loads meta.json for a slug.

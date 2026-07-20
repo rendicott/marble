@@ -170,6 +170,8 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.mpubGet(argsJSON)
 	case "mpub_unpublish":
 		out, err = r.mpubUnpublish(argsJSON)
+	case "mpub_set_visibility":
+		out, err = r.mpubSetVisibility(argsJSON)
 	default:
 		return fmt.Sprintf("error: unknown tool %q", name)
 	}

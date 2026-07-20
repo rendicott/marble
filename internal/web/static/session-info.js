@@ -21,10 +21,24 @@
   let refreshBusyOnly = false;
 
   function api(path, opts) {
+    opts = opts || {};
+    const method = (opts.method || "GET").toUpperCase();
+    const headers = {
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    };
+    if (method !== "GET" && method !== "HEAD") {
+      headers["X-Marble-Requested-With"] = "fetch";
+    }
     return fetch(path, {
-      headers: { "Content-Type": "application/json", ...(opts && opts.headers) },
       ...opts,
+      headers,
+      credentials: "same-origin",
     }).then(async (res) => {
+      if (res.status === 401) {
+        location.href = "/auth/login?next=" + encodeURIComponent(location.pathname);
+        throw new Error("auth_required");
+      }
       if (!res.ok) throw new Error(await res.text());
       const ct = res.headers.get("content-type") || "";
       if (ct.includes("application/json")) return res.json();

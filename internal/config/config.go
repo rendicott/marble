@@ -52,6 +52,22 @@ type Config struct {
 	APIKeyEnvUsed string
 	// APIKeyEnvConfigured is true when a non-empty key was resolved.
 	APIKeyEnvConfigured bool
+
+	// Auth / OAuth (ADR-0017)
+	OAuthClientID         string
+	OAuthClientSecretEnv  string
+	OAuthClientSecret     string // resolved; never log
+	OAuthRedirectURL      string
+	OAuthAllowEmails      string // comma-separated raw flag
+	OAuthAllowFile        string
+	// AuthMode is "open" or "google" after validation.
+	AuthMode string
+	// AuthAllowlist is normalized lowercase emails.
+	AuthAllowlist []string
+
+	// TLS (ADR-0017)
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // Budget returns the maximum estimated tokens allowed for prompt material
@@ -101,6 +117,16 @@ func ParseFlags(args []string) (Config, error) {
 	fs.BoolVar(&cfg.MCPDisable, "mcp-disable", false, "Disable MCP client entirely")
 	fs.DurationVar(&cfg.MCPTimeout, "mcp-timeout", 60*time.Second, "Default timeout for MCP tool/resource/prompt calls")
 
+	// ADR-0017 Google OAuth
+	fs.StringVar(&cfg.OAuthClientID, "oauth-client-id", "", "Google OAuth client ID (enables google auth mode when fully configured)")
+	fs.StringVar(&cfg.OAuthClientSecretEnv, "oauth-client-secret-env", "", "Env var name holding Google OAuth client secret")
+	fs.StringVar(&cfg.OAuthRedirectURL, "oauth-redirect-url", "", "OAuth redirect URL registered in Google Console (e.g. https://host:8080/auth/callback)")
+	fs.StringVar(&cfg.OAuthAllowEmails, "oauth-allow-emails", "", "Comma-separated allowlisted emails (union with --oauth-allow-file)")
+	fs.StringVar(&cfg.OAuthAllowFile, "oauth-allow-file", "", "Path to allowlist file (one email per line, # comments)")
+	// ADR-0017 TLS
+	fs.StringVar(&cfg.TLSCertFile, "tls-cert-file", "", "Path to TLS certificate PEM (optional HTTPS)")
+	fs.StringVar(&cfg.TLSKeyFile, "tls-key-file", "", "Path to TLS private key PEM")
+
 	// Defaults not exposed as flags (ADR-0005 locked ratios)
 	cfg.ContextWarnRatio = 0.60
 	cfg.ContextAutoCompactRatio = 0.85
@@ -110,6 +136,9 @@ func ParseFlags(args []string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.resolveAPIKey()
+	if err := cfg.resolveAuthAndTLS(); err != nil {
+		return Config{}, err
+	}
 	if cfg.ContextLimit <= 0 || cfg.MaxOutput <= 0 {
 		return Config{}, fmt.Errorf("context-limit and max-output must be positive")
 	}
@@ -181,12 +210,163 @@ func (c Config) ModelAuthPublic() map[string]interface{} {
 		mode = "env"
 	}
 	out := map[string]interface{}{
-		"model_auth":             mode,
-		"model_auth_env":         strings.TrimSpace(c.APIKeyEnv),
-		"model_auth_env_used":    c.APIKeyEnvUsed,
-		"model_auth_configured":  c.APIKeyEnvConfigured,
+		"model_auth":            mode,
+		"model_auth_env":        strings.TrimSpace(c.APIKeyEnv),
+		"model_auth_env_used":   c.APIKeyEnvUsed,
+		"model_auth_configured": c.APIKeyEnvConfigured,
 	}
 	return out
+}
+
+// AuthPublicHealth fields safe for public GET /api/health (ADR-0017 Q8/Q14).
+func (c Config) AuthPublicHealth() map[string]interface{} {
+	mode := c.AuthMode
+	if mode == "" {
+		mode = "open"
+	}
+	out := map[string]interface{}{
+		"auth_mode":     mode,
+		"auth_accounts": len(c.AuthAllowlist),
+		"tls_enabled":   c.TLSEnabled(),
+	}
+	return out
+}
+
+// AuthPublicSettings fields for authenticated Settings UI (includes allowlist emails).
+func (c Config) AuthPublicSettings() map[string]interface{} {
+	mode := c.AuthMode
+	if mode == "" {
+		mode = "open"
+	}
+	emails := c.AuthAllowlist
+	if emails == nil {
+		emails = []string{}
+	}
+	return map[string]interface{}{
+		"auth_mode":           mode,
+		"oauth_client_id":     c.OAuthClientID,
+		"oauth_redirect_url":  c.OAuthRedirectURL,
+		"oauth_allow_emails":  emails,
+		"oauth_allow_file":    c.OAuthAllowFile,
+		"auth_accounts":       len(emails),
+		"tls_enabled":         c.TLSEnabled(),
+		"tls_cert_file":       c.TLSCertFile,
+		"tls_key_file_set":    strings.TrimSpace(c.TLSKeyFile) != "",
+	}
+}
+
+// TLSEnabled reports whether both cert and key paths are set.
+func (c Config) TLSEnabled() bool {
+	return strings.TrimSpace(c.TLSCertFile) != "" && strings.TrimSpace(c.TLSKeyFile) != ""
+}
+
+// CookieSecure reports whether session cookies should set Secure.
+func (c Config) CookieSecure() bool {
+	u := strings.ToLower(strings.TrimSpace(c.OAuthRedirectURL))
+	if strings.HasPrefix(u, "http://localhost") || strings.HasPrefix(u, "http://127.0.0.1") {
+		return false
+	}
+	return strings.HasPrefix(u, "https://") || c.TLSEnabled()
+}
+
+// resolveAuthAndTLS validates OAuth + TLS flags (ADR-0017).
+func (c *Config) resolveAuthAndTLS() error {
+	c.AuthMode = "open"
+	c.AuthAllowlist = nil
+	c.OAuthClientSecret = ""
+
+	cid := strings.TrimSpace(c.OAuthClientID)
+	secEnv := strings.TrimSpace(c.OAuthClientSecretEnv)
+	redir := strings.TrimSpace(c.OAuthRedirectURL)
+	emailsFlag := strings.TrimSpace(c.OAuthAllowEmails)
+	fileFlag := strings.TrimSpace(c.OAuthAllowFile)
+
+	anyOAuth := cid != "" || secEnv != "" || redir != "" || emailsFlag != "" || fileFlag != ""
+	if anyOAuth {
+		if cid == "" || secEnv == "" || redir == "" {
+			return fmt.Errorf("oauth: partial config — require --oauth-client-id, --oauth-client-secret-env, --oauth-redirect-url, and allowlist (emails and/or file)")
+		}
+		secret := strings.TrimSpace(os.Getenv(secEnv))
+		if secret == "" {
+			return fmt.Errorf("oauth: env %q is empty (set client secret)", secEnv)
+		}
+		c.OAuthClientSecret = secret
+		list, err := loadAllowlist(emailsFlag, fileFlag)
+		if err != nil {
+			return err
+		}
+		if len(list) == 0 {
+			return fmt.Errorf("oauth: allowlist is empty (use --oauth-allow-emails and/or --oauth-allow-file)")
+		}
+		c.AuthAllowlist = list
+		c.AuthMode = "google"
+		c.OAuthClientID = cid
+		c.OAuthRedirectURL = redir
+		c.OAuthClientSecretEnv = secEnv
+	}
+
+	cert := strings.TrimSpace(c.TLSCertFile)
+	key := strings.TrimSpace(c.TLSKeyFile)
+	if (cert == "") != (key == "") {
+		return fmt.Errorf("tls: require both --tls-cert-file and --tls-key-file (or neither)")
+	}
+	if cert != "" {
+		absC, err := filepath.Abs(cert)
+		if err != nil {
+			return fmt.Errorf("tls cert: %w", err)
+		}
+		absK, err := filepath.Abs(key)
+		if err != nil {
+			return fmt.Errorf("tls key: %w", err)
+		}
+		if _, err := os.Stat(absC); err != nil {
+			return fmt.Errorf("tls cert: %w", err)
+		}
+		if _, err := os.Stat(absK); err != nil {
+			return fmt.Errorf("tls key: %w", err)
+		}
+		c.TLSCertFile = absC
+		c.TLSKeyFile = absK
+	}
+	return nil
+}
+
+func loadAllowlist(emailsCSV, filePath string) ([]string, error) {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(e string) {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			return
+		}
+		if _, ok := seen[e]; ok {
+			return
+		}
+		seen[e] = struct{}{}
+		out = append(out, e)
+	}
+	for _, p := range strings.Split(emailsCSV, ",") {
+		add(p)
+	}
+	filePath = strings.TrimSpace(filePath)
+	if filePath != "" {
+		b, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("oauth allow-file: %w", err)
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			// strip inline comments
+			if i := strings.Index(line, "#"); i >= 0 {
+				line = strings.TrimSpace(line[:i])
+			}
+			add(line)
+		}
+	}
+	return out, nil
 }
 
 // resolveMemoryDir ensures --memory is an absolute directory.

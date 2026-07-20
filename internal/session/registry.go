@@ -217,7 +217,8 @@ func (r *Registry) List() []Summary {
 }
 
 // PostUserMessage routes a message to a session via the runner.
-func (r *Registry) PostUserMessage(id, text string) error {
+// actor may be nil in open mode.
+func (r *Registry) PostUserMessage(id, text string, actor *Actor) error {
 	s, err := r.EnsureLoaded(id)
 	if err != nil {
 		return err
@@ -225,10 +226,27 @@ func (r *Registry) PostUserMessage(id, text string) error {
 	if s.Status == "closed" {
 		return fmt.Errorf("session is closed")
 	}
-	if !r.runner.PostUserMessage(s, text) {
+	if !r.runner.PostUserMessage(s, text, actor) {
 		return errBusy
 	}
 	return nil
+}
+
+// LogActorEventEmail records an attributed operator action (ADR-0017 Q17).
+// Does not inject chat/model noise.
+func (r *Registry) LogActorEventEmail(sessionID, action, email, name string) {
+	s, err := r.EnsureLoaded(sessionID)
+	if err != nil {
+		return
+	}
+	detail := action
+	if email != "" {
+		detail = action + " by=" + email
+		if name != "" {
+			detail += " name=" + name
+		}
+	}
+	r.logEvent(s, "actor_action", "system", detail, "", "", "", nil, nil, nil, nil, nil, "", "")
 }
 
 // Stop requests cancel of the in-flight turn (ADR-0010).

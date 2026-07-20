@@ -30,6 +30,10 @@ type TranscriptMessage struct {
 	ToolName   string    `json:"tool_name,omitempty"`
 	ToolCallID string    `json:"tool_call_id,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+	// Actor identity (ADR-0017); UI/MD only — not model-facing.
+	UserEmail string `json:"user_email,omitempty"`
+	UserName  string `json:"user_name,omitempty"`
+	UserSub   string `json:"user_sub,omitempty"`
 }
 
 // SessionDoc is the full on-disk session.
@@ -84,8 +88,19 @@ func EncodeSession(doc *SessionDoc) string {
 			}
 		default:
 			fmt.Fprintf(&b, "## %s · %s\n", ts, m.Role)
-			if m.ID != "" {
-				fmt.Fprintf(&b, "<!-- id: %s -->\n", m.ID)
+			if m.ID != "" || m.UserEmail != "" {
+				// HTML comment carries id + optional actor (ADR-0017)
+				fmt.Fprintf(&b, "<!-- id: %s", m.ID)
+				if m.UserEmail != "" {
+					fmt.Fprintf(&b, " user_email: %s", m.UserEmail)
+				}
+				if m.UserName != "" {
+					fmt.Fprintf(&b, " user_name: %q", m.UserName)
+				}
+				if m.UserSub != "" {
+					fmt.Fprintf(&b, " user_sub: %s", m.UserSub)
+				}
+				b.WriteString(" -->\n")
 			}
 		}
 		writeMessageContent(&b, m.Content)
@@ -229,20 +244,83 @@ func parseMessages(body string) []TranscriptMessage {
 			trim = strings.TrimPrefix(trim, "<!--")
 			trim = strings.TrimSuffix(trim, "-->")
 			trim = strings.TrimSpace(trim)
-			for _, part := range strings.Fields(trim) {
-				if strings.HasPrefix(part, "id:") {
-					cur.ID = strings.TrimPrefix(part, "id:")
-				}
-				if strings.HasPrefix(part, "tool_call_id:") {
-					cur.ToolCallID = strings.TrimPrefix(part, "tool_call_id:")
-				}
-			}
+			applyHTMLMeta(cur, trim)
 			continue
 		}
 		content = append(content, line)
 	}
 	flush()
 	return out
+}
+
+func applyHTMLMeta(cur *TranscriptMessage, trim string) {
+	// Parse key: value pairs; values may be "quoted".
+	for len(trim) > 0 {
+		trim = strings.TrimSpace(trim)
+		if trim == "" {
+			break
+		}
+		colon := strings.IndexByte(trim, ':')
+		if colon <= 0 {
+			break
+		}
+		key := strings.TrimSpace(trim[:colon])
+		rest := strings.TrimSpace(trim[colon+1:])
+		var val string
+		if strings.HasPrefix(rest, "\"") {
+			// quoted
+			rest = rest[1:]
+			end := strings.IndexByte(rest, '"')
+			if end < 0 {
+				val = rest
+				rest = ""
+			} else {
+				val = rest[:end]
+				rest = strings.TrimSpace(rest[end+1:])
+			}
+			trim = rest
+		} else {
+			// unquoted: until next " key:" pattern or end
+			// split on space before next key:
+			sp := -1
+			for i := 0; i < len(rest); i++ {
+				if rest[i] == ' ' {
+					// look ahead for word:
+					j := i + 1
+					for j < len(rest) && rest[j] == ' ' {
+						j++
+					}
+					k := j
+					for k < len(rest) && rest[k] != ':' && rest[k] != ' ' {
+						k++
+					}
+					if k < len(rest) && rest[k] == ':' {
+						sp = i
+						break
+					}
+				}
+			}
+			if sp < 0 {
+				val = rest
+				trim = ""
+			} else {
+				val = strings.TrimSpace(rest[:sp])
+				trim = strings.TrimSpace(rest[sp:])
+			}
+		}
+		switch key {
+		case "id":
+			cur.ID = val
+		case "tool_call_id":
+			cur.ToolCallID = val
+		case "user_email":
+			cur.UserEmail = val
+		case "user_name":
+			cur.UserName = val
+		case "user_sub":
+			cur.UserSub = val
+		}
+	}
 }
 
 // isMessageHeading reports whether line is a Marble message delimiter, not body markdown.

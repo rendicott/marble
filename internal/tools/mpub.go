@@ -13,6 +13,7 @@ type mpubPublishArgs struct {
 	Content     string   `json:"content"`
 	ContentType string   `json:"content_type"`
 	IfExists    string   `json:"if_exists"` // overwrite (default) | fail
+	Visibility  string   `json:"visibility"` // public | private (default private for new)
 	Tags        []string `json:"tags"`
 }
 
@@ -43,7 +44,7 @@ func (r *Registry) mpubPublish(argsJSON string, tc *TurnContext) (string, error)
 	if tc != nil {
 		sessionID = tc.SessionID
 	}
-	meta, err := store.Publish(a.Slug, a.Title, a.Content, a.ContentType, sessionID, a.Tags, ifExistsFail)
+	meta, err := store.Publish(a.Slug, a.Title, a.Content, a.ContentType, sessionID, a.Tags, ifExistsFail, a.Visibility)
 	if err != nil {
 		return "", err
 	}
@@ -54,11 +55,13 @@ func (r *Registry) mpubPublish(argsJSON string, tc *TurnContext) (string, error)
 		"slug":         meta.Slug,
 		"title":        meta.Title,
 		"content_type": meta.ContentType,
+		"visibility":   mpub.EffectiveVisibility(*meta),
 		"path":         path,
 		"url":          url,
 		"bytes":        meta.Bytes,
 		"session_id":   meta.SessionID,
 		"updated_at":   meta.UpdatedAt,
+		"note":         "Default visibility is private (admins only when OAuth is on). Set visibility=public to share openly.",
 	}), nil
 }
 
@@ -83,6 +86,7 @@ func (r *Registry) mpubList(argsJSON string) (string, error) {
 		Slug        string   `json:"slug"`
 		Title       string   `json:"title"`
 		ContentType string   `json:"content_type"`
+		Visibility  string   `json:"visibility"`
 		UpdatedAt   string   `json:"updated_at"`
 		Path        string   `json:"path"`
 		URL         string   `json:"url"`
@@ -92,6 +96,7 @@ func (r *Registry) mpubList(argsJSON string) (string, error) {
 	for _, m := range list {
 		rows = append(rows, row{
 			Slug: m.Slug, Title: m.Title, ContentType: m.ContentType,
+			Visibility: mpub.EffectiveVisibility(m),
 			UpdatedAt: m.UpdatedAt, Path: "/mpub/" + m.Slug,
 			URL: mpub.PublicURL(r.publicAddr(), m.Slug), Tags: m.Tags,
 		})
@@ -137,4 +142,35 @@ func (r *Registry) mpubUnpublish(argsJSON string) (string, error) {
 		return "", err
 	}
 	return mustJSON(map[string]interface{}{"ok": true, "slug": a.Slug, "unpublished": true}), nil
+}
+
+type mpubVisArgs struct {
+	Slug       string `json:"slug"`
+	Visibility string `json:"visibility"`
+}
+
+func (r *Registry) mpubSetVisibility(argsJSON string) (string, error) {
+	var a mpubVisArgs
+	if err := parseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(a.Slug) == "" {
+		return "", fmt.Errorf("slug is required")
+	}
+	store, err := r.mpubStore()
+	if err != nil {
+		return "", err
+	}
+	meta, err := store.SetVisibility(a.Slug, a.Visibility)
+	if err != nil {
+		return "", err
+	}
+	return mustJSON(map[string]interface{}{
+		"ok":         true,
+		"slug":       meta.Slug,
+		"visibility": mpub.EffectiveVisibility(*meta),
+		"path":       "/mpub/" + meta.Slug,
+		"url":        mpub.PublicURL(r.publicAddr(), meta.Slug),
+		"updated_at": meta.UpdatedAt,
+	}), nil
 }
