@@ -307,13 +307,17 @@ chmod +x marble-harness-linux-amd64
   --addr :8080
 ```
 
-**Publish a release** (maintainers):
+**Publish a release** (maintainers — **GitHub Actions only**; do not upload locally built binaries):
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
-# Actions workflow "Release" builds, tests, and uploads assets
+# Workflow "Release" builds on ubuntu-latest, tests, and attaches assets
 ```
+
+If a tag already exists but the workflow failed (e.g. GitHub outage), re-run from the Actions tab:
+
+**Actions → Release → Run workflow** → enter tag `v0.1.0`.
 
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
