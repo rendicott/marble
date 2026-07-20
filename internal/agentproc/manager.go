@@ -135,7 +135,9 @@ func (m *Manager) RunSync(ctx context.Context, sessionID string, req Request) (R
 	defer cancel()
 
 	start := time.Now()
-	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
+	// Same as tools.shellExecute: kill process group on cancel so Wait cannot
+	// hang on stdout/stderr held open by descendants.
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = cwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = mergeEnv(dcfg.Env)
@@ -145,18 +147,27 @@ func (m *Manager) RunSync(ctx context.Context, sessionID string, req Request) (R
 	cmd.Stdout = &limitedBuf{buf: &stdout, max: maxOut}
 	cmd.Stderr = &limitedBuf{buf: &stderr, max: maxOut}
 
-	err = cmd.Run()
+	if err = cmd.Start(); err != nil {
+		return Result{}, err
+	}
+	waitDone := make(chan struct{})
+	go func() {
+		select {
+		case <-runCtx.Done():
+			killProcessGroup(cmd)
+		case <-waitDone:
+		}
+	}()
+	err = cmd.Wait()
+	close(waitDone)
+
 	code := 0
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			code = ee.ExitCode()
 			err = nil
 		} else {
-			if cmd.Process != nil {
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-				time.Sleep(150 * time.Millisecond)
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			}
+			killProcessGroup(cmd)
 			drv, _ := driverFor(req.Format)
 			res := drv.Parse(stdout.String(), stderr.String(), -1)
 			res.DurationMs = time.Since(start).Milliseconds()
@@ -171,6 +182,9 @@ func (m *Manager) RunSync(ctx context.Context, sessionID string, req Request) (R
 			}
 			return res, nil
 		}
+	}
+	if runCtx.Err() != nil {
+		killProcessGroup(cmd)
 	}
 
 	drv, _ := driverFor(req.Format)
@@ -194,7 +208,7 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 
 	timeout := m.clampTimeout(req.TimeoutSec)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = cwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = mergeEnv(dcfg.Env)
@@ -234,7 +248,16 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 	t.PID = cmd.Process.Pid
 
 	go func() {
+		waitDone := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				killProcessGroup(cmd)
+			case <-waitDone:
+			}
+		}()
 		waitErr := cmd.Wait()
+		close(waitDone)
 		code := 0
 		st := StatusExited
 		if waitErr != nil {
@@ -262,6 +285,16 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 	}()
 
 	return t, nil
+}
+
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	pid := cmd.Process.Pid
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	time.Sleep(150 * time.Millisecond)
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 // Get returns a task snapshot.

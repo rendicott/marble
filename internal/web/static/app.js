@@ -436,18 +436,37 @@
     if (els.sessionInfo) els.sessionInfo.disabled = !on;
   }
 
+  function isCronSession(s) {
+    if (!s) return false;
+    if (s.cron) return true;
+    const t = (s.title || "").trim().toLowerCase();
+    return t.startsWith("cron:");
+  }
+
   function sessionRow(s) {
     const btn = document.createElement("button");
     btn.type = "button";
+    const cron = isCronSession(s);
     btn.className =
       "sess" +
       (s.id === activeId ? " active" : "") +
       (s.status === "closed" ? " closed" : "") +
-      (s.kind === "system" ? " system" : "");
+      (s.kind === "system" ? " system" : "") +
+      (cron ? " cron" : "");
     btn.innerHTML = `<div class="title"></div><div class="meta"></div>`;
-    btn.querySelector(".title").textContent = s.title || s.id;
+    const titleEl = btn.querySelector(".title");
+    if (cron) {
+      const jobs = Array.isArray(s.cron_jobs) && s.cron_jobs.length
+        ? `Cron: ${s.cron_jobs.join(", ")}`
+        : "Cron job session";
+      titleEl.innerHTML = `<span class="cron-badge" title="${jobs.replace(/"/g, "&quot;")}">🕐</span> `;
+      titleEl.appendChild(document.createTextNode(s.title || s.id));
+    } else {
+      titleEl.textContent = s.title || s.id;
+    }
     const when = s.updated_at ? new Date(s.updated_at).toLocaleString() : "";
     const flags = [];
+    if (cron) flags.push("cron");
     if (s.status === "closed") flags.push("closed");
     if (s.dirty) flags.push("unsaved");
     if (s.kind === "system") flags.push("system");
@@ -749,6 +768,29 @@
     }
   }
 
+  function setMainTitle(sum, id) {
+    if (!els.title) return;
+    const title = (sum && sum.title) || id || "Select or create a session";
+    if (sum && isCronSession(sum)) {
+      const jobs = Array.isArray(sum.cron_jobs) && sum.cron_jobs.length
+        ? `Cron: ${sum.cron_jobs.join(", ")}`
+        : "Cron job session";
+      els.title.innerHTML = `<span class="cron-badge" title="${String(jobs).replace(/"/g, "&quot;")}">🕐</span> ${escapeHtml(title)} · <span class="muted">${escapeHtml(id || "")}</span>`;
+    } else if (id) {
+      els.title.textContent = `${title} · ${id}`;
+    } else {
+      els.title.textContent = title;
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   async function selectSession(id, opts) {
     hideCtx();
     activeId = id;
@@ -759,7 +801,7 @@
     }
     const data = await api(`/api/sessions/${id}`);
     const sum = data.session || {};
-    els.title.textContent = `${sum.title || id} · ${id}`;
+    setMainTitle(sum, id);
     messages = data.messages || [];
     busy = !!sum.busy;
     setStatus(sum.status === "closed" ? "closed" : busy ? "running" : "idle");

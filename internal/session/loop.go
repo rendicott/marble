@@ -37,6 +37,11 @@ func (r *Runner) PostContinuation(s *Session, text string) bool {
 	return r.postMessage(s, text, true)
 }
 
+// PostCron injects a cron fire prompt (ADR-0015). Caller supplies [cron:id name] prefix.
+func (r *Runner) PostCron(s *Session, text string) bool {
+	return r.postMessage(s, text, true)
+}
+
 func (r *Runner) postMessage(s *Session, text string, continuation bool) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {

@@ -80,6 +80,9 @@ func (s *Server) settingsGet(w http.ResponseWriter, r *http.Request) {
 		"mcp_disabled_cli":      s.Cfg.MCPDisable,
 		"note":                  "from launch flags — restart to change",
 	}
+	for k, v := range s.Cfg.ModelAuthPublic() {
+		runtime[k] = v
+	}
 	if sqldb != nil && sqldb.Writable() {
 		if ver, err := s.readSchemaVer(sqldb); err == nil {
 			runtime["schema_version_db"] = ver

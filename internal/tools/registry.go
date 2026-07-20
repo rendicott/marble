@@ -14,6 +14,7 @@ import (
 	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/bgtask"
 	"github.com/rendicott/marble/internal/continuation"
+	"github.com/rendicott/marble/internal/cron"
 	"github.com/rendicott/marble/internal/mcp"
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/shellpolicy"
@@ -54,6 +55,7 @@ type Registry struct {
 	Policy *shellpolicy.Policy
 	BG     *bgtask.Manager
 	Cont   *continuation.Manager
+	Cron   *cron.Manager
 	MCP    *mcp.Manager
 	Agents *agentproc.Manager
 
@@ -128,6 +130,18 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.checkBG(argsJSON, tc)
 	case "schedule_continuation":
 		out, err = r.scheduleContinuation(argsJSON, tc)
+	case "cron_list":
+		out, err = r.cronList(argsJSON)
+	case "cron_get":
+		out, err = r.cronGet(argsJSON)
+	case "cron_create":
+		out, err = r.cronCreate(argsJSON)
+	case "cron_update":
+		out, err = r.cronUpdate(argsJSON)
+	case "cron_delete":
+		out, err = r.cronDelete(argsJSON)
+	case "cron_run":
+		out, err = r.cronRun(argsJSON)
 	case "get_context_usage":
 		out, err = r.getContextUsage(tc)
 	case "session_compact":

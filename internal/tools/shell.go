@@ -48,7 +48,12 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, bin, flag, a.Command)
+	// Do not use CommandContext alone: it only SIGKILLs the root PID.
+	// cmd.Wait also waits for stdout/stderr copy to finish; a grandchild that
+	// inherits those pipes (e.g. `python3 -m http.server &`) keeps Wait hung
+	// forever even after the shell exits or is killed. Kill the process group
+	// on cancel so descendants die and the pipes close.
+	cmd := exec.Command(bin, flag, a.Command)
 	cmd.Dir = cwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stdout, stderr bytes.Buffer
@@ -60,7 +65,13 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 	cmd.Stderr = &capWriter{buf: &stderr, max: maxOut}
 
 	start := time.Now()
-	err = cmd.Run()
+	if err = cmd.Start(); err != nil {
+		return "", err
+	}
+	waitDone := make(chan struct{})
+	go killProcessGroupOnDone(ctx, cmd, waitDone)
+	err = cmd.Wait()
+	close(waitDone)
 	dur := time.Since(start)
 
 	exit := 0
@@ -68,12 +79,8 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 	killedStop := false
 	if ctx.Err() != nil {
 		killed = true
-		// ADR-0010 Q9: kill process group SIGTERM then SIGKILL (best-effort)
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-			time.Sleep(150 * time.Millisecond)
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		// Best-effort second pass if Wait returned before the killer finished.
+		killProcessGroup(cmd)
 		exit = -1
 		if parent.Err() != nil && parent.Err() != context.DeadlineExceeded {
 			killedStop = true
@@ -98,6 +105,27 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 		fmt.Fprintf(&b, "--- stderr ---\n%s\n", stderr.String())
 	}
 	return b.String(), nil
+}
+
+// killProcessGroupOnDone sends SIGTERM/SIGKILL to the command's process group
+// when ctx is cancelled, so grandchildren cannot keep stdout/stderr pipes open
+// and hang cmd.Wait. waitDone should be closed after Wait returns.
+func killProcessGroupOnDone(ctx context.Context, cmd *exec.Cmd, waitDone <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+		killProcessGroup(cmd)
+	case <-waitDone:
+	}
+}
+
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	pid := cmd.Process.Pid
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	time.Sleep(150 * time.Millisecond)
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 type capWriter struct {

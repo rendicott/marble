@@ -64,6 +64,10 @@ type Summary struct {
 	Busy         bool       `json:"busy"`
 	Loaded       bool       `json:"loaded"`
 	Dirty        bool       `json:"dirty"`
+	// Cron is true when this session is a target of a durable cron job (ADR-0015),
+	// or was auto-created for cron (title prefix "cron:"). Enriched by the API layer.
+	Cron     bool     `json:"cron,omitempty"`
+	CronJobs []string `json:"cron_jobs,omitempty"` // job names when known
 }
 
 // Session is one independent conversation.
@@ -116,6 +120,7 @@ const defaultSystemPrompt = `You are Marble, a general-purpose agent harness for
 You work inside a single workspace directory (tool jail). Memory is separate.
 
 Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), surgical edits (edit_file requires prior file_read in the same turn; apply_patch is atomic), shell_execute (policy-limited; prefer start_background_task for jobs >60s), background tasks, schedule_continuation, get_context_usage, session_compact when context is high, memory_* and skill_* for long-term knowledge, attach_file for UI-only file chips, web_fetch for HTTP(S) page retrieval.
+Cron: use cron_list/get/create/update/delete/run for durable recurring schedules (SQLite, survive restarts). schedule_continuation is one-shot delay or wait-for-background-task only. Prefer interval ≥ 60s; target a session_id for a known thread, or omit session_id so the first fire creates a session. Keep cron prompts short.
 mpub_publish / mpub_list / mpub_get / mpub_unpublish: publish human-facing pages under $MEMORY/mpub, served at /mpub/{slug} on this harness (primary content_type text/html; markdown also supported). Use for research notes and shareable results — not for project source files (use workspace tools) and not for agent memory_write knowledge.
 MCP tools (if configured in mcp.json) appear as mcp_<server>_<tool> plus resource/prompt helpers — use them for web search (e.g. Tavily MCP) and other integrations.
 
@@ -250,6 +255,25 @@ func (s *Session) tryBeginTurn() bool {
 	}
 	s.busy = true
 	return true
+}
+
+// IsBusy reports whether a turn is in progress.
+func (s *Session) IsBusy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.busy
+}
+
+// Reopen clears closed status so a cron/continuation can inject a turn.
+func (s *Session) Reopen() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Status == "closed" {
+		s.Status = "active"
+		s.ClosedAt = nil
+		s.dirty = true
+		s.UpdatedAt = time.Now()
+	}
 }
 
 func (s *Session) endTurn() {

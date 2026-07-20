@@ -94,19 +94,36 @@ type Client struct {
 	BaseURL    string
 	Model      string
 	MaxTokens  int
+	// APIKey when non-empty sets Authorization: Bearer <key> (ADR-0016).
+	// Empty → no Authorization header (local/open endpoints).
+	APIKey     string
 	HTTPClient *http.Client
 }
 
 // New creates a Client. baseURL should include /v1 (no trailing slash required).
-func New(baseURL, model string, maxTokens int) *Client {
+// apiKey may be empty for unauthenticated local models (ADR-0016).
+func New(baseURL, model string, maxTokens int, apiKey string) *Client {
 	return &Client{
 		BaseURL:   strings.TrimRight(baseURL, "/"),
 		Model:     model,
 		MaxTokens: maxTokens,
+		APIKey:    strings.TrimSpace(apiKey),
 		HTTPClient: &http.Client{
 			Timeout: 10 * time.Minute,
 		},
 	}
+}
+
+// setAuth applies Bearer auth when APIKey is set; otherwise omits Authorization.
+func (c *Client) setAuth(req *http.Request) {
+	if c == nil || req == nil {
+		return
+	}
+	key := strings.TrimSpace(c.APIKey)
+	if key == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
 }
 
 // Chat performs a non-streaming chat completion.
@@ -134,7 +151,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message, tools []ToolSpec)
 		return ChatResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer marble")
+	c.setAuth(req)
 
 	start := time.Now()
 	resp, err := c.HTTPClient.Do(req)
@@ -177,7 +194,7 @@ func (c *Client) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer marble")
+	c.setAuth(req)
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return err

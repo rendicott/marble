@@ -44,6 +44,14 @@ type Config struct {
 	MCPConfig  string // --mcp-config path (empty → $MEMORY/mcp.json)
 	MCPDisable bool
 	MCPTimeout time.Duration
+	// APIKeyEnv is the raw --api-key-env flag (comma-separated env var names). ADR-0016.
+	APIKeyEnv string
+	// APIKey is the resolved secret at launch (never log). Empty → no model Authorization.
+	APIKey string
+	// APIKeyEnvUsed is the env var name that supplied APIKey (for health/Settings display).
+	APIKeyEnvUsed string
+	// APIKeyEnvConfigured is true when a non-empty key was resolved.
+	APIKeyEnvConfigured bool
 }
 
 // Budget returns the maximum estimated tokens allowed for prompt material
@@ -74,6 +82,7 @@ func ParseFlags(args []string) (Config, error) {
 
 	fs.StringVar(&cfg.BaseURL, "base-url", "http://127.0.0.1:8000/v1", "OpenAI-compatible API base URL")
 	fs.StringVar(&cfg.Model, "model", "Qwen/Qwen3.5-122B-A10B-FP8", "Model id")
+	fs.StringVar(&cfg.APIKeyEnv, "api-key-env", "", "Env var name(s) for model API key (comma-separated; first non-empty wins). Empty = no auth (ADR-0016)")
 	fs.IntVar(&cfg.ContextLimit, "context-limit", 262144, "Total model context window (tokens)")
 	fs.IntVar(&cfg.MaxOutput, "max-output", 32768, "Max generation tokens per model call")
 	fs.IntVar(&cfg.ContextReserve, "context-reserve", 8192, "Reserved tokens for tool schemas / formatting")
@@ -100,6 +109,7 @@ func ParseFlags(args []string) (Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+	cfg.resolveAPIKey()
 	if cfg.ContextLimit <= 0 || cfg.MaxOutput <= 0 {
 		return Config{}, fmt.Errorf("context-limit and max-output must be positive")
 	}
@@ -136,6 +146,47 @@ func ParseFlags(args []string) (Config, error) {
 	cfg.Memory = absMem
 	cfg.MemoryCreated = created
 	return cfg, nil
+}
+
+// resolveAPIKey reads --api-key-env names from the process environment (ADR-0016).
+// Never logs the secret. First non-empty env value wins.
+func (c *Config) resolveAPIKey() {
+	c.APIKey = ""
+	c.APIKeyEnvUsed = ""
+	c.APIKeyEnvConfigured = false
+	raw := strings.TrimSpace(c.APIKeyEnv)
+	if raw == "" {
+		return
+	}
+	for _, name := range strings.Split(raw, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		val := strings.TrimSpace(os.Getenv(name))
+		if val == "" {
+			continue
+		}
+		c.APIKey = val
+		c.APIKeyEnvUsed = name
+		c.APIKeyEnvConfigured = true
+		return
+	}
+}
+
+// ModelAuthPublic returns safe fields for health / Settings (never the secret).
+func (c Config) ModelAuthPublic() map[string]interface{} {
+	mode := "none"
+	if strings.TrimSpace(c.APIKeyEnv) != "" {
+		mode = "env"
+	}
+	out := map[string]interface{}{
+		"model_auth":             mode,
+		"model_auth_env":         strings.TrimSpace(c.APIKeyEnv),
+		"model_auth_env_used":    c.APIKeyEnvUsed,
+		"model_auth_configured":  c.APIKeyEnvConfigured,
+	}
+	return out
 }
 
 // resolveMemoryDir ensures --memory is an absolute directory.

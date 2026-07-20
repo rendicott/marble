@@ -1,0 +1,104 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0016",
+  "title": "Model API Key Auth",
+  "updated_at": "2026-07-20T00:42:21.580Z",
+  "answers": {
+    "Q1": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "--api-key-env (value is env var name, not the key)",
+      "notes": "",
+      "question": "Q1 CLI flag name?",
+      "rec": "--api-key-env (value is env var name, not the key)"
+    },
+    "Q2": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Comma-separated list; first non-empty env wins",
+      "notes": "",
+      "question": "Q2 Single env name or fallback list?",
+      "rec": "Comma-separated list; first non-empty env wins"
+    },
+    "Q3": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Authorization: Bearer <key> only in v1",
+      "notes": "",
+      "question": "Q3 Header scheme when key present?",
+      "rec": "Authorization: Bearer <key> only in v1"
+    },
+    "Q4": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Omit Authorization when no key (drop dummy Bearer marble)",
+      "notes": "",
+      "question": "Q4 When no key configured?",
+      "rec": "Omit Authorization when no key (drop dummy Bearer marble)"
+    },
+    "Q5": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Show mode + env name + set/unset in health and Settings Runtime; never the secret",
+      "notes": "",
+      "question": "Q5 What to show in health / Settings?",
+      "rec": "Show mode + env name + set/unset in health and Settings Runtime; never the secret"
+    },
+    "Q6": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — Chat and Health (/models) share the same auth",
+      "notes": "",
+      "question": "Q6 Health uses the same auth as Chat?",
+      "rec": "Yes — Chat and Health (/models) share the same auth"
+    },
+    "Q7": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Startup one-liner; never print key; redact Authorization in logs",
+      "notes": "",
+      "question": "Q7 Logging policy?",
+      "rec": "Startup one-liner; never print key; redact Authorization in logs"
+    },
+    "Q8": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer multi-key map; one process = one base URL = one resolved key",
+      "notes": "",
+      "question": "Q8 Multi-provider key map in one process?",
+      "rec": "Defer multi-key map; one process = one base URL = one resolved key"
+    },
+    "Q9": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — document systemd EnvironmentFile + 0600 in README",
+      "notes": "",
+      "question": "Q9 Document systemd EnvironmentFile pattern?",
+      "rec": "Yes — document systemd EnvironmentFile + 0600 in README"
+    },
+    "Q10": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "No literal --api-key in v1 (argv leak)",
+      "notes": "",
+      "question": "Q10 Also support literal --api-key?",
+      "rec": "No literal --api-key in v1 (argv leak)"
+    },
+    "Q11": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — single WARNING at startup if flag set but env empty",
+      "notes": "",
+      "question": "Q11 Warn if flag set but env empty/unset?",
+      "rec": "Yes — single WARNING at startup if flag set but env empty"
+    },
+    "Q12": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Defer custom header names (e.g. x-api-key)",
+      "notes": "",
+      "question": "Q12 Custom header name (e.g. x-api-key)?",
+      "rec": "Defer custom header names (e.g. x-api-key)"
+    }
+  }
+}

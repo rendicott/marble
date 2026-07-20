@@ -59,6 +59,75 @@
       </div>
     </div>
   </div>
+  <div id="cron-modal" class="fs-modal" hidden>
+    <div class="fs-dialog cron-dialog" id="cron-dialog">
+      <div class="fs-top">
+        <div class="fs-title">Cron jobs</div>
+        <div class="fs-top-actions">
+          <button type="button" id="cron-new" class="icon-btn" title="New job">+ New</button>
+          <button type="button" id="cron-refresh" class="icon-btn" title="Refresh">↻</button>
+          <button type="button" id="cron-close" class="icon-btn" title="Close">×</button>
+        </div>
+      </div>
+      <p class="prompt-blurb">
+        Durable schedules that inject a prompt into a session and start a turn.
+        Survive restarts. If the target session is missing, a new one is created and rebound.
+        Busy sessions skip the fire. One-shot delays still use <code>schedule_continuation</code>.
+      </p>
+      <div id="cron-banner" class="settings-banner" hidden></div>
+      <div class="cron-body">
+        <div id="cron-list" class="cron-list"></div>
+        <div id="cron-form" class="cron-form" hidden>
+          <h3 id="cron-form-title">New cron job</h3>
+          <input type="hidden" id="cron-id" />
+          <label class="cron-field">Name
+            <input type="text" id="cron-name" maxlength="80" placeholder="morning-summary" />
+          </label>
+          <label class="cron-check"><input type="checkbox" id="cron-enabled" checked /> Enabled</label>
+          <label class="cron-field">Schedule kind
+            <select id="cron-kind">
+              <option value="cron">Cron (5-field)</option>
+              <option value="interval">Interval</option>
+            </select>
+          </label>
+          <div id="cron-fields-cron">
+            <label class="cron-field">Cron expression <span class="muted">min hour dom mon dow</span>
+              <input type="text" id="cron-expr" class="mono" placeholder="0 8 * * *" />
+            </label>
+          </div>
+          <div id="cron-fields-interval" hidden>
+            <label class="cron-field">Interval seconds <span class="muted">≥ 60</span>
+              <input type="number" id="cron-interval" min="60" step="1" value="300" />
+            </label>
+          </div>
+          <label class="cron-field">Timezone
+            <input type="text" id="cron-tz" placeholder="Local" value="Local" />
+          </label>
+          <label class="cron-field">Target session id <span class="muted">optional</span>
+            <input type="text" id="cron-session" class="mono" placeholder="leave empty → create on first fire" />
+          </label>
+          <label class="cron-field">Prompt
+            <textarea id="cron-prompt" rows="4" placeholder="What should the agent do when this fires?"></textarea>
+          </label>
+          <label class="cron-field">Max runs <span class="muted">optional</span>
+            <input type="number" id="cron-max-runs" min="1" placeholder="unlimited" />
+          </label>
+          <div class="cron-preview-wrap">
+            <div class="muted">Next 5 fire times</div>
+            <div id="cron-preview" class="cron-preview mono"></div>
+          </div>
+          <div class="cron-form-actions">
+            <button type="button" id="cron-save" class="icon-btn" disabled>Save</button>
+            <button type="button" id="cron-cancel" class="icon-btn">Cancel</button>
+          </div>
+        </div>
+        <section class="cron-runs-sec">
+          <h3>Recent runs</h3>
+          <div id="cron-runs" class="cron-runs"></div>
+        </section>
+      </div>
+    </div>
+  </div>
   <div id="settings-modal" class="fs-modal" hidden>
     <div class="fs-dialog settings-dialog" id="settings-dialog">
       <div class="fs-top">
@@ -126,6 +195,7 @@
           <button id="btn-explorer" class="icon-btn" type="button" title="Workspace files" aria-label="Workspace files">📁</button>
           <a id="btn-mpub" class="icon-btn" href="/mpub" target="_blank" rel="noopener noreferrer" title="mpub — published pages" aria-label="Open mpub published pages">🚀</a>
           <button id="btn-prompt" class="icon-btn" type="button" title="System prompt &amp; every-turn context" aria-label="System prompt and every-turn context">👁</button>
+          <button id="btn-cron" class="icon-btn" type="button" title="Cron jobs" aria-label="Cron jobs">🕐</button>
           <button id="btn-settings" class="icon-btn" type="button" title="Settings" aria-label="Settings">⚙</button>
           <button id="btn-new" class="icon-btn" title="New session" type="button">+</button>
         </div>
@@ -182,6 +252,7 @@
   <script src="/explorer.js"></script>
   <script src="/settings.js"></script>
   <script src="/prompt.js"></script>
+  <script src="/cron.js"></script>
   <script src="/session-info.js"></script>
   <script src="/app.js"></script>
 </body>

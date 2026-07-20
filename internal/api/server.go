@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rendicott/marble/internal/config"
+	"github.com/rendicott/marble/internal/cron"
 	"github.com/rendicott/marble/internal/mcp"
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/mpub"
@@ -30,6 +31,7 @@ type Server struct {
 	Policy   *shellpolicy.Policy
 	Tools    *tools.Registry
 	Mpub     *mpub.Store
+	Cron     *cron.Manager
 	Mux      *http.ServeMux
 }
 
@@ -49,6 +51,8 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/settings", s.handleSettings)
 	s.Mux.HandleFunc("/api/settings/", s.handleSettings)
 	s.Mux.HandleFunc("/api/prompt", s.handlePrompt)
+	s.Mux.HandleFunc("/api/cron", s.handleCron)
+	s.Mux.HandleFunc("/api/cron/", s.handleCron)
 	// mpub before SPA catch-all (ADR-0009)
 	s.Mux.HandleFunc("/mpub", s.handleMpub)
 	s.Mux.HandleFunc("/mpub/", s.handleMpub)
@@ -108,6 +112,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"workspace":       s.Cfg.Workspace,
 		"memory":          s.Cfg.Memory,
 	}
+	for k, v := range s.Cfg.ModelAuthPublic() {
+		out[k] = v
+	}
 	if store := s.Registry.Store(); store != nil {
 		for k, v := range store.Health() {
 			out[k] = v
@@ -133,17 +140,58 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": s.Registry.List()})
+		list := s.Registry.List()
+		s.markCronSessions(list)
+		writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": list})
 	case http.MethodPost:
 		var body struct {
 			Title string `json:"title"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		sess := s.Registry.Create(body.Title)
-		writeJSON(w, http.StatusCreated, sess.Summary())
+		sum := sess.Summary()
+		s.markCronSession(&sum)
+		writeJSON(w, http.StatusCreated, sum)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// markCronSessions sets Summary.Cron / CronJobs for list rows (ADR-0015 UI badge).
+func (s *Server) markCronSessions(list []session.Summary) {
+	bound := map[string][]string{}
+	if s.Cron != nil {
+		bound = s.Cron.BoundSessions()
+	}
+	for i := range list {
+		if names, ok := bound[list[i].ID]; ok {
+			list[i].Cron = true
+			list[i].CronJobs = names
+		} else if isCronTitle(list[i].Title) {
+			list[i].Cron = true
+		}
+	}
+}
+
+func (s *Server) markCronSession(sum *session.Summary) {
+	if sum == nil {
+		return
+	}
+	if s.Cron != nil {
+		if names, ok := s.Cron.BoundSessions()[sum.ID]; ok {
+			sum.Cron = true
+			sum.CronJobs = names
+			return
+		}
+	}
+	if isCronTitle(sum.Title) {
+		sum.Cron = true
+	}
+}
+
+func isCronTitle(title string) bool {
+	t := strings.TrimSpace(title)
+	return strings.HasPrefix(strings.ToLower(t), "cron:")
 }
 
 func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
@@ -184,8 +232,10 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		sum := sess.Summary()
+		s.markCronSession(&sum)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"session":  sess.Summary(),
+			"session":  sum,
 			"messages": sess.UIMessages(),
 		})
 		return
@@ -216,6 +266,16 @@ func (s *Server) handleSessionInfo(w http.ResponseWriter, r *http.Request, id st
 		info.SetAvailableTools(s.Tools.Catalog())
 	} else {
 		info.SetAvailableTools(tools.NativeCatalog())
+	}
+	// Cron badge fields for session info modal
+	if s.Cron != nil {
+		if names, ok := s.Cron.BoundSessions()[id]; ok {
+			info.Session.Cron = true
+			info.Session.CronJobs = names
+		}
+	}
+	if !info.Session.Cron && isCronTitle(info.Session.Title) {
+		info.Session.Cron = true
 	}
 	writeJSON(w, http.StatusOK, info)
 }

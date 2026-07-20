@@ -137,7 +137,14 @@
     refreshBusyOnly = !!s.busy;
 
     if (els.title) {
-      els.title.textContent = `Session info · ${s.id || ""}`;
+      if (s.cron) {
+        const jobs = Array.isArray(s.cron_jobs) && s.cron_jobs.length
+          ? `Cron: ${s.cron_jobs.join(", ")}`
+          : "Cron job session";
+        els.title.innerHTML = `<span class="cron-badge" title="${esc(jobs)}">🕐</span> Session info · ${esc(s.id || "")}`;
+      } else {
+        els.title.textContent = `Session info · ${s.id || ""}`;
+      }
     }
     if (els.partial) {
       if (data.partial) {
@@ -160,6 +167,7 @@
     }
 
     const statusBits = [s.status || "—"];
+    if (s.cron) statusBits.push("cron");
     if (s.busy) statusBits.push("busy");
     if (s.dirty) statusBits.push("dirty");
     if (s.system) statusBits.push("system");
@@ -199,9 +207,10 @@
 
     els.body.innerHTML = `
       <section class="si-sec">
-        ${row("Title", esc(s.title || "—"))}
+        ${row("Title", (s.cron ? `<span class="cron-badge" title="Cron job session">🕐</span> ` : "") + esc(s.title || "—"))}
         ${row("Id", `<code>${esc(s.id || "")}</code>`, copyBtn("id", s.id))}
         ${row("Status", esc(statusBits.join(" · ")))}
+        ${s.cron ? row("Cron", esc(Array.isArray(s.cron_jobs) && s.cron_jobs.length ? s.cron_jobs.join(", ") : "yes — durable schedule target")) : ""}
         ${row("Created", esc(fmtTime(s.created_at)))}
         ${row("Updated", esc(fmtTime(s.updated_at)))}
         ${row("Closed", esc(fmtTime(s.closed_at)))}

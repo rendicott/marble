@@ -1,0 +1,168 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0015",
+  "title": "Cron Jobs",
+  "updated_at": "2026-07-20T00:06:38.005Z",
+  "answers": {
+    "Q1": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Clock icon 🕐 only; order Sessions · folder · mpub · soul · clock · gear · +",
+      "notes": "",
+      "question": "Q1 Icon glyph + sidebar placement?",
+      "rec": "Clock icon 🕐 only; order Sessions · folder · mpub · soul · clock · gear · +"
+    },
+    "Q2": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Modal (same chrome as settings / explorer / soul)",
+      "notes": "",
+      "question": "Q2 Modal vs dedicated page?",
+      "rec": "Modal (same chrome as settings / explorer / soul)"
+    },
+    "Q3": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "Global catalog and the ability to Target an existing session ID but if no existing session then create new session",
+      "notes": "",
+      "question": "Q3 Global jobs vs session-scoped only?",
+      "rec": "Global catalog; each job targets a session_id"
+    },
+    "Q4": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Inject prompt + start turn on target session only (v1)",
+      "notes": "",
+      "question": "Q4 Fire action in v1?",
+      "rec": "Inject prompt + start turn on target session only (v1)"
+    },
+    "Q5": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Both 5-field cron and interval_sec (min 60s)",
+      "notes": "",
+      "question": "Q5 Schedule kinds?",
+      "rec": "Both 5-field cron and interval_sec (min 60s)"
+    },
+    "Q6": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Default Local (host); per-job IANA override",
+      "notes": "",
+      "question": "Q6 Default timezone?",
+      "rec": "Default Local (host); per-job IANA override"
+    },
+    "Q7": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Skip fire if session busy; log skipped_busy; advance next_run_at",
+      "notes": "",
+      "question": "Q7 Target session busy at fire time?",
+      "rec": "Skip fire if session busy; log skipped_busy; advance next_run_at"
+    },
+    "Q8": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "No catch-up; next future slot from now after downtime",
+      "notes": "",
+      "question": "Q8 Missed fires while harness was down?",
+      "rec": "No catch-up; next future slot from now after downtime"
+    },
+    "Q9": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "SQLite cron_jobs + cron_runs in marble.db",
+      "notes": "",
+      "question": "Q9 Persistence?",
+      "rec": "SQLite cron_jobs + cron_runs in marble.db"
+    },
+    "Q10": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "cron_list, cron_get, cron_create, cron_update, cron_delete, cron_run",
+      "notes": "",
+      "question": "Q10 Agent tool names?",
+      "rec": "cron_list, cron_get, cron_create, cron_update, cron_delete, cron_run"
+    },
+    "Q11": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "50 jobs max; 3 concurrent cron turns; min interval 60s",
+      "notes": "",
+      "question": "Q11 Caps?",
+      "rec": "50 jobs max; 3 concurrent cron turns; min interval 60s"
+    },
+    "Q12": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Keep last 50 runs per job and/or 30 days",
+      "notes": "",
+      "question": "Q12 Run history retention?",
+      "rec": "Keep last 50 runs per job and/or 30 days"
+    },
+    "Q13": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — UI and agent full CRUD on the same store",
+      "notes": "",
+      "question": "Q13 Agent + UI both full CRUD?",
+      "rec": "Yes — UI and agent full CRUD on the same store"
+    },
+    "Q14": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Pause fires while limp/model-down; keep jobs; log skipped_limp",
+      "notes": "",
+      "question": "Q14 Limp / model-down behavior?",
+      "rec": "Pause fires while limp/model-down; keep jobs; log skipped_limp"
+    },
+    "Q15": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Keep schedule_continuation for one-shot / wait-for-task",
+      "notes": "",
+      "question": "Q15 Keep schedule_continuation?",
+      "rec": "Keep schedule_continuation for one-shot / wait-for-task"
+    },
+    "Q16": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — show next 5 fire times on create/edit",
+      "notes": "",
+      "question": "Q16 Next-run preview in create/edit form?",
+      "rec": "Yes — show next 5 fire times on create/edit"
+    },
+    "Q17": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "When target session does not exist, create a new session (see Q3/Q19). Optional max_runs still allowed; no auto-disable-on-missing-session.",
+      "notes": "See previous answers about creating a new session if target session does not exist",
+      "question": "Q17 Finite runs / auto-disable?",
+      "rec": "Optional max_runs; auto-disable after 5 consecutive no-session skips"
+    },
+    "Q18": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Yes — Run now from UI and cron_run tool",
+      "notes": "",
+      "question": "Q18 Run-now from UI and agent?",
+      "rec": "Yes — Run now from UI and cron_run tool"
+    },
+    "Q19": {
+      "status": "answered",
+      "choice": "custom",
+      "decision": "If target session does not exist at fire time, create a new session, bind job to it (update session_id), inject prompt, start turn",
+      "notes": "Create new session when Target session does not exist",
+      "question": "Q19 Can jobs target closed / unknown sessions?",
+      "rec": "Allow any known session_id; if missing at fire → skip_no_session"
+    },
+    "Q20": {
+      "status": "answered",
+      "choice": "rec",
+      "decision": "Prefix injected prompt with [cron:id name] line",
+      "notes": "",
+      "question": "Q20 Injected prompt prefix?",
+      "rec": "Prefix injected prompt with [cron:id name] line"
+    }
+  }
+}

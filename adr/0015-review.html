@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0015 Cron Jobs</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #1e3a5f 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #312e81 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #38bdf8, #a78bfa);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 72ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--ok); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .callout.accent { border-left-color: var(--accent); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+  </style>
+</head>
+<body data-adr="0015" data-adr-title="Cron Jobs">
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0015</span>
+      <span class="status">ACCEPTED · ready to implement</span>
+    </div>
+    <nav class="toc">
+      <a href="#fire">Fire path</a>
+      <a href="#locked">Decisions</a>
+      <a href="#impl">Implement</a>
+      <a href="0005-review.html">0005</a>
+      <a href="0013-review.html">0013</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Cron jobs — durable schedules</h1>
+      <p class="lede">
+        Answers from <code>0015-answers.json</code> applied. Clock modal + <code>cron_*</code> tools;
+        SQLite-backed; missing target session <strong>creates a new session</strong> and rebinds.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Answered</b>2026-07-20T00:06:38.005Z</div>
+        <div class="meta"><b>Source</b><code>adr/0015-answers.json</code></div>
+        <div class="meta"><b>ADR</b><code>adr/0015-cron-jobs.md</code></div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>ui</strong> 🕐 modal</span>
+        <span class="chip"><strong>tools</strong> cron CRUD + run</span>
+        <span class="chip"><strong>store</strong> SQLite</span>
+        <span class="chip"><strong>missing</strong> create session</span>
+        <span class="chip"><strong>busy</strong> skip</span>
+        <span class="chip"><strong>keep</strong> schedule_continuation</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>1. UI (locked)</h2>
+      <pre class="mock">Sidebar: Sessions · 📁 · 🚀 · 👁 · 🕐 · ⚙ · +
+
+┌ Cron jobs ──────────────────────── [+ New] [↻] [×] ┐
+│ Missing session → create + rebind. Busy → skip.    │
+│ ● Morning summary   0 8 * * *  → 0wbkaz…  next 3h  │
+│   [Edit] [Disable] [Run now] [Delete]              │
+│ Recent runs · next-5 preview on create/edit        │
+└────────────────────────────────────────────────────┘</pre>
+    </section>
+
+    <section id="fire">
+      <h2>2. Fire path (locked)</h2>
+      <pre class="mock">ticker → due jobs (enabled, next_run_at ≤ now)
+       → advance next_run_at (no catch-up)
+       → if limp / model down → skipped_limp
+       → if session busy → skipped_busy
+       → if session missing → create session, rebind job.session_id
+       → inject "[cron:id name]\n" + prompt → start turn
+       → write cron_runs (ok | created_session | skipped_*)</pre>
+      <div class="callout accent">
+        <strong>Q3 / Q17 / Q19 custom:</strong> do <em>not</em> skip on missing session —
+        create a new user session, persist the new id on the job, then fire.
+      </div>
+    </section>
+
+    <section>
+      <h2>3. Tools (locked)</h2>
+      <table>
+        <thead><tr><th>Tool</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>cron_list</code></td><td>List / filter</td></tr>
+          <tr><td><code>cron_get</code></td><td>Detail + runs</td></tr>
+          <tr><td><code>cron_create</code></td><td>Create</td></tr>
+          <tr><td><code>cron_update</code></td><td>Patch</td></tr>
+          <tr><td><code>cron_delete</code></td><td>Delete</td></tr>
+          <tr><td><code>cron_run</code></td><td>Run now</td></tr>
+        </tbody>
+      </table>
+      <p class="muted">Caps: 50 jobs · 3 concurrent cron turns · min interval 60s · prune last 50 runs/job and/or 30d.</p>
+    </section>
+
+    <section id="locked">
+      <h2>4. Decisions locked (Q1–Q20)</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td>Q1</td><td>🕐 icon only; <code>… 👁 · 🕐 · ⚙ · +</code></td></tr>
+          <tr><td>Q2</td><td>Modal</td></tr>
+          <tr><td>Q3</td><td><strong>Global</strong> catalog; target session or <strong>create if missing</strong></td></tr>
+          <tr><td>Q4</td><td>Inject prompt + start turn only (v1)</td></tr>
+          <tr><td>Q5</td><td>5-field cron <strong>and</strong> interval (≥60s)</td></tr>
+          <tr><td>Q6</td><td>Default Local; per-job IANA</td></tr>
+          <tr><td>Q7</td><td>Busy → skip + advance</td></tr>
+          <tr><td>Q8</td><td>No catch-up after downtime</td></tr>
+          <tr><td>Q9</td><td>SQLite <code>cron_jobs</code> + <code>cron_runs</code></td></tr>
+          <tr><td>Q10</td><td><code>cron_list/get/create/update/delete/run</code></td></tr>
+          <tr><td>Q11</td><td>50 jobs · 3 concurrent · min 60s</td></tr>
+          <tr><td>Q12</td><td>Last 50 runs/job and/or 30d</td></tr>
+          <tr><td>Q13</td><td>UI + agent full CRUD</td></tr>
+          <tr><td>Q14</td><td>Limp → pause fires (<code>skipped_limp</code>)</td></tr>
+          <tr><td>Q15</td><td>Keep <code>schedule_continuation</code></td></tr>
+          <tr><td>Q16</td><td>Next 5 fire times preview</td></tr>
+          <tr><td>Q17</td><td>Missing target → create session (not auto-disable)</td></tr>
+          <tr><td>Q18</td><td>Run now UI + <code>cron_run</code></td></tr>
+          <tr><td>Q19</td><td>Missing at fire → create session, rebind, fire</td></tr>
+          <tr><td>Q20</td><td>Prefix <code>[cron:id name]</code></td></tr>
+        </tbody>
+      </table>
+
+      <!-- Locked Q markers for review-kit / future import -->
+      <div hidden>
+        <div class="q" data-qid="Q1" data-status="locked" data-decision="Clock icon 🕐 only; order Sessions · folder · mpub · soul · clock · gear · +" data-rec="Clock icon 🕐 only; order Sessions · folder · mpub · soul · clock · gear · +"></div>
+        <div class="q" data-qid="Q2" data-status="locked" data-decision="Modal (same chrome as settings / explorer / soul)" data-rec="Modal (same chrome as settings / explorer / soul)"></div>
+        <div class="q" data-qid="Q3" data-status="locked" data-decision="Global catalog; target existing session_id or create new session if missing" data-rec="Global catalog; each job targets a session_id"></div>
+        <div class="q" data-qid="Q4" data-status="locked" data-decision="Inject prompt + start turn on target session only (v1)" data-rec="Inject prompt + start turn on target session only (v1)"></div>
+        <div class="q" data-qid="Q5" data-status="locked" data-decision="Both 5-field cron and interval_sec (min 60s)" data-rec="Both 5-field cron and interval_sec (min 60s)"></div>
+        <div class="q" data-qid="Q6" data-status="locked" data-decision="Default Local (host); per-job IANA override" data-rec="Default Local (host); per-job IANA override"></div>
+        <div class="q" data-qid="Q7" data-status="locked" data-decision="Skip fire if session busy; log skipped_busy; advance next_run_at" data-rec="Skip fire if session busy; log skipped_busy; advance next_run_at"></div>
+        <div class="q" data-qid="Q8" data-status="locked" data-decision="No catch-up; next future slot from now after downtime" data-rec="No catch-up; next future slot from now after downtime"></div>
+        <div class="q" data-qid="Q9" data-status="locked" data-decision="SQLite cron_jobs + cron_runs in marble.db" data-rec="SQLite cron_jobs + cron_runs in marble.db"></div>
+        <div class="q" data-qid="Q10" data-status="locked" data-decision="cron_list, cron_get, cron_create, cron_update, cron_delete, cron_run" data-rec="cron_list, cron_get, cron_create, cron_update, cron_delete, cron_run"></div>
+        <div class="q" data-qid="Q11" data-status="locked" data-decision="50 jobs max; 3 concurrent cron turns; min interval 60s" data-rec="50 jobs max; 3 concurrent cron turns; min interval 60s"></div>
+        <div class="q" data-qid="Q12" data-status="locked" data-decision="Keep last 50 runs per job and/or 30 days" data-rec="Keep last 50 runs per job and/or 30 days"></div>
+        <div class="q" data-qid="Q13" data-status="locked" data-decision="Yes — UI and agent full CRUD on the same store" data-rec="Yes — UI and agent full CRUD on the same store"></div>
+        <div class="q" data-qid="Q14" data-status="locked" data-decision="Pause fires while limp/model-down; keep jobs; log skipped_limp" data-rec="Pause fires while limp/model-down; keep jobs; log skipped_limp"></div>
+        <div class="q" data-qid="Q15" data-status="locked" data-decision="Keep schedule_continuation for one-shot / wait-for-task" data-rec="Keep schedule_continuation for one-shot / wait-for-task"></div>
+        <div class="q" data-qid="Q16" data-status="locked" data-decision="Yes — show next 5 fire times on create/edit" data-rec="Yes — show next 5 fire times on create/edit"></div>
+        <div class="q" data-qid="Q17" data-status="locked" data-decision="When target session does not exist, create a new session (see Q3/Q19)" data-rec="Optional max_runs; auto-disable after 5 consecutive no-session skips"></div>
+        <div class="q" data-qid="Q18" data-status="locked" data-decision="Yes — Run now from UI and cron_run tool" data-rec="Yes — Run now from UI and cron_run tool"></div>
+        <div class="q" data-qid="Q19" data-status="locked" data-decision="If target session does not exist at fire, create new session, rebind, fire" data-rec="Allow any known session_id; if missing at fire → skip_no_session"></div>
+        <div class="q" data-qid="Q20" data-status="locked" data-decision="Prefix injected prompt with [cron:id name] line" data-rec="Prefix injected prompt with [cron:id name] line"></div>
+      </div>
+    </section>
+
+    <section id="impl">
+      <h2>5. Implementation order</h2>
+      <ol>
+        <li>DB schema + store + schedule next-time helpers</li>
+        <li><code>internal/cron</code> manager + fire (resolve-or-create session)</li>
+        <li>REST <code>/api/cron/*</code></li>
+        <li>Agent <code>cron_*</code> tools + system prompt</li>
+        <li>UI: 🕐 modal + form + history + next-5 + run now</li>
+        <li>Tests + smoke (interval, busy skip, missing→create, restart)</li>
+      </ol>
+      <div class="callout">
+        Reply <strong>implement</strong> when you want coding to start.
+      </div>
+    </section>
+  </main>
+
+  <footer>Marble · ADR-0015 accepted · ready to implement</footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>

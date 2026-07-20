@@ -31,6 +31,9 @@ type InfoSession struct {
 	MDPathAbs    string     `json:"md_path_abs"`
 	MessageCount int        `json:"message_count"`
 	System       bool       `json:"system"`
+	// Cron marks sessions used by durable cron jobs (ADR-0015); set by API.
+	Cron     bool     `json:"cron,omitempty"`
+	CronJobs []string `json:"cron_jobs,omitempty"`
 }
 
 // InfoResponse is GET /api/sessions/{id}/info (ADR-0008).

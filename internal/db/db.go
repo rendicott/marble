@@ -13,7 +13,9 @@ import (
 )
 
 // CurrentSchemaVersion is the schema this binary writes and fully supports.
-const CurrentSchemaVersion = 1
+// v1: sessions, events, blobs, settings, daemon_state
+// v2: cron_jobs, cron_runs (ADR-0015)
+const CurrentSchemaVersion = 2
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -87,7 +89,6 @@ func Open(memoryRoot string) (*DB, error) {
 			d.Close()
 			return nil, fmt.Errorf("create schema: %w", err)
 		}
-		return d, nil
 	}
 
 	ver, err := d.readSchemaVersion()
@@ -108,17 +109,30 @@ func Open(memoryRoot string) (*DB, error) {
 		return d, nil
 	}
 	if ver < CurrentSchemaVersion {
-		// No migration steps yet beyond v1 create
-		_ = sqlDB.Close()
-		d.SQL = nil
-		d.Mode = ModeLimp
-		d.Reason = fmt.Sprintf("database schema v%d needs migration to v%d (no migrator in this build)", ver, CurrentSchemaVersion)
-		return d, nil
+		if err := d.upgradeSchema(ver); err != nil {
+			d.Close()
+			return nil, fmt.Errorf("migrate schema v%d→v%d: %w", ver, CurrentSchemaVersion, err)
+		}
 	}
 
 	// Ensure default settings exist (idempotent)
 	_ = d.seedSettings()
 	return d, nil
+}
+
+// upgradeSchema applies stepwise migrations from fromVer to CurrentSchemaVersion.
+func (d *DB) upgradeSchema(fromVer int) error {
+	for v := fromVer; v < CurrentSchemaVersion; v++ {
+		switch v {
+		case 1:
+			if err := d.migrateV1toV2(); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("no migrator for schema v%d → v%d", v, v+1)
+		}
+	}
+	return nil
 }
 
 // Close releases the DB and lock file.
@@ -262,9 +276,10 @@ func (d *DB) migrateV1() error {
 	}
 
 	now := UTCNow()
+	// Fresh DBs start at v1; upgradeSchema brings them to CurrentSchemaVersion.
 	if _, err := tx.Exec(
 		`INSERT INTO schema_meta (id, schema_version, created_at, updated_at, created_by_harness) VALUES (1, ?, ?, ?, ?)`,
-		CurrentSchemaVersion, now, now, "marble-harness",
+		1, now, now, "marble-harness",
 	); err != nil {
 		return err
 	}

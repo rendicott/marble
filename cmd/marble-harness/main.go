@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/rendicott/marble/internal/bgtask"
 	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/continuation"
+	"github.com/rendicott/marble/internal/cron"
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/mcp"
 	"github.com/rendicott/marble/internal/memory"
@@ -109,7 +112,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	client := model.New(cfg.BaseURL, cfg.Model, cfg.MaxOutput)
+	client := model.New(cfg.BaseURL, cfg.Model, cfg.MaxOutput, cfg.APIKey)
+	if strings.TrimSpace(cfg.APIKeyEnv) == "" {
+		log.Printf("model auth: none")
+	} else if cfg.APIKeyEnvConfigured {
+		log.Printf("model auth: bearer from env %s (set)", cfg.APIKeyEnvUsed)
+	} else {
+		log.Printf("WARNING: model auth: --api-key-env=%s but no non-empty value found (running without Authorization)", cfg.APIKeyEnv)
+	}
 	toolReg := &tools.Registry{
 		Workspace:      cfg.Workspace,
 		Memory:         cfg.Memory,
@@ -159,6 +169,55 @@ func main() {
 	toolReg.Cont = cont
 	defer cont.Stop()
 
+	// ADR-0015 cron: durable schedules → inject prompt + start turn
+	var modelOK atomicBool
+	modelOK.set(true)
+	cronMgr := cron.New(sqldb, func(jobID, jobName, sessionID, prompt string) cron.FireResult {
+		var s *session.Session
+		created := false
+		if strings.TrimSpace(sessionID) != "" {
+			if loaded, err := reg.EnsureLoaded(sessionID); err == nil {
+				s = loaded
+			}
+		}
+		if s == nil {
+			title := "cron: " + jobName
+			if len(title) > 48 {
+				title = title[:48]
+			}
+			s = reg.Create(title)
+			created = true
+			log.Printf("cron: job %s created session %s", jobID, s.ID)
+		}
+		if s.Status == "closed" {
+			s.Reopen()
+			_ = reg.PersistSession(s)
+		}
+		if s.IsBusy() {
+			return cron.FireResult{SessionID: s.ID, CreatedSession: created, Status: "skipped_busy"}
+		}
+		if !runner.PostCron(s, prompt) {
+			return cron.FireResult{SessionID: s.ID, CreatedSession: created, Status: "skipped_busy"}
+		}
+		st := "ok"
+		if created {
+			st = "created_session"
+		}
+		return cron.FireResult{SessionID: s.ID, CreatedSession: created, Status: st}
+	}, func() bool {
+		if sqldb != nil && sqldb.Mode == db.ModeLimp {
+			return false
+		}
+		return modelOK.get()
+	})
+	toolReg.Cron = cronMgr
+	defer cronMgr.Stop()
+	if sqldb.Writable() {
+		log.Printf("cron: scheduler enabled (max %d jobs)", cron.MaxJobs)
+	} else {
+		log.Printf("cron: scheduler idle (database not writable)")
+	}
+
 	reg.OnSessionClose = func(sessionID string) {
 		bg.KillSession(sessionID)
 		agents.KillSession(sessionID)
@@ -179,6 +238,7 @@ func main() {
 	srv.Policy = policy
 	srv.Tools = toolReg
 	srv.Mpub = mpubStore
+	srv.Cron = cronMgr
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
@@ -190,9 +250,20 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		if err := client.Health(ctx); err != nil {
+			modelOK.set(false)
 			log.Printf("model health: %v (will retry from UI)", err)
 		} else {
+			modelOK.set(true)
 			log.Printf("model ok: %s", cfg.Model)
+		}
+		// periodic model health for cron pause (ADR-0015 Q14)
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := client.Health(cctx)
+			ccancel()
+			modelOK.set(err == nil)
 		}
 	}()
 
@@ -233,3 +304,16 @@ func displayAddr(addr string) string {
 	}
 	return addr
 }
+
+// atomicBool is a small helper for model-health flag used by cron.
+type atomicBool struct{ v int32 }
+
+func (a *atomicBool) set(ok bool) {
+	if ok {
+		atomic.StoreInt32(&a.v, 1)
+	} else {
+		atomic.StoreInt32(&a.v, 0)
+	}
+}
+
+func (a *atomicBool) get() bool { return atomic.LoadInt32(&a.v) == 1 }

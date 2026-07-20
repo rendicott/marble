@@ -6,6 +6,12 @@
     // runtime / model
     model:
       "Model id sent to the OpenAI-compatible chat API (not the Marble UI). Example: Qwen/Qwen3.5-122B-A10B-FP8",
+    model_auth:
+      "Model HTTP auth (ADR-0016): none = no Authorization header; env = Bearer from --api-key-env. Never shows the secret.",
+    model_auth_env:
+      "CLI --api-key-env: comma-separated environment variable names. First non-empty wins. Secret stays in the env only.",
+    model_auth_configured:
+      "Whether a non-empty API key was resolved at launch from those env vars.",
     base_url:
       "Model API base URL (OpenAI-compatible /v1), NOT the Marble web server address. Marble itself is under Listen (addr). Example: http://host:8000/v1",
     context_limit:
@@ -128,6 +134,16 @@
       if (ct.includes("application/json")) return res.json();
       return res.text();
     });
+  }
+
+  function modelAuthLabel(r) {
+    const mode = r.model_auth || "none";
+    if (mode === "env") {
+      const used = r.model_auth_env_used ? ` via ${r.model_auth_env_used}` : "";
+      const cfg = r.model_auth_configured ? "configured" : "env empty";
+      return `env (${cfg}${used})`;
+    }
+    return "none";
   }
 
   function tip(key) {
@@ -272,6 +288,9 @@
           <p class="hint">These talk to your OpenAI-compatible model server — not the Marble web UI.</p>
           ${ro("Model id", r.model, "model")}
           ${ro("Model base URL", r.base_url, "base_url")}
+          ${ro("Model auth", modelAuthLabel(r), "model_auth")}
+          ${ro("API key env (--api-key-env)", r.model_auth_env || "—", "model_auth_env")}
+          ${ro("API key configured", String(!!r.model_auth_configured), "model_auth_configured")}
           ${ro("Context limit (tokens)", r.context_limit, "context_limit")}
           ${ro("Max output (tokens)", r.max_output, "max_output")}
           ${ro("Context reserve (tokens)", r.context_reserve, "context_reserve")}

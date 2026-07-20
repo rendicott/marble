@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/rendicott/marble/internal/shellpolicy"
 )
 
 func TestFileTools(t *testing.T) {
@@ -76,6 +79,30 @@ func TestEditFileRequiresRead(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(dir, "a.txt"))
 	if string(b) != "hi world" {
 		t.Fatalf("got %q", b)
+	}
+}
+
+// Regression: background long-lived children that inherit stdout must not hang
+// shell_execute past timeout (session 0wbkazh96k: `python3 -m http.server &`).
+func TestShellExecuteKillsBackgroundGrandchild(t *testing.T) {
+	dir := t.TempDir()
+	pol := shellpolicy.New(dir, dir, false, 2*time.Second, 5*time.Second)
+	r := &Registry{Workspace: dir, MaxResultChars: 10000, Policy: pol}
+
+	// Unique port in test-ephemeral range; server holds stdout if left alive.
+	cmd := `python3 -m http.server 19987 &`
+	start := time.Now()
+	out := r.Execute("shell_execute", fmt.Sprintf(`{"command":%q,"timeout_sec":2}`, cmd), nil)
+	elapsed := time.Since(start)
+	if elapsed > 6*time.Second {
+		t.Fatalf("shell_execute hung %s (likely grandchild holding pipes); out=%s", elapsed, out)
+	}
+	if strings.HasPrefix(out, "error:") {
+		t.Fatalf("unexpected error: %s", out)
+	}
+	// Either timeout kill or quick exit after backgrounding is fine; must not hang.
+	if !strings.Contains(out, "killed_timeout=true") && !strings.Contains(out, "exit=0") {
+		t.Logf("output: %s", out)
 	}
 }
 
