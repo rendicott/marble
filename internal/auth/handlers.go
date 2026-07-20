@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,6 +29,10 @@ func (m *Manager) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
+	if !m.Store.AllowLoginStart(clientKey(r)) {
+		http.Error(w, "too many login attempts; try again later", http.StatusTooManyRequests)
+		return
+	}
 	next := SafeNext(r.URL.Query().Get("next"))
 	state, err := GenerateState()
 	if err != nil {
@@ -39,9 +44,24 @@ func (m *Manager) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "pkce error", http.StatusInternalServerError)
 		return
 	}
-	m.Store.PutPending(state, verifier, next)
+	if !m.Store.PutPending(state, verifier, next) {
+		http.Error(w, "login temporarily unavailable; try again later", http.StatusServiceUnavailable)
+		return
+	}
 	loc := m.Google.AuthCodeURL(state, challenge)
 	http.Redirect(w, r, loc, http.StatusFound)
+}
+
+// clientKey is a coarse rate-limit key (host from RemoteAddr).
+func clientKey(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	return host
 }
 
 func (m *Manager) handleCallback(w http.ResponseWriter, r *http.Request) {

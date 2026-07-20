@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestSafeNext(t *testing.T) {
@@ -120,5 +122,48 @@ func TestAllowlist(t *testing.T) {
 	}
 	if g.Allowed("bob@x.com") {
 		t.Fatal("deny")
+	}
+}
+
+func TestPendingGCAndCap(t *testing.T) {
+	s := NewSessionStore()
+	if !s.PutPending("a", "v", "/") {
+		t.Fatal("first put")
+	}
+	// force-expire
+	s.mu.Lock()
+	s.pending["a"].Expires = time.Now().Add(-time.Minute)
+	s.mu.Unlock()
+	if !s.PutPending("b", "v2", "/") {
+		t.Fatal("put after expired should GC")
+	}
+	if s.PendingCount() != 1 {
+		t.Fatalf("want 1 pending got %d", s.PendingCount())
+	}
+	// fill to cap
+	s = NewSessionStore()
+	for i := 0; i < maxPendingOAuth; i++ {
+		if !s.PutPending(fmt.Sprintf("state-%d", i), "v", "/") {
+			t.Fatalf("put %d failed early", i)
+		}
+	}
+	if s.PutPending("overflow", "v", "/") {
+		t.Fatal("expected cap reject")
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	s := NewSessionStore()
+	for i := 0; i < loginRateLimit; i++ {
+		if !s.AllowLoginStart("1.2.3.4") {
+			t.Fatalf("hit %d should allow", i)
+		}
+	}
+	if s.AllowLoginStart("1.2.3.4") {
+		t.Fatal("expected rate limit")
+	}
+	// other client ok
+	if !s.AllowLoginStart("9.9.9.9") {
+		t.Fatal("other IP should allow")
 	}
 }

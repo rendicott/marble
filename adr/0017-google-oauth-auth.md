@@ -72,10 +72,10 @@ No separate `--auth-required` flag.
 
 | Path | google mode |
 |------|-------------|
-| `/mpub`, `/mpub/*` | **Path public at middleware**; handler gates **private** docs (admin cookie required). Public docs + index (public items only) remain open |
-| `/auth/*` | **Public** |
-| `GET /api/health` | **Public** — `auth_mode`, `auth_accounts` (count only) |
-| SPA + other `/api/*` | **Protected** |
+| `/mpub`, `/mpub/*` | **Path public at middleware**; handler gates **private** docs (admin cookie). Anonymous private/missing → **uniform 404**. Strict **CSP** (no scripts) on mpub responses |
+| `/auth/*` | **Public** (login rate-limited; pending PKCE capped + GC) |
+| `GET /api/health` | **Public minimal** when anonymous (`ok`, `auth_mode`, `tls_enabled`); full detail when authenticated |
+| SPA + other `/api/*` | **Protected** + baseline security headers (`X-Frame-Options: DENY`, etc.) |
 
 ### 4b. mpub visibility (follow-on to ADR-0009)
 

@@ -64,7 +64,7 @@ func (s *Server) routes() {
 	s.Mux.Handle("/", web.Handler())
 }
 
-// Handler returns the root handler with auth middleware + logging.
+// Handler returns the root handler with security headers, auth middleware + logging.
 func (s *Server) Handler() http.Handler {
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -75,7 +75,19 @@ func (s *Server) Handler() http.Handler {
 	if s.Auth != nil {
 		h = s.Auth.Middleware(h)
 	}
+	h = globalSecurityHeaders(h)
 	return h
+}
+
+// globalSecurityHeaders applies baseline headers to all responses (SPA + API).
+// Stricter CSP is set only on /mpub (see setMpubSecurityHeaders).
+func globalSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 type statusWriter struct {
@@ -101,12 +113,24 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Google mode + anonymous: minimal public probe (no paths, model URL, or internal status).
+	if s.Auth != nil && s.Auth.Enabled() && auth.UserFromContext(r.Context()) == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":          true,
+			"auth_mode":   "google",
+			"tls_enabled": s.Cfg.TLSEnabled(),
+			"detail":      "authenticate for full health",
+		})
+		return
+	}
 	ctx := r.Context()
 	modelOK := true
 	modelErr := ""
-	if err := s.Client.Health(ctx); err != nil {
-		modelOK = false
-		modelErr = err.Error()
+	if s.Client != nil {
+		if err := s.Client.Health(ctx); err != nil {
+			modelOK = false
+			modelErr = err.Error()
+		}
 	}
 	out := map[string]interface{}{
 		"ok":              true,
@@ -127,9 +151,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	for k, v := range s.Cfg.AuthPublicHealth() {
 		out[k] = v
 	}
-	if store := s.Registry.Store(); store != nil {
-		for k, v := range store.Health() {
-			out[k] = v
+	if s.Registry != nil {
+		if store := s.Registry.Store(); store != nil {
+			for k, v := range store.Health() {
+				out[k] = v
+			}
 		}
 	}
 	if s.Daemon != nil {

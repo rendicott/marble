@@ -2,16 +2,21 @@ package api
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/rendicott/marble/internal/auth"
 	"github.com/rendicott/marble/internal/mpub"
 )
 
+// mpubCSP blocks scripts and most active content on published pages (same-origin XSS mitigation).
+// Inline styles allowed for the simple mpub shell; images from https/data only.
+const mpubCSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; " +
+	"img-src data: https: http:; style-src 'unsafe-inline'; font-src data:"
+
 // handleMpub serves GET /mpub and GET /mpub/{slug}[/raw] (ADR-0009 + visibility).
 // Public pages are always reachable. Private pages require an allowlisted admin
 // when Google auth is on; in open mode everyone is treated as admin.
+// Anonymous viewers get a uniform 404 for missing and private slugs (no existence oracle).
 func (s *Server) handleMpub(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -21,6 +26,8 @@ func (s *Server) handleMpub(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mpub not configured", http.StatusServiceUnavailable)
 		return
 	}
+	setMpubSecurityHeaders(w)
+
 	path := strings.TrimPrefix(r.URL.Path, "/mpub")
 	path = strings.Trim(path, "/")
 	admin := s.mpubViewerIsAdmin(r)
@@ -56,17 +63,13 @@ func (s *Server) handleMpub(w http.ResponseWriter, r *http.Request) {
 
 	doc, err := s.Mpub.Get(slug)
 	if err != nil {
-		// Do not leak existence of private docs to anonymous viewers.
-		if !admin {
-			http.NotFound(w, r)
-			return
-		}
 		http.NotFound(w, r)
 		return
 	}
 
 	if mpub.EffectiveVisibility(doc.Meta) == mpub.VisibilityPrivate && !admin {
-		s.rejectPrivateMpub(w, r)
+		// Same status as missing — do not leak private slug existence.
+		http.NotFound(w, r)
 		return
 	}
 
@@ -75,6 +78,7 @@ func (s *Server) handleMpub(w http.ResponseWriter, r *http.Request) {
 		if ct == "" {
 			ct = "text/plain"
 		}
+		// Avoid treating raw HTML as executable script surface without CSP (CSP already set).
 		w.Header().Set("Content-Type", ct+"; charset=utf-8")
 		if r.Method == http.MethodHead {
 			return
@@ -100,17 +104,10 @@ func (s *Server) mpubViewerIsAdmin(r *http.Request) bool {
 	return auth.UserFromContext(r.Context()) != nil
 }
 
-// rejectPrivateMpub asks for login (browser) or 401 JSON (API-style Accept).
-func (s *Server) rejectPrivateMpub(w http.ResponseWriter, r *http.Request) {
-	accept := r.Header.Get("Accept")
-	xhr := strings.Contains(accept, "application/json") ||
-		r.Header.Get(auth.CSRFHeader) != ""
-	if xhr {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"auth_required","detail":"private mpub page"}`))
-		return
-	}
-	next := r.URL.RequestURI()
-	http.Redirect(w, r, "/auth/login?next="+url.QueryEscape(next), http.StatusFound)
+func setMpubSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", mpubCSP)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "no-store")
 }

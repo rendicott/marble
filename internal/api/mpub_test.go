@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/rendicott/marble/internal/auth"
+	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/mpub"
 )
 
@@ -16,7 +17,7 @@ func testMpubServer(t *testing.T, google bool) (*Server, *auth.SessionStore, *mp
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{Mpub: store, Mux: http.NewServeMux()}
+	s := &Server{Mpub: store, Mux: http.NewServeMux(), Cfg: config.Config{}}
 	sess := auth.NewSessionStore()
 	if google {
 		s.Auth = &auth.Manager{
@@ -47,7 +48,7 @@ func TestMpubOpenModeSeesPrivate(t *testing.T) {
 	}
 }
 
-func TestMpubGooglePrivateRequiresAuth(t *testing.T) {
+func TestMpubGooglePrivateUniform404(t *testing.T) {
 	s, sess, store := testMpubServer(t, true)
 	if _, err := store.Publish("secret", "S", "body-private", "text/plain", "", nil, false, mpub.VisibilityPrivate); err != nil {
 		t.Fatal(err)
@@ -57,32 +58,44 @@ func TestMpubGooglePrivateRequiresAuth(t *testing.T) {
 	}
 	h := s.Handler()
 
-	// public OK anonymous
+	// public OK anonymous + CSP
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/mpub/open", nil)
 	h.ServeHTTP(rr, req)
 	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "body-public") {
 		t.Fatalf("public: %d %s", rr.Code, rr.Body.String())
 	}
+	csp := rr.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Fatalf("missing CSP: %q", csp)
+	}
+	if rr.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("X-Frame-Options %q", rr.Header().Get("X-Frame-Options"))
+	}
 
-	// private anonymous → redirect to login
+	// private anonymous → 404 (same as missing; no existence oracle / no login redirect)
 	rr2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodGet, "/mpub/secret", nil)
 	h.ServeHTTP(rr2, req2)
-	if rr2.Code != http.StatusFound {
-		t.Fatalf("private anon want 302 got %d", rr2.Code)
-	}
-	if loc := rr2.Header().Get("Location"); !strings.Contains(loc, "/auth/login") {
-		t.Fatalf("location %s", loc)
+	if rr2.Code != http.StatusNotFound {
+		t.Fatalf("private anon want 404 got %d", rr2.Code)
 	}
 
-	// private with Accept JSON → 401
+	// missing also 404
+	rrMiss := httptest.NewRecorder()
+	reqMiss := httptest.NewRequest(http.MethodGet, "/mpub/does-not-exist", nil)
+	h.ServeHTTP(rrMiss, reqMiss)
+	if rrMiss.Code != http.StatusNotFound {
+		t.Fatalf("missing want 404 got %d", rrMiss.Code)
+	}
+
+	// private with Accept JSON still 404 (not 401)
 	rr3 := httptest.NewRecorder()
 	req3 := httptest.NewRequest(http.MethodGet, "/mpub/secret", nil)
 	req3.Header.Set("Accept", "application/json")
 	h.ServeHTTP(rr3, req3)
-	if rr3.Code != 401 {
-		t.Fatalf("want 401 got %d", rr3.Code)
+	if rr3.Code != 404 {
+		t.Fatalf("want 404 got %d", rr3.Code)
 	}
 
 	// private as admin OK
@@ -131,7 +144,43 @@ func TestMpubRawPrivateGated(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/mpub/rawpriv/raw", nil)
 	req.Header.Set("Accept", "application/json")
 	h.ServeHTTP(rr, req)
-	if rr.Code != 401 {
-		t.Fatalf("want 401 got %d", rr.Code)
+	if rr.Code != 404 {
+		t.Fatalf("want 404 got %d", rr.Code)
+	}
+}
+
+func TestHealthPublicMinimalGoogle(t *testing.T) {
+	s, sess, _ := testMpubServer(t, true)
+	s.Cfg.AuthMode = "google"
+	h := s.Handler()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatal(rr.Code)
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, "workspace") || strings.Contains(body, "base_url") || strings.Contains(body, "memory") {
+		t.Fatalf("public health leaked detail: %s", body)
+	}
+	if !strings.Contains(body, `"auth_mode": "google"`) && !strings.Contains(body, `"auth_mode":"google"`) {
+		// indented JSON from encoder
+		if !strings.Contains(body, "google") {
+			t.Fatalf("want auth_mode google: %s", body)
+		}
+	}
+
+	// authed gets full health (may lack client — still should not be minimal-only shape with only 3 fields)
+	sid, _ := sess.Create(auth.User{Email: "admin@x.com"})
+	rr2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req2.AddCookie(&http.Cookie{Name: auth.CookieName, Value: sid})
+	h.ServeHTTP(rr2, req2)
+	if rr2.Code != 200 {
+		t.Fatal(rr2.Code)
+	}
+	if !strings.Contains(rr2.Body.String(), "model_ok") {
+		t.Fatalf("authed health should be full: %s", rr2.Body.String())
 	}
 }

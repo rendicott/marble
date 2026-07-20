@@ -4,14 +4,21 @@
 
 > **MVP status.** Marble is intentionally minimal. It supports **one model** (one `--base-url` + `--model` pair per process), optional **Google OAuth** allowlist (shared full-admin sessions), and a single writer per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.2.0
+## What's new in v0.3.0
 
-- **Google OAuth + multi-user (ADR-0017)** — optional Sign in with Google, email allowlist (all full admins), identity on chat history (not sent to the model)
-- **Optional in-process TLS** — `--tls-cert-file` / `--tls-key-file`; reverse-proxy HTTPS still supported
-- **mpub visibility** — new pages default **private** (admins only when OAuth is on); set **public** only when asked; `mpub_set_visibility` to promote/demote
-- **GitHub Actions releases** — multi-arch binaries on tags (`linux-amd64`, `linux-arm64`, `darwin-arm64`)
+- **Public hardening** — mpub **Content-Security-Policy** (no scripts), global `X-Frame-Options` / `nosniff` / `Referrer-Policy`
+- **Private mpub** — anonymous viewers get **uniform 404** (no existence oracle / login redirect)
+- **Minimal public health** — unauthenticated `GET /api/health` in Google mode returns only `ok` / `auth_mode` / `tls_enabled` (full detail after login)
+- **OAuth login limits** — rate-limit login starts per client IP; cap + GC pending PKCE states
 
-v0.1.x already included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0016).
+### v0.2.0
+
+- **Google OAuth + multi-user (ADR-0017)** — Sign in with Google, email allowlist (all full admins), identity on chat history (not sent to the model)
+- **Optional in-process TLS** — `--tls-cert-file` / `--tls-key-file`
+- **mpub visibility** — new pages default **private**; `mpub_set_visibility` to promote/demote
+- **GitHub Actions releases** — multi-arch binaries on tags
+
+v0.1.x included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0016).
 
 ## Features
 
@@ -36,6 +43,7 @@ v0.1.x already included durable **cron** (ADR-0015) and model **`--api-key-env`*
 - Allowlisted users are **full admins**; chat sessions are **shared**
 - User identity on messages in UI/MD/events — **never** forwarded to the model
 - Optional **HTTPS** via cert/key files, or TLS termination at a reverse proxy
+- Login **rate limits** + capped pending OAuth state (DoS hardening)
 
 ### Tools
 - **Filesystem** — `file_read` / `file_write`, `list_files`, `grep`, `glob`, `codebase_summary`
@@ -89,6 +97,8 @@ v0.1.x already included durable **cron** (ADR-0015) and model **`--api-key-env`*
 | Legacy docs (no `visibility` field) | Treated as **public** (old links keep working) |
 
 Agents should leave new pages **private** unless the user **explicitly** asks to make a page public. Use `mpub_set_visibility` to promote/demote without rewriting the body.
+
+Anonymous requests for private or missing slugs both return **404** (no existence leak). All mpub responses send a strict **CSP** that disables scripts (mitigates same-origin XSS if public HTML is ever published).
 
 ## Launch
 
@@ -251,16 +261,28 @@ export GOOGLE_OAUTH_CLIENT_SECRET=...   # never put secret on the CLI
 
 - All allowlisted users are **full admins**; sessions are **shared**.
 - User identity is stored on chat messages (UI/MD) but **not** sent to the model.
-- **`GET /api/health`** stays public (account *count* only).
-- **mpub**: *public* pages stay open; *private* pages require an allowlisted admin (default for new publishes).
+- **`GET /api/health`** is public but **minimal** when unauthenticated in Google mode (`ok`, `auth_mode`, `tls_enabled` only). Full health after login.
+- **mpub**: *public* pages stay open (with CSP); *private* pages are admin-only (anonymous → **404**).
 
 **OAuth redirect URL:** there is no separate OAuth port. The callback is on the **same HTTP listener** as the UI (`--addr`, default `:8080`), path **`/auth/callback`**. Register that full URL in Google Cloud Console (Authorized redirect URIs), and pass the same value as `--oauth-redirect-url`.
 
 | Setup | Example `--oauth-redirect-url` |
 |-------|--------------------------------|
 | Local HTTP | `http://127.0.0.1:8080/auth/callback` |
-| Public host + Marble TLS | `https://your-host:8080/auth/callback` |
+| Public host + Marble TLS | `https://your-host:443/auth/callback` (or your public port) |
 | Behind Caddy / ALB / Tailscale Serve | `https://your-public-hostname/auth/callback` |
+
+### Public VPS checklist
+
+When exposing Marble on a public IP (e.g. **:443** + TLS + OAuth):
+
+1. Use **complete** Google OAuth flags (never leave **open** mode on the public address).
+2. Keep the allowlist **tiny**; enable 2FA on those Google accounts.
+3. Prefer a dedicated OS user and a **narrow** `--workspace` (not `$HOME` / `/`).
+4. Consider **`--disable-shell`** if shell is not required.
+5. Audit `$MEMORY/mpub` before go-live: demote secrets to **private**; legacy docs without `visibility` are treated as **public**.
+6. Prefer not publishing **public HTML** with active content; CSP blocks scripts but treat public pages as hostile.
+7. Firewall: only 443 (and SSH from your IP if needed).
 
 ### 6. Optional TLS (ADR-0017)
 
@@ -360,7 +382,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.2.0](https://github.com/rendicott/marble/releases/tag/v0.2.0)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.3.0](https://github.com/rendicott/marble/releases/tag/v0.3.0)**.
 
 | Asset | Platform |
 |-------|----------|
@@ -385,14 +407,14 @@ chmod +x marble-harness-linux-amd64
 **Publish a release** (maintainers — **GitHub Actions only**; do not upload locally built binaries):
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 # Workflow "Release" builds on ubuntu-latest, tests, and attaches assets
 ```
 
 If a tag already exists but the workflow failed (e.g. GitHub outage), re-run from the Actions tab:
 
-**Actions → Release → Run workflow** → enter tag (e.g. `v0.2.0`).
+**Actions → Release → Run workflow** → enter tag (e.g. `v0.3.0`).
 
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
