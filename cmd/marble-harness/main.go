@@ -35,6 +35,14 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("marble ")
 
+	// Lightweight version check before full flag parse (also works with -h flow below).
+	for _, a := range os.Args[1:] {
+		if a == "-version" || a == "--version" || a == "version" {
+			fmt.Println("marble-harness", versionString())
+			os.Exit(0)
+		}
+	}
+
 	cfg, err := config.ParseFlags(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -268,6 +276,7 @@ func main() {
 	}()
 
 	go func() {
+		log.Printf("version %s", versionString())
 		log.Printf("listening on http://%s", displayAddr(cfg.Addr))
 		log.Printf("workspace=%s", cfg.Workspace)
 		log.Printf("memory=%s mode=%s", cfg.Memory, sqldb.Mode)

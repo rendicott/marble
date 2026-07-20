@@ -67,7 +67,7 @@
 ## Launch
 
 ### 1. Prerequisites
-- Go 1.18+ (module targets modern Go)
+- Go 1.22+ (module and release builds target Go 1.22)
 - A running **OpenAI-compatible** chat API (`/v1/chat/completions`, `/v1/models`) — local (no key) or hosted (API key via env)
 - Optional: Node/`npx` if you use stdio MCP servers (e.g. Tavily)
 - Optional: `grok` / `claude` CLIs on `PATH` for `call_agent_process`
@@ -282,6 +282,40 @@ Notable ADRs:
 | 0014 | `call_agent_process` |
 | 0015 | Cron jobs (UI + tools) |
 | 0016 | Optional model API key (`--api-key-env`) |
+
+## Releases
+
+GitHub Actions builds **precompiled** binaries on version tags (`v*`), for example `v0.1.0`.
+
+| Asset | Platform |
+|-------|----------|
+| `marble-harness-linux-amd64` | Linux x86_64 |
+| `marble-harness-linux-arm64` | Linux aarch64 |
+| `marble-harness-darwin-arm64` | macOS Apple Silicon |
+
+Also attached: `SHA256SUMS`.
+
+```bash
+# After downloading from https://github.com/rendicott/marble/releases
+chmod +x marble-harness-linux-amd64
+./marble-harness-linux-amd64 --version
+./marble-harness-linux-amd64 \
+  --workspace "$HOME" \
+  --memory "$HOME/.marble" \
+  --base-url http://127.0.0.1:8000/v1 \
+  --model YourLocalModelId \
+  --addr :8080
+```
+
+**Publish a release** (maintainers):
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+# Actions workflow "Release" builds, tests, and uploads assets
+```
+
+Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
 ## Tests
 
