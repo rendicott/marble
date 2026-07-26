@@ -4,9 +4,9 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new since v0.3.0
+## What's new in v0.4.0
 
-Unreleased on `main` (since tag **v0.3.0**). Highlights:
+Highlights since **v0.3.0**:
 
 ### Selectable models (ADR-0018) — schema v3
 - **Model catalog** in SQLite (max 32 entries): display name, provider `model` string, optional `base_url`, per-entry `api_key_env`, context limits, capability flags (`tools` / `reasoning` / `images` / `voice`), cost metadata (stored for a future spend ADR — Marble does not bill)
@@ -421,7 +421,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.3.0](https://github.com/rendicott/marble/releases/tag/v0.3.0)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.4.0)**.
 
 | Asset | Platform |
 |-------|----------|
@@ -446,14 +446,14 @@ chmod +x marble-harness-linux-amd64
 **Publish a release** (maintainers — **GitHub Actions only**; do not upload locally built binaries):
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 # Workflow "Release" builds on ubuntu-latest, tests, and attaches assets
 ```
 
 If a tag already exists but the workflow failed (e.g. GitHub outage), re-run from the Actions tab:
 
-**Actions → Release → Run workflow** → enter tag (e.g. `v0.3.0`).
+**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.0`).
 
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
