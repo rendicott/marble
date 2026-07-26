@@ -26,7 +26,21 @@
     tpSteps: document.getElementById("tp-steps"),
     tpStop: document.getElementById("tp-stop"),
     tpExpand: document.getElementById("tp-expand"),
+    sessionModel: document.getElementById("session-model"),
+    attachStage: document.getElementById("attach-stage"),
+    attachInput: document.getElementById("attach-input"),
+    attachWarn: document.getElementById("attach-warn"),
+    attModal: document.getElementById("att-modal"),
+    attModalTitle: document.getElementById("att-modal-title"),
+    attModalBody: document.getElementById("att-modal-body"),
+    attModalClose: document.getElementById("att-modal-close"),
   };
+  let stagedAttachments = []; // {id,name,mime,kind,size}
+  // In-flight stage uploads — Send stays disabled until all complete.
+  let attachUploading = 0;
+  let pendingUploads = []; // {localId, name} shown while POSTing
+  let composerWanted = false; // last setComposerEnabled(on) intent
+  let activeCapImages = false;
 
   let sessions = [];
   let activeId = null;
@@ -41,6 +55,8 @@
   let turnExpanded = false;
   let turnTickTimer = null;
   let lastPlacedTurnStart = null; // re-place card after the user msg when a new turn starts
+  let busyPollTimer = null; // backup poll while turn runs (SSE can drop/reconnect)
+  let syncInFlight = false;
 
   function isMobileLayout() {
     return window.matchMedia("(max-width: 720px)").matches;
@@ -332,10 +348,66 @@
     }
   }
 
+  let catalogModels = []; // cached for picker
+  let modelPickerBusy = false;
+
+  async function loadCatalogModels() {
+    try {
+      const data = await api("/api/models");
+      catalogModels = data.models || [];
+      fillModelSelect(els.sessionModel, true);
+      const cronSel = document.getElementById("cron-model");
+      if (cronSel) fillModelSelect(cronSel, false);
+    } catch {
+      catalogModels = [];
+    }
+  }
+
+  function fillModelSelect(sel, includeProcessEmpty) {
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = "";
+    const opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = includeProcessEmpty ? "Process default" : "Process / session default";
+    sel.appendChild(opt0);
+    for (const m of catalogModels) {
+      if (m.id === "process") continue;
+      if (m.enabled === false) continue;
+      const o = document.createElement("option");
+      o.value = m.id || "";
+      o.textContent = (m.display_name || m.id) + (m.model ? " · " + m.model : "");
+      sel.appendChild(o);
+    }
+    if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  }
+
+  function setSessionModelPicker(modelId, disabled) {
+    if (!els.sessionModel) return;
+    modelPickerBusy = true;
+    fillModelSelect(els.sessionModel, true);
+    els.sessionModel.value = modelId || "";
+    els.sessionModel.disabled = !!disabled;
+    modelPickerBusy = false;
+  }
+
   function setComposerEnabled(on) {
+    composerWanted = !!on;
     const closed = sessions.find((x) => x.id === activeId)?.status === "closed";
     els.input.disabled = !on || closed;
-    els.send.disabled = !on || busy || closed;
+    // Block Send while attachments are still uploading (avoids race / missing ids).
+    const uploading = attachUploading > 0;
+    els.send.disabled = !on || busy || closed || uploading;
+    if (els.send) {
+      els.send.title = uploading
+        ? "Wait for attachment upload to finish"
+        : busy
+          ? "Turn in progress"
+          : "";
+    }
+    if (els.sessionModel) {
+      els.sessionModel.disabled = !activeId || !!closed || !!busy;
+    }
   }
 
   async function api(path, opts) {
@@ -712,6 +784,27 @@
       body.textContent = content;
     }
     div.appendChild(body);
+    if (m.attachments && m.attachments.length) {
+      const row = document.createElement("div");
+      row.className = "attach-stage";
+      row.style.marginTop = "0.4rem";
+      m.attachments.forEach((a) => {
+        const chip = document.createElement("span");
+        chip.className = "attach-chip";
+        chip.setAttribute("data-att-id", a.id || "");
+        chip.setAttribute("data-att-name", a.name || "");
+        chip.setAttribute("data-att-kind", a.kind || "");
+        chip.setAttribute("data-att-mime", a.mime || "");
+        chip.title = "Open attachment";
+        const isImg = a.kind === "image" || (a.mime && a.mime.startsWith("image/"));
+        chip.innerHTML = isImg
+          ? `<img src="/api/sessions/${encodeURIComponent(activeId)}/attachments/${encodeURIComponent(a.id)}?inline=1" alt="" /><span class="name"></span>`
+          : `📄 <span class="name"></span>`;
+        chip.querySelector(".name").textContent = a.name || a.id || "file";
+        row.appendChild(chip);
+      });
+      div.appendChild(row);
+    }
     return div;
   }
 
@@ -736,12 +829,97 @@
     els.transcript.scrollTop = els.transcript.scrollHeight;
   }
 
+  /**
+   * Reload transcript from the server and reconcile with local state.
+   * SSE has no catch-up: reconnects and full event buffers can miss the final
+   * assistant message after a tool loop — this is the recovery path.
+   */
+  async function syncTranscript(id) {
+    if (!id || id !== activeId) return;
+    if (syncInFlight) return;
+    syncInFlight = true;
+    try {
+      const data = await api(`/api/sessions/${encodeURIComponent(id)}`);
+      if (id !== activeId) return;
+      const serverMsgs = data.messages || [];
+      const sum = data.session || {};
+
+      const lastLocal = messages.length ? messages[messages.length - 1] : null;
+      const lastServer = serverMsgs.length ? serverMsgs[serverMsgs.length - 1] : null;
+      const sameLen = messages.length === serverMsgs.length;
+      const sameTail =
+        (!lastLocal && !lastServer) ||
+        (lastLocal && lastServer && lastLocal.id && lastLocal.id === lastServer.id);
+
+      if (!sameLen || !sameTail) {
+        messages = serverMsgs;
+        renderTranscript();
+      }
+
+      const wasBusy = busy;
+      busy = !!sum.busy;
+      if (sum.status === "closed") {
+        setStatus("closed");
+        setBusyPoll(false);
+      } else if (busy) {
+        setStatus(
+          turnProgress && turnProgress.active ? turnProgress.phase || "running" : "running"
+        );
+        setBusyPoll(true);
+      } else {
+        if (wasBusy || (turnProgress && turnProgress.active)) {
+          setStatus("idle");
+        }
+        setBusyPoll(false);
+      }
+      setComposerEnabled(sum.status !== "closed");
+    } catch {
+      /* ignore transient errors */
+    } finally {
+      syncInFlight = false;
+    }
+  }
+
+  function setBusyPoll(on) {
+    if (busyPollTimer) {
+      clearInterval(busyPollTimer);
+      busyPollTimer = null;
+    }
+    if (!on) return;
+    busyPollTimer = setInterval(() => {
+      if (!activeId || !busy) {
+        setBusyPoll(false);
+        return;
+      }
+      const id = activeId;
+      hydrateProgress(id);
+      syncTranscript(id);
+    }, 4000);
+  }
+
   function connectEvents(id) {
     if (es) {
       es.close();
       es = null;
     }
     es = new EventSource(`/api/sessions/${id}/events`);
+
+    // Catch-up after connect / auto-reconnect (missed events while disconnected).
+    es.addEventListener("open", () => {
+      if (id !== activeId) return;
+      syncTranscript(id);
+      hydrateProgress(id);
+    });
+    es.addEventListener("hello", () => {
+      if (id !== activeId) return;
+      syncTranscript(id);
+      hydrateProgress(id);
+    });
+    es.onerror = () => {
+      // Browser will auto-reconnect; while down, keep polling if a turn is live.
+      if (id === activeId && busy) setBusyPoll(true);
+    };
+
     es.addEventListener("message", (ev) => {
       let data;
       try {
@@ -771,8 +949,12 @@
       } else if (data.type === "turn" && data.turn) {
         renderTurnCard(data.turn);
         busy = !!data.turn.active;
-        if (!busy && data.turn.phase === "complete") {
-          setStatus("idle");
+        setBusyPoll(busy);
+        if (!busy) {
+          setStatus(data.turn.phase === "error" ? "error" : "idle");
+          // Final assistant may have been dropped from the SSE buffer or lost
+          // during a reconnect — always reconcile when the turn ends.
+          syncTranscript(id);
         }
         setComposerEnabled(!!activeId);
         if (window.MarbleSessionInfo) window.MarbleSessionInfo.refreshIfSession(id);
@@ -782,10 +964,12 @@
           data.status === "calling_model" ||
           data.status === "stopping";
         if (data.status === "idle" || data.status === "closed") busy = false;
+        setBusyPoll(busy);
         if (data.status === "stopping") setStatus("stopping");
         else if (!(turnProgress && turnProgress.active)) setStatus(data.status || "idle");
         setComposerEnabled(!!activeId);
         if (data.status === "closed") refreshSessions();
+        if (data.status === "idle") syncTranscript(id);
         if (window.MarbleSessionInfo) window.MarbleSessionInfo.refreshIfSession(id);
       } else if (data.type === "error") {
         appendMessage({
@@ -795,11 +979,20 @@
         });
         setStatus("error");
         busy = false;
+        setBusyPoll(false);
         setComposerEnabled(!!activeId);
+        syncTranscript(id);
         if (window.MarbleSessionInfo) window.MarbleSessionInfo.refreshIfSession(id);
       } else if (data.type === "tool" && data.tool) {
         if (data.tool.phase === "start" && !(turnProgress && turnProgress.active)) {
           setStatus("running");
+        }
+        if (window.MarbleSessionInfo) window.MarbleSessionInfo.refreshIfSession(id);
+      } else if (data.type === "session_meta") {
+        setSessionModelPicker(data.model_id || "", busy);
+        if (data.model_effective && data.model_effective.capabilities) {
+          activeCapImages = !!data.model_effective.capabilities.images;
+          updateAttachWarn();
         }
         if (window.MarbleSessionInfo) window.MarbleSessionInfo.refreshIfSession(id);
       }
@@ -859,6 +1052,7 @@
   async function selectSession(id, opts) {
     hideCtx();
     activeId = id;
+    setBusyPoll(false);
     renderSessionList();
     setSessionInfoEnabled(!!id);
     if (!(opts && opts.skipURL)) {
@@ -870,10 +1064,20 @@
     messages = data.messages || [];
     busy = !!sum.busy;
     setStatus(sum.status === "closed" ? "closed" : busy ? "running" : "idle");
+    stagedAttachments = [];
+    attachUploading = 0;
+    pendingUploads = [];
+    renderStage();
+    const me = data.model_effective || {};
+    activeCapImages = !!(me.capabilities && me.capabilities.images);
+    updateAttachWarn();
     renderTranscript();
+    setSessionModelPicker(sum.model_id || "", sum.status === "closed" || busy);
     setComposerEnabled(sum.status !== "closed");
-    if (sum.status !== "closed") connectEvents(id);
-    else if (es) {
+    if (sum.status !== "closed") {
+      connectEvents(id);
+      if (busy) setBusyPoll(true);
+    } else if (es) {
       es.close();
       es = null;
     }
@@ -998,23 +1202,257 @@
     if (!ev.matches) setSessionsOpen(false);
   });
 
+  if (els.sessionModel) {
+    els.sessionModel.addEventListener("change", async () => {
+      if (modelPickerBusy || !activeId || busy) return;
+      const modelId = els.sessionModel.value || "";
+      try {
+        const res = await api(`/api/sessions/${encodeURIComponent(activeId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ model_id: modelId }),
+        });
+        const sum = res.session || {};
+        setSessionModelPicker(sum.model_id || modelId, false);
+      } catch (e) {
+        alert(e.message || String(e));
+        // reload picker from session
+        try {
+          const data = await api(`/api/sessions/${encodeURIComponent(activeId)}`);
+          setSessionModelPicker((data.session && data.session.model_id) || "", busy);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+  }
+
+  function renderStage() {
+    if (!els.attachStage) return;
+    const hasReady = stagedAttachments.length > 0;
+    const hasPending = pendingUploads.length > 0;
+    if (!hasReady && !hasPending) {
+      els.attachStage.hidden = true;
+      els.attachStage.innerHTML = "";
+    } else {
+      els.attachStage.hidden = false;
+      const pendingHtml = pendingUploads
+        .map((p) => {
+          const label = escapeHtml(p.name || "uploading…");
+          return `<span class="attach-chip attach-chip-uploading" data-local="${escapeHtml(p.localId)}" title="Uploading…"><span class="attach-spin" aria-hidden="true"></span><span class="name">${label}</span></span>`;
+        })
+        .join("");
+      const readyHtml = stagedAttachments
+        .map((a) => {
+          const label = escapeHtml(a.name || a.id);
+          const thumb =
+            a.kind === "image"
+              ? `<img src="/api/sessions/${encodeURIComponent(activeId)}/attachments/${encodeURIComponent(a.id)}?inline=1" alt="" />`
+              : "📄";
+          return `<span class="attach-chip" data-id="${escapeHtml(a.id)}">${thumb}<span class="name">${label}</span><button type="button" data-rm="${escapeHtml(a.id)}" title="Remove">×</button></span>`;
+        })
+        .join("");
+      els.attachStage.innerHTML = pendingHtml + readyHtml;
+      els.attachStage.querySelectorAll("[data-rm]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-rm");
+          try {
+            await api(
+              `/api/sessions/${encodeURIComponent(activeId)}/attachments/${encodeURIComponent(id)}`,
+              { method: "DELETE" }
+            );
+          } catch {
+            /* ignore */
+          }
+          stagedAttachments = stagedAttachments.filter((x) => x.id !== id);
+          renderStage();
+          updateAttachWarn();
+        });
+      });
+    }
+    updateAttachWarn();
+  }
+
+  function updateAttachWarn() {
+    if (!els.attachWarn) return;
+    if (attachUploading > 0) {
+      els.attachWarn.hidden = false;
+      els.attachWarn.textContent =
+        attachUploading === 1
+          ? "Uploading attachment… Send unlocks when finished."
+          : `Uploading ${attachUploading} attachments… Send unlocks when finished.`;
+      return;
+    }
+    const hasImg = stagedAttachments.some((a) => a.kind === "image");
+    if (hasImg && !activeCapImages) {
+      els.attachWarn.hidden = false;
+      els.attachWarn.textContent =
+        "Active model has no image support — images stay in the chat and are sent when you switch to a vision model.";
+    } else {
+      els.attachWarn.hidden = true;
+      els.attachWarn.textContent = "";
+    }
+  }
+
+  async function stageFiles(fileList) {
+    if (!activeId || busy) return;
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+    for (const file of files) {
+      const localId = "up-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+      pendingUploads.push({ localId, name: file.name || "image" });
+      attachUploading += 1;
+      setComposerEnabled(composerWanted);
+      renderStage();
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(activeId)}/attachments`, {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+          headers: { "X-Marble-Requested-With": "fetch" },
+        });
+        if (res.status === 401) {
+          location.href = "/auth/login?next=" + encodeURIComponent(location.pathname);
+          return;
+        }
+        if (!res.ok) throw new Error(await res.text());
+        const row = await res.json();
+        stagedAttachments.push(row);
+      } catch (e) {
+        alert(e.message || String(e));
+      } finally {
+        pendingUploads = pendingUploads.filter((p) => p.localId !== localId);
+        attachUploading = Math.max(0, attachUploading - 1);
+        setComposerEnabled(composerWanted);
+        renderStage();
+      }
+    }
+  }
+
+  function openAttModal(att, sessionId) {
+    if (!els.attModal) return;
+    const sid = sessionId || activeId;
+    els.attModalTitle.textContent = att.name || att.id || "Attachment";
+    els.attModalBody.innerHTML = "";
+    const url = `/api/sessions/${encodeURIComponent(sid)}/attachments/${encodeURIComponent(att.id)}`;
+    if (att.kind === "image" || (att.mime && att.mime.startsWith("image/"))) {
+      const img = document.createElement("img");
+      img.src = url + "?inline=1";
+      img.alt = att.name || "";
+      els.attModalBody.appendChild(img);
+    } else {
+      fetch(url, { credentials: "same-origin" })
+        .then((r) => r.text())
+        .then((text) => {
+          const isMd = (att.mime || "").includes("markdown") || /\.md$/i.test(att.name || "");
+          if (isMd && typeof marked !== "undefined" && window.DOMPurify) {
+            const div = document.createElement("div");
+            div.className = "md";
+            div.innerHTML = DOMPurify.sanitize(marked.parse(text));
+            els.attModalBody.appendChild(div);
+          } else {
+            const pre = document.createElement("pre");
+            pre.textContent = text;
+            els.attModalBody.appendChild(pre);
+          }
+        })
+        .catch((e) => {
+          els.attModalBody.textContent = e.message || String(e);
+        });
+    }
+    els.attModal.hidden = false;
+  }
+
+  if (els.attModalClose) {
+    els.attModalClose.addEventListener("click", () => {
+      els.attModal.hidden = true;
+    });
+  }
+  if (els.attModal) {
+    els.attModal.addEventListener("click", (e) => {
+      if (e.target === els.attModal) els.attModal.hidden = true;
+    });
+  }
+  if (els.attachInput) {
+    els.attachInput.addEventListener("change", () => {
+      if (els.attachInput.files && els.attachInput.files.length) {
+        stageFiles([...els.attachInput.files]);
+        els.attachInput.value = "";
+      }
+    });
+  }
+  if (els.input) {
+    els.input.addEventListener("paste", (e) => {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      const files = [];
+      for (const it of items) {
+        if (it.type && it.type.startsWith("image/")) {
+          const f = it.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length) {
+        e.preventDefault();
+        stageFiles(files);
+      }
+    });
+  }
+  if (els.form) {
+    els.form.addEventListener("dragover", (e) => {
+      e.preventDefault();
+    });
+    els.form.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+        stageFiles([...e.dataTransfer.files]);
+      }
+    });
+  }
+
+  // Click attachment chips in transcript
+  if (els.transcript) {
+    els.transcript.addEventListener("click", (e) => {
+      const chip = e.target.closest("[data-att-id]");
+      if (!chip) return;
+      openAttModal(
+        {
+          id: chip.getAttribute("data-att-id"),
+          name: chip.getAttribute("data-att-name") || "",
+          kind: chip.getAttribute("data-att-kind") || "",
+          mime: chip.getAttribute("data-att-mime") || "",
+        },
+        activeId
+      );
+    });
+  }
+
   els.form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (!activeId || busy) return;
+    if (!activeId || busy || attachUploading > 0) return;
     const content = els.input.value.trim();
-    if (!content) return;
+    if (!content && !stagedAttachments.length) return;
+    const ids = stagedAttachments.map((a) => a.id);
     els.input.value = "";
+    const pending = stagedAttachments.slice();
+    stagedAttachments = [];
+    renderStage();
     busy = true;
+    setBusyPoll(true);
     setComposerEnabled(true);
     setStatus("running");
     try {
       await api(`/api/sessions/${activeId}/messages`, {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, attachment_ids: ids }),
       });
     } catch (err) {
       busy = false;
+      setBusyPoll(false);
       setStatus("error");
+      stagedAttachments = pending;
+      renderStage();
       appendMessage({ id: "err-" + Date.now(), role: "error", content: err.message });
       setComposerEnabled(true);
     }
@@ -1037,6 +1475,7 @@
 
   setComposerEnabled(false);
   setSessionInfoEnabled(false);
+  loadCatalogModels();
   refreshAuth().finally(() => {
   refreshHealth();
   refreshSessions()

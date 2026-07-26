@@ -160,6 +160,338 @@
     return "none";
   }
 
+  async function renderModelsSection(editable) {
+    try {
+      const res = await api("/api/models");
+      const models = res.models || [];
+      const rows = models
+        .map((m) => {
+          const id = m.id || "";
+          const ro = !!m.read_only;
+          const caps = m.capabilities || {};
+          const badge = ro
+            ? "process"
+            : m.enabled === false
+              ? "disabled"
+              : "catalog";
+          const budget = m.budget != null ? m.budget : "—";
+          const capBits = [
+            caps.tools !== false ? "tools" : null,
+            caps.reasoning ? "reasoning" : null,
+            caps.images ? "images" : null,
+            caps.voice ? "voice" : null,
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          return `<div class="settings-group model-row" data-id="${escapeAttr(id)}">
+            <div class="model-row-head">
+              <div class="model-row-title">
+                <span class="model-row-name">${escapeHtml(m.display_name || id)}</span>
+                <span class="settings-chip">${escapeHtml(badge)}</span>
+              </div>
+              <div class="model-row-actions">
+                ${editable ? `<button type="button" class="icon-btn model-copy" data-id="${escapeAttr(id)}" title="Open Add model prefilled from this entry">Copy to new</button>` : ""}
+                ${ro ? "" : `<button type="button" class="icon-btn model-edit" data-id="${escapeAttr(id)}">Edit</button>`}
+                ${ro ? "" : `<button type="button" class="icon-btn model-del" data-id="${escapeAttr(id)}">Delete</button>`}
+                <button type="button" class="icon-btn model-test" data-id="${escapeAttr(id)}">Test</button>
+              </div>
+            </div>
+            <div class="model-row-meta mono muted">
+              <span>${escapeHtml(id)}</span>
+              <span>${escapeHtml(m.model || "")}</span>
+              <span>ctx ${escapeHtml(String(m.context_limit || "—"))}</span>
+              <span>budget ${escapeHtml(String(budget))}</span>
+              ${capBits ? `<span>${escapeHtml(capBits)}</span>` : ""}
+            </div>
+          </div>`;
+        })
+        .join("");
+      els.pane.innerHTML = `
+        <h3>Models</h3>
+        <p class="hint">Process default is always available (CLI — restart to change). Catalog entries are selectable per session and optional on cron. Cost fields are stored for a future spend ADR — Marble does not bill. Max 32 entries.</p>
+        ${rows || "<p class='hint'>No catalog entries yet.</p>"}
+        <div class="model-list-actions">
+          ${editable ? `<button type="button" class="icon-btn" id="model-add">+ Add model</button>` : "<p class='hint'>Read-only (limp).</p>"}
+        </div>
+        <div id="model-editor" class="settings-group model-editor" hidden></div>
+      `;
+      const editor = els.pane.querySelector("#model-editor");
+      // Prefill Add-model form from process or an existing catalog row (mobile-friendly).
+      const cloneAsNew = (src) => {
+        const caps = (src && src.capabilities) || {};
+        // Prefer configured (catalog) fields; process has only resolved values — copy those so
+        // the operator sees real base_url / limits without flipping between screens.
+        const base =
+          src.base_url_configured != null ? src.base_url_configured : src.base_url || "";
+        const reserve =
+          src.context_reserve_configured != null
+            ? src.context_reserve_configured
+            : src.context_reserve != null
+              ? src.context_reserve
+              : 0;
+        const nameBase = (src.display_name || src.id || "model").replace(/\s*\(copy\)\s*$/i, "");
+        return {
+          id: "",
+          display_name: nameBase + " (copy)",
+          model: src.model || "",
+          base_url: base,
+          base_url_configured: base,
+          api_key_env: src.api_key_env || "",
+          context_limit: src.context_limit || 131072,
+          max_output: src.max_output || 8192,
+          context_reserve: reserve,
+          context_reserve_configured: reserve,
+          capabilities: {
+            tools: caps.tools !== false,
+            reasoning: !!caps.reasoning,
+            images: !!caps.images,
+            voice: !!caps.voice,
+          },
+          enabled: true,
+          sort_order: src.sort_order || 0,
+          notes: src.notes || "",
+          cost_input_per_1m: src.cost_input_per_1m != null ? src.cost_input_per_1m : null,
+          cost_output_per_1m: src.cost_output_per_1m != null ? src.cost_output_per_1m : null,
+          cost_notes: src.cost_notes || "",
+          _copiedFrom: src.id || "",
+        };
+      };
+      const openEditor = (m) => {
+        const row = m || {
+          id: "",
+          display_name: "",
+          model: "",
+          base_url: "",
+          api_key_env: "",
+          context_limit: 131072,
+          max_output: 8192,
+          context_reserve: 0,
+          cap_tools: true,
+          cap_reasoning: false,
+          cap_images: false,
+          cap_voice: false,
+          enabled: true,
+          sort_order: 0,
+          notes: "",
+          cost_input_per_1m: null,
+          cost_output_per_1m: null,
+          cost_notes: "",
+        };
+        // New when no id (blank Add or Copy to new). Edit always has a catalog id.
+        const isNew = !row.id;
+        const isCopy = isNew && !!row._copiedFrom;
+        const caps = row.capabilities || {
+          tools: row.cap_tools !== false,
+          reasoning: !!row.cap_reasoning,
+          images: !!row.cap_images,
+          voice: !!row.cap_voice,
+        };
+        const baseVal = row.base_url_configured != null ? row.base_url_configured : row.base_url || "";
+        const resVal =
+          row.context_reserve_configured != null
+            ? row.context_reserve_configured
+            : row.context_reserve || 0;
+        editor.hidden = false;
+        const title = isCopy ? "Copy to new model" : isNew ? "Add model" : "Edit model";
+        const hint = isCopy
+          ? "Prefill from <code class=\"mono\">" +
+            escapeHtml(row._copiedFrom) +
+            "</code>. Choose a new id slug, tweak fields, then Save."
+          : isNew
+            ? "Create a catalog entry selectable per session and on cron."
+            : "Updating <code class=\"mono\">" + escapeHtml(row.id) + "</code>. Id cannot be renamed.";
+        editor.innerHTML = `
+          <h4>${title}</h4>
+          <p class="hint">${hint}</p>
+
+          <div class="settings-field">
+            <label for="me-id">Id (slug)</label>
+            <input type="text" id="me-id" class="mono" ${isNew ? "" : "disabled"} value="${escapeAttr(row.id || "")}" placeholder="qwen-local" autocomplete="off" />
+            <p class="field-help">Lowercase letters, digits, dot, hyphen, underscore (e.g. grok-4.5). Reserved: process.</p>
+          </div>
+          <div class="settings-field">
+            <label for="me-name">Display name</label>
+            <input type="text" id="me-name" value="${escapeAttr(row.display_name || "")}" placeholder="Qwen local large" />
+          </div>
+          <div class="settings-field">
+            <label for="me-model">Model string</label>
+            <input type="text" id="me-model" class="mono" value="${escapeAttr(row.model || "")}" placeholder="Qwen/Qwen3.5-…" />
+            <p class="field-help">Provider model id sent to the OpenAI-compatible API.</p>
+          </div>
+
+          <h4>Endpoint &amp; auth</h4>
+          <div class="settings-field">
+            <label for="me-base">Base URL</label>
+            <input type="text" id="me-base" class="mono" value="${escapeAttr(baseVal)}" placeholder="(inherit process)" />
+            <p class="field-help">Empty inherits process --base-url. Absolute http(s) only.</p>
+          </div>
+          <div class="settings-field">
+            <label for="me-keyenv">API key env</label>
+            <input type="text" id="me-keyenv" class="mono" value="${escapeAttr(row.api_key_env || "")}" placeholder="(inherit) | none | OPENAI_API_KEY" />
+            <p class="field-help">Empty = inherit process key. <code>none</code> = no Authorization. Otherwise env name(s), never the secret.</p>
+          </div>
+
+          <h4>Context limits</h4>
+          <div class="settings-field-grid">
+            <div class="settings-field">
+              <label for="me-ctx">Context limit</label>
+              <input type="number" id="me-ctx" value="${escapeAttr(String(row.context_limit || 131072))}" min="1" />
+            </div>
+            <div class="settings-field">
+              <label for="me-out">Max output</label>
+              <input type="number" id="me-out" value="${escapeAttr(String(row.max_output || 8192))}" min="1" />
+            </div>
+            <div class="settings-field">
+              <label for="me-res">Reserve</label>
+              <input type="number" id="me-res" value="${escapeAttr(String(resVal))}" min="0" />
+              <p class="field-help">0 = inherit process --context-reserve.</p>
+            </div>
+            <div class="settings-field">
+              <label for="me-sort">Sort order</label>
+              <input type="number" id="me-sort" value="${escapeAttr(String(row.sort_order || 0))}" />
+            </div>
+          </div>
+
+          <h4>Capabilities</h4>
+          <div class="settings-field model-caps">
+            <label class="check-row"><input type="checkbox" id="me-tools" ${caps.tools !== false ? "checked" : ""}/> Tools (uncheck only for non-agent endpoints)</label>
+            <label class="check-row"><input type="checkbox" id="me-reason" ${caps.reasoning ? "checked" : ""}/> Reasoning</label>
+            <label class="check-row"><input type="checkbox" id="me-img" ${caps.images ? "checked" : ""}/> Images</label>
+            <label class="check-row"><input type="checkbox" id="me-voice" ${caps.voice ? "checked" : ""}/> Voice</label>
+            <label class="check-row"><input type="checkbox" id="me-en" ${row.enabled !== false ? "checked" : ""}/> Enabled</label>
+          </div>
+
+          <h4>Cost metadata <span class="muted" style="font-weight:500;text-transform:none;letter-spacing:0">(optional)</span></h4>
+          <div class="settings-field-grid">
+            <div class="settings-field">
+              <label for="me-cin">Input $/1M tokens</label>
+              <input type="number" step="0.0001" min="0" id="me-cin" value="${escapeAttr(row.cost_input_per_1m != null ? String(row.cost_input_per_1m) : "")}" placeholder="—" />
+            </div>
+            <div class="settings-field">
+              <label for="me-cout">Output $/1M tokens</label>
+              <input type="number" step="0.0001" min="0" id="me-cout" value="${escapeAttr(row.cost_output_per_1m != null ? String(row.cost_output_per_1m) : "")}" placeholder="—" />
+            </div>
+          </div>
+          <div class="settings-field">
+            <label for="me-cnotes">Cost notes</label>
+            <input type="text" id="me-cnotes" value="${escapeAttr(row.cost_notes || "")}" placeholder="e.g. OpenRouter list price" />
+          </div>
+          <div class="settings-field">
+            <label for="me-notes">Notes</label>
+            <textarea id="me-notes" rows="2">${escapeHtml(row.notes || "")}</textarea>
+          </div>
+
+          <div class="model-editor-actions">
+            <button type="button" class="icon-btn" id="me-save">Save</button>
+            <button type="button" class="icon-btn" id="me-cancel">Cancel</button>
+          </div>
+          <p class="hint model-editor-err" id="me-err" hidden></p>
+        `;
+        editor.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        if (isNew) {
+          const idInput = editor.querySelector("#me-id");
+          if (idInput) {
+            // Mobile: land on the only field that must be typed fresh.
+            setTimeout(() => idInput.focus(), 50);
+          }
+        }
+        editor.querySelector("#me-cancel").onclick = () => {
+          editor.hidden = true;
+          editor.innerHTML = "";
+        };
+        editor.querySelector("#me-save").onclick = async () => {
+          const errEl = editor.querySelector("#me-err");
+          if (errEl) {
+            errEl.hidden = true;
+            errEl.textContent = "";
+          }
+          const body = {
+            id: editor.querySelector("#me-id").value.trim(),
+            display_name: editor.querySelector("#me-name").value.trim(),
+            model: editor.querySelector("#me-model").value.trim(),
+            base_url: editor.querySelector("#me-base").value.trim(),
+            api_key_env: editor.querySelector("#me-keyenv").value.trim(),
+            context_limit: parseInt(editor.querySelector("#me-ctx").value, 10) || 0,
+            max_output: parseInt(editor.querySelector("#me-out").value, 10) || 0,
+            context_reserve: parseInt(editor.querySelector("#me-res").value, 10) || 0,
+            cap_tools: editor.querySelector("#me-tools").checked,
+            cap_reasoning: editor.querySelector("#me-reason").checked,
+            cap_images: editor.querySelector("#me-img").checked,
+            cap_voice: editor.querySelector("#me-voice").checked,
+            enabled: editor.querySelector("#me-en").checked,
+            sort_order: parseInt(editor.querySelector("#me-sort").value, 10) || 0,
+            notes: editor.querySelector("#me-notes").value,
+            cost_notes: editor.querySelector("#me-cnotes").value,
+          };
+          const cin = editor.querySelector("#me-cin").value;
+          const cout = editor.querySelector("#me-cout").value;
+          if (cin !== "") body.cost_input_per_1m = parseFloat(cin);
+          if (cout !== "") body.cost_output_per_1m = parseFloat(cout);
+          try {
+            if (isNew) {
+              await api("/api/models", { method: "POST", body: JSON.stringify(body) });
+            } else {
+              await api("/api/models/" + encodeURIComponent(row.id), {
+                method: "PUT",
+                body: JSON.stringify(body),
+              });
+            }
+            renderModelsSection(editable);
+          } catch (e) {
+            if (errEl) {
+              errEl.hidden = false;
+              errEl.textContent = e.message || String(e);
+            }
+          }
+        };
+      };
+      const add = els.pane.querySelector("#model-add");
+      if (add) add.onclick = () => openEditor(null);
+      els.pane.querySelectorAll(".model-copy").forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute("data-id");
+          try {
+            const m = await api("/api/models/" + encodeURIComponent(id));
+            openEditor(cloneAsNew(m));
+          } catch (e) {
+            alert(e.message || String(e));
+          }
+        };
+      });
+      els.pane.querySelectorAll(".model-edit").forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute("data-id");
+          const m = await api("/api/models/" + encodeURIComponent(id));
+          openEditor(m);
+        };
+      });
+      els.pane.querySelectorAll(".model-del").forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute("data-id");
+          if (!confirm("Delete model “" + id + "”?")) return;
+          await api("/api/models/" + encodeURIComponent(id), { method: "DELETE" });
+          renderModelsSection(editable);
+        };
+      });
+      els.pane.querySelectorAll(".model-test").forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute("data-id");
+          try {
+            const h = await api("/api/models/" + encodeURIComponent(id) + "/health", {
+              method: "POST",
+              body: "{}",
+            });
+            alert(h.ok ? "Health OK: " + (h.model || id) : "Health failed: " + (h.error || "unknown"));
+          } catch (e) {
+            alert(e.message || String(e));
+          }
+        };
+      });
+    } catch (e) {
+      els.pane.innerHTML = `<h3>Models</h3><p class="hint model-editor-err">${escapeHtml(e.message || String(e))}</p>`;
+    }
+  }
+
   function tip(key) {
     const t = TIPS[key];
     if (!t) return "";
@@ -246,7 +578,7 @@
     if (section === "mcp")
       els.save.disabled = !mcpDirty || (data && data.runtime && data.runtime.mcp_disabled_cli);
     if (section === "ui") els.save.disabled = !dirty;
-    if (section === "runtime" || section === "agent" || section === "about")
+    if (section === "runtime" || section === "agent" || section === "about" || section === "models")
       els.save.disabled = true;
   }
 
@@ -299,7 +631,7 @@
 
         <div class="settings-group">
           <h4>Model (LLM API)</h4>
-          <p class="hint">These talk to your OpenAI-compatible model server — not the Marble web UI.</p>
+          <p class="hint">These talk to your OpenAI-compatible model server — not the Marble web UI. Extra models live under <strong>Models</strong>.</p>
           ${ro("Model id", r.model, "model")}
           ${ro("Model base URL", r.base_url, "base_url")}
           ${ro("Model auth", modelAuthLabel(r), "model_auth")}
@@ -333,6 +665,9 @@
           ${ro("Schema (binary / db)", `${r.schema_version_binary} / ${r.schema_version_db != null ? r.schema_version_db : "—"}`, "schema")}
         </div>
       `;
+    } else if (section === "models") {
+      els.pane.innerHTML = `<h3>Models</h3><p class="hint">Loading catalog…</p>`;
+      renderModelsSection(editable);
     } else if (section === "memory") {
       els.pane.innerHTML = `
         <h3>Memory &amp; DB</h3>

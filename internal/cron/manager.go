@@ -32,7 +32,8 @@ type FireResult struct {
 
 // FireFunc injects prompt into session (creating if needed) and starts a turn.
 // sessionID may be empty — implementor creates a session titled with jobName.
-type FireFunc func(jobID, jobName, sessionID, prompt string) FireResult
+// modelID is optional catalog pin for this fire only (ADR-0018); empty = session/process resolve.
+type FireFunc func(jobID, jobName, sessionID, prompt, modelID string) FireResult
 
 // HealthyFunc reports whether the harness can start model turns (not limp / model-down).
 type HealthyFunc func() bool
@@ -84,6 +85,7 @@ type CreateInput struct {
 	Prompt       string
 	MaxRuns      *int
 	CreatedBy    string // ui | agent | system
+	ModelID      string // optional catalog pin (ADR-0018)
 }
 
 // UpdateInput patches a job; nil pointers mean leave unchanged.
@@ -97,6 +99,7 @@ type UpdateInput struct {
 	SessionID    *string
 	Prompt       *string
 	MaxRuns      **int // pointer to *int: nil field = no change; *nil = clear max_runs
+	ModelID      *string
 }
 
 // Job is the API/tool view of a cron job.
@@ -118,7 +121,8 @@ type Job struct {
 	LastStatus   string  `json:"last_status,omitempty"`
 	LastError    string  `json:"last_error,omitempty"`
 	RunCount     int     `json:"run_count"`
-	MaxRuns      *int    `json:"max_runs,omitempty"`
+	MaxRuns      *int     `json:"max_runs,omitempty"`
+	ModelID      string   `json:"model_id,omitempty"`
 	Preview      []string `json:"preview,omitempty"`
 }
 
@@ -132,6 +136,7 @@ type Run struct {
 	Status      string `json:"status"`
 	Error       string `json:"error,omitempty"`
 	SessionID   string `json:"session_id,omitempty"`
+	ModelID     string `json:"model_id,omitempty"` // requested pin at fire
 }
 
 func (m *Manager) requireDB() error {
@@ -210,6 +215,7 @@ func (m *Manager) Create(in CreateInput) (*Job, error) {
 		UpdatedAt:    FormatRFC3339(now),
 		NextRunAt:    FormatRFC3339(next),
 		MaxRuns:      in.MaxRuns,
+		ModelID:      strings.TrimSpace(in.ModelID),
 	}
 	if err := m.db.InsertCronJob(row); err != nil {
 		return nil, err
@@ -313,6 +319,9 @@ func (m *Manager) Update(id string, in UpdateInput) (*Job, error) {
 	}
 	if in.MaxRuns != nil {
 		row.MaxRuns = *in.MaxRuns
+	}
+	if in.ModelID != nil {
+		row.ModelID = strings.TrimSpace(*in.ModelID)
 	}
 	if err := ValidateSchedule(row.ScheduleKind, row.CronExpr, row.IntervalSec); err != nil {
 		return nil, err
@@ -490,6 +499,7 @@ func (m *Manager) fireJob(job db.CronJobRow, runNow bool) Run {
 		ScheduledAt: FormatRFC3339(now),
 		StartedAt:   FormatRFC3339(now),
 		SessionID:   job.SessionID,
+		ModelID:     job.ModelID, // requested pin (ADR-0018); not post-fallthrough
 	}
 
 	if m.healthy != nil && !m.healthy() {
@@ -513,7 +523,7 @@ func (m *Manager) fireJob(job db.CronJobRow, runNow bool) Run {
 
 	prefix := fmt.Sprintf("[cron:%s %s]\n", job.ID, job.Name)
 	prompt := prefix + job.Prompt
-	res := m.onFire(job.ID, job.Name, job.SessionID, prompt)
+	res := m.onFire(job.ID, job.Name, job.SessionID, prompt, job.ModelID)
 
 	run.Status = res.Status
 	if run.Status == "" {
@@ -574,6 +584,7 @@ func (m *Manager) jobFromRow(r db.CronJobRow, withPreview bool) *Job {
 		LastError:    r.LastError,
 		RunCount:     r.RunCount,
 		MaxRuns:      r.MaxRuns,
+		ModelID:      r.ModelID,
 	}
 	if withPreview {
 		if prev, err := PreviewNext(r.ScheduleKind, r.CronExpr, r.IntervalSec, r.Timezone, time.Now(), 5); err == nil {
@@ -603,5 +614,6 @@ func runFromRow(r db.CronRunRow) Run {
 		Status:      r.Status,
 		Error:       r.Error,
 		SessionID:   r.SessionID,
+		ModelID:     r.ModelID,
 	}
 }

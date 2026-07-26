@@ -76,6 +76,7 @@ func (r *Registry) cronCreate(argsJSON string) (string, error) {
 		SessionID    string `json:"session_id"`
 		Prompt       string `json:"prompt"`
 		MaxRuns      *int   `json:"max_runs"`
+		ModelID      string `json:"model_id"`
 	}
 	if err := parseArgs(argsJSON, &a); err != nil {
 		return "", err
@@ -90,6 +91,7 @@ func (r *Registry) cronCreate(argsJSON string) (string, error) {
 		SessionID:    a.SessionID,
 		Prompt:       a.Prompt,
 		MaxRuns:      a.MaxRuns,
+		ModelID:      a.ModelID,
 		CreatedBy:    "agent",
 	})
 	if err != nil {
@@ -142,6 +144,9 @@ func (r *Registry) cronUpdate(argsJSON string) (string, error) {
 		i := int(v)
 		p := &i
 		in.MaxRuns = &p
+	}
+	if v, ok := raw["model_id"].(string); ok {
+		in.ModelID = &v
 	}
 	j, err := m.Update(id, in)
 	if err != nil {

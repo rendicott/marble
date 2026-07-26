@@ -27,6 +27,7 @@ type CronJobRow struct {
 	LastError   string
 	RunCount    int
 	MaxRuns     *int
+	ModelID     string // catalog pin or "" (ADR-0018)
 }
 
 // CronRunRow is one fire attempt.
@@ -39,6 +40,7 @@ type CronRunRow struct {
 	Status      string
 	Error       string
 	SessionID   string
+	ModelID     string // requested pin at fire (ADR-0018)
 }
 
 func (d *DB) migrateV1toV2() error {
@@ -118,12 +120,12 @@ func (d *DB) InsertCronJob(j CronJobRow) error {
 INSERT INTO cron_jobs (
   id, name, enabled, schedule_kind, cron_expr, interval_sec, timezone,
   session_id, prompt, created_by, created_at, updated_at, next_run_at,
-  last_run_at, last_status, last_error, run_count, max_runs
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  last_run_at, last_status, last_error, run_count, max_runs, model_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, j.Name, en, j.ScheduleKind, cronNullStr(j.CronExpr), cronNullInt(j.IntervalSec),
 		j.Timezone, cronNullStr(j.SessionID), j.Prompt, j.CreatedBy, j.CreatedAt, j.UpdatedAt,
 		cronNullStr(j.NextRunAt), cronNullStr(j.LastRunAt), cronNullStr(j.LastStatus), cronNullStr(j.LastError),
-		j.RunCount, maxRuns,
+		j.RunCount, maxRuns, j.ModelID,
 	)
 	return err
 }
@@ -145,12 +147,12 @@ func (d *DB) UpdateCronJob(j CronJobRow) error {
 UPDATE cron_jobs SET
   name=?, enabled=?, schedule_kind=?, cron_expr=?, interval_sec=?, timezone=?,
   session_id=?, prompt=?, updated_at=?, next_run_at=?, last_run_at=?,
-  last_status=?, last_error=?, run_count=?, max_runs=?
+  last_status=?, last_error=?, run_count=?, max_runs=?, model_id=?
 WHERE id=?`,
 		j.Name, en, j.ScheduleKind, cronNullStr(j.CronExpr), cronNullInt(j.IntervalSec),
 		j.Timezone, cronNullStr(j.SessionID), j.Prompt, j.UpdatedAt, cronNullStr(j.NextRunAt),
 		cronNullStr(j.LastRunAt), cronNullStr(j.LastStatus), cronNullStr(j.LastError),
-		j.RunCount, maxRuns, j.ID,
+		j.RunCount, maxRuns, j.ModelID, j.ID,
 	)
 	if err != nil {
 		return err
@@ -186,7 +188,7 @@ func (d *DB) GetCronJob(id string) (*CronJobRow, error) {
 	row := d.SQL.QueryRow(`
 SELECT id, name, enabled, schedule_kind, cron_expr, interval_sec, timezone,
   session_id, prompt, created_by, created_at, updated_at, next_run_at,
-  last_run_at, last_status, last_error, run_count, max_runs
+  last_run_at, last_status, last_error, run_count, max_runs, model_id
 FROM cron_jobs WHERE id = ?`, id)
 	return scanCronJob(row)
 }
@@ -199,7 +201,7 @@ func (d *DB) ListCronJobs(enabledOnly bool) ([]CronJobRow, error) {
 	q := `
 SELECT id, name, enabled, schedule_kind, cron_expr, interval_sec, timezone,
   session_id, prompt, created_by, created_at, updated_at, next_run_at,
-  last_run_at, last_status, last_error, run_count, max_runs
+  last_run_at, last_status, last_error, run_count, max_runs, model_id
 FROM cron_jobs`
 	if enabledOnly {
 		q += ` WHERE enabled = 1`
@@ -232,7 +234,7 @@ func (d *DB) ListDueCronJobs(nowRFC3339 string, limit int) ([]CronJobRow, error)
 	rows, err := d.SQL.Query(`
 SELECT id, name, enabled, schedule_kind, cron_expr, interval_sec, timezone,
   session_id, prompt, created_by, created_at, updated_at, next_run_at,
-  last_run_at, last_status, last_error, run_count, max_runs
+  last_run_at, last_status, last_error, run_count, max_runs, model_id
 FROM cron_jobs
 WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?
 ORDER BY next_run_at ASC
@@ -268,10 +270,10 @@ func (d *DB) InsertCronRun(r CronRunRow) error {
 		return fmt.Errorf("database not writable")
 	}
 	_, err := d.SQL.Exec(`
-INSERT INTO cron_runs (id, job_id, scheduled_at, started_at, finished_at, status, error, session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO cron_runs (id, job_id, scheduled_at, started_at, finished_at, status, error, session_id, model_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.JobID, r.ScheduledAt, cronNullStr(r.StartedAt), cronNullStr(r.FinishedAt),
-		r.Status, cronNullStr(r.Error), cronNullStr(r.SessionID),
+		r.Status, cronNullStr(r.Error), cronNullStr(r.SessionID), r.ModelID,
 	)
 	return err
 }
@@ -285,7 +287,7 @@ func (d *DB) ListCronRunsForJob(jobID string, limit int) ([]CronRunRow, error) {
 		limit = 50
 	}
 	rows, err := d.SQL.Query(`
-SELECT id, job_id, scheduled_at, started_at, finished_at, status, error, session_id
+SELECT id, job_id, scheduled_at, started_at, finished_at, status, error, session_id, model_id
 FROM cron_runs WHERE job_id = ?
 ORDER BY scheduled_at DESC LIMIT ?`, jobID, limit)
 	if err != nil {
@@ -304,7 +306,7 @@ func (d *DB) ListCronRuns(limit int) ([]CronRunRow, error) {
 		limit = 50
 	}
 	rows, err := d.SQL.Query(`
-SELECT id, job_id, scheduled_at, started_at, finished_at, status, error, session_id
+SELECT id, job_id, scheduled_at, started_at, finished_at, status, error, session_id, model_id
 FROM cron_runs
 ORDER BY scheduled_at DESC LIMIT ?`, limit)
 	if err != nil {
@@ -349,7 +351,7 @@ func scanCronRuns(rows *sql.Rows) ([]CronRunRow, error) {
 	for rows.Next() {
 		var r CronRunRow
 		var started, finished, errStr, sid sql.NullString
-		if err := rows.Scan(&r.ID, &r.JobID, &r.ScheduledAt, &started, &finished, &r.Status, &errStr, &sid); err != nil {
+		if err := rows.Scan(&r.ID, &r.JobID, &r.ScheduledAt, &started, &finished, &r.Status, &errStr, &sid, &r.ModelID); err != nil {
 			return nil, err
 		}
 		r.StartedAt = started.String
@@ -374,7 +376,7 @@ func scanCronJob(row scannable) (*CronJobRow, error) {
 	err := row.Scan(
 		&j.ID, &j.Name, &en, &j.ScheduleKind, &cronExpr, &interval, &j.Timezone,
 		&sess, &j.Prompt, &j.CreatedBy, &j.CreatedAt, &j.UpdatedAt, &next,
-		&last, &lstat, &lerr, &j.RunCount, &maxRuns,
+		&last, &lstat, &lerr, &j.RunCount, &maxRuns, &j.ModelID,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {

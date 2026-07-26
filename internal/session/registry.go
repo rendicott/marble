@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,9 @@ func NewRegistry(runner *Runner, store *memory.Store, sqldb *db.DB, workspace, m
 
 // DB returns the sqlite wrapper (may be limp).
 func (r *Registry) DB() *db.DB { return r.sqldb }
+
+// Runner returns the agent runner (may be nil before wire).
+func (r *Registry) Runner() *Runner { return r.runner }
 
 func (r *Registry) refreshDiskIndex() {
 	if r.store == nil {
@@ -219,6 +223,11 @@ func (r *Registry) List() []Summary {
 // PostUserMessage routes a message to a session via the runner.
 // actor may be nil in open mode.
 func (r *Registry) PostUserMessage(id, text string, actor *Actor) error {
+	return r.PostUserMessageWithAttachments(id, text, actor, nil)
+}
+
+// PostUserMessageWithAttachments includes staged attachment ids (ADR-0019).
+func (r *Registry) PostUserMessageWithAttachments(id, text string, actor *Actor, attachmentIDs []string) error {
 	s, err := r.EnsureLoaded(id)
 	if err != nil {
 		return err
@@ -226,7 +235,13 @@ func (r *Registry) PostUserMessage(id, text string, actor *Actor) error {
 	if s.Status == "closed" {
 		return fmt.Errorf("session is closed")
 	}
-	if !r.runner.PostUserMessage(s, text, actor) {
+	// Pre-validate attachments so we can return a clear error (not busy).
+	if len(attachmentIDs) > 0 {
+		if _, _, err := r.runner.buildUserContent(s.ID, text, attachmentIDs); err != nil {
+			return err
+		}
+	}
+	if !r.runner.PostUserMessageWithAttachments(s, text, actor, attachmentIDs) {
 		return errBusy
 	}
 	return nil
@@ -269,6 +284,111 @@ func (r *Registry) Progress(id string) (TurnProgress, error) {
 		return TurnProgress{}, err
 	}
 	return s.Progress(), nil
+}
+
+// SetSessionModel sets durable catalog model_id for a session (ADR-0018).
+// modelID empty clears to process default. Applies on the *next* turn (current turn already resolved).
+// Safe to call while a turn is busy (agent tool path); closed sessions are rejected.
+// Non-empty modelID must exist and be enabled in the catalog.
+func (r *Registry) SetSessionModel(id, modelID string) (*Session, EffectiveModel, error) {
+	return r.setSessionModel(id, modelID, true)
+}
+
+// SetSessionModelUI is like SetSessionModel but rejects when the session is busy (PATCH / UI).
+func (r *Registry) SetSessionModelUI(id, modelID string) (*Session, EffectiveModel, error) {
+	return r.setSessionModel(id, modelID, false)
+}
+
+func (r *Registry) setSessionModel(id, modelID string, allowBusy bool) (*Session, EffectiveModel, error) {
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return nil, EffectiveModel{}, err
+	}
+	s.mu.Lock()
+	if s.Status == "closed" {
+		s.mu.Unlock()
+		return nil, EffectiveModel{}, fmt.Errorf("session is closed")
+	}
+	if s.busy && !allowBusy {
+		s.mu.Unlock()
+		return nil, EffectiveModel{}, errBusy
+	}
+	wasBusy := s.busy
+	s.mu.Unlock()
+
+	modelID = strings.TrimSpace(modelID)
+	if modelID == ProcessCatalogID {
+		modelID = ""
+	}
+	// Validate catalog entry exists when selecting a non-process model.
+	if modelID != "" {
+		if r.sqldb == nil || !r.sqldb.Writable() {
+			return nil, EffectiveModel{}, fmt.Errorf("model catalog unavailable")
+		}
+		row, err := r.sqldb.GetModelCatalog(modelID)
+		if err != nil || row == nil {
+			return nil, EffectiveModel{}, fmt.Errorf("model_id %q not in catalog — add it under Settings → Models first (or pass empty for process default)", modelID)
+		}
+		if !row.Enabled {
+			return nil, EffectiveModel{}, fmt.Errorf("model_id %q is disabled in the catalog", modelID)
+		}
+	}
+
+	s.mu.Lock()
+	s.ModelID = modelID
+	s.dirty = true
+	s.UpdatedAt = time.Now()
+	s.mu.Unlock()
+
+	em := r.runner.resolveEffective(s, TurnOpts{})
+	s.mu.Lock()
+	s.ProviderModel = em.Model
+	storedID := s.ModelID
+	s.mu.Unlock()
+
+	r.syncSessionRow(s)
+	_ = r.PersistSession(s)
+
+	// Advisory when history likely exceeds new budget (Q17) — estimate only
+	if r.runner != nil {
+		s.mu.Lock()
+		est := estimateAll(s.history)
+		s.mu.Unlock()
+		if est > em.Budget() {
+			r.runner.advisory(s, fmt.Sprintf(
+				"[harness] history ~%d tokens exceeds new model budget %d; next turn will trim/auto-compact",
+				est, em.Budget(),
+			))
+		}
+		if wasBusy {
+			r.runner.advisory(s, fmt.Sprintf(
+				"[harness] model_id set to %q for next turn (current turn keeps its already-resolved model)",
+				func() string {
+					if storedID == "" {
+						return "process"
+					}
+					return storedID
+				}(),
+			))
+		}
+	}
+
+	s.publish(Event{
+		Type:     "session_meta",
+		ModelID:  storedID,
+		Model:    em.Model,
+		ModelEff: em.Public(),
+	})
+	return s, em, nil
+}
+
+// EffectiveModelFor returns resolve for session (interactive opts).
+func (r *Registry) EffectiveModelFor(id string) (EffectiveModel, error) {
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return EffectiveModel{}, err
+	}
+	return r.runner.resolveEffective(s, TurnOpts{}), nil
 }
 
 var errNotBusy = fmt.Errorf("session not busy")
@@ -413,10 +533,16 @@ func (r *Registry) RunMaintenance() (pruned, blobs int, err error) {
 		if e != nil && err == nil {
 			err = e
 		}
+		if _, e2 := r.sqldb.DeleteSessionAttachments(id); e2 != nil && err == nil {
+			err = e2
+		}
 		// remove from disk index but keep md files
 		r.mu.Lock()
 		delete(r.diskIndex, id)
 		r.mu.Unlock()
+	}
+	if n, e := r.sqldb.GCStagedAttachments(0); e == nil {
+		blobs += n
 	}
 	maxBlob := r.sqldb.SettingInt("blob_max_age_days", 4)
 	n, e := r.sqldb.GCBlobs(maxBlob)

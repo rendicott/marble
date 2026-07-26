@@ -1,0 +1,104 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0019",
+  "title": "Multimodal Attachments",
+  "updated_at": "2026-07-26T00:35:08.912Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Reject stage while busy (409); match message path",
+      "notes": "",
+      "question": "Q1 Staging while session busy?",
+      "rec": "Reject stage while busy (409); match message path"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "8 MiB/file, 20 MiB total, 10 files; doc model inject 64 KiB",
+      "notes": "",
+      "question": "Q2 Per-file / message limits?",
+      "rec": "8 MiB/file, 20 MiB total, 10 files; doc model inject 64 KiB"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Accept GIF as opaque image bytes",
+      "notes": "",
+      "question": "Q3 GIF support?",
+      "rec": "Accept GIF as opaque image bytes"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Allow HTML store; GET as text/plain attachment; preview via DOMPurify only",
+      "notes": "",
+      "question": "Q4 HTML documents?",
+      "rec": "Allow HTML store; GET as text/plain attachment; preview via DOMPurify only"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "message_attach tool result preview ≤2 KiB",
+      "notes": "",
+      "question": "Q5 message_attach tool preview size?",
+      "rec": "message_attach tool result preview ≤2 KiB"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Process CapImages remains false",
+      "notes": "",
+      "question": "Q6 Process default CapImages?",
+      "rec": "Process CapImages remains false"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No server thumbnails in v1",
+      "notes": "",
+      "question": "Q7 Server-side thumbnails?",
+      "rec": "No server thumbnails in v1"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Compact source uses placeholders only (no image bytes)",
+      "notes": "",
+      "question": "Q8 Images in compact source?",
+      "rec": "Compact source uses placeholders only (no image bytes)"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "image detail auto only",
+      "notes": "",
+      "question": "Q9 image_url detail low/high?",
+      "rec": "image detail auto only"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Schema v4 session_attachments only",
+      "notes": "",
+      "question": "Q10 Schema v4 scope?",
+      "rec": "Schema v4 session_attachments only"
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Strip for only non-model supported duration, re include when modality supported model returns",
+      "notes": "Outbound-only strip while active model lacks modality; durable history keeps marble-att:// sentinels so a later vision model re-includes them. Not fail-closed 400 on send.",
+      "question": "Q11 Fail closed vs strip for new user images?",
+      "rec": "Fail closed HTTP 400 for new image sends when !cap_images"
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Defer PDF; reject with convert guidance",
+      "notes": "",
+      "question": "Q12 PDF in v1?",
+      "rec": "Defer PDF; reject with convert guidance"
+    }
+  }
+}

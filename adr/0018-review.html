@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0018 Selectable Models</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #1e1b4b 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #0f3d3e 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #818cf8, #34d399);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 72ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--accent); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    .q {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.6rem 0.8rem; margin: 0.4rem 0; background: #141824; font-size: 0.9rem;
+    }
+    .q strong { color: var(--warn); font-family: var(--mono); font-size: 0.78rem; }
+    .q .rec { color: var(--muted); font-size: 0.84rem; margin-top: 0.2rem; }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body data-adr="0018" data-adr-title="Selectable Models">
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0018</span>
+      <span class="status">ACCEPTED · ready to implement</span>
+    </div>
+    <nav class="toc">
+      <a href="#goals">Goals</a>
+      <a href="#resolve">Resolve</a>
+      <a href="#locked">Decisions</a>
+      <a href="#prs">PRs</a>
+      <a href="0018-selectable-models.md">Markdown</a>
+      <a href="0007-review.html">0007</a>
+      <a href="0015-review.html">0015</a>
+      <a href="0016-review.html">0016</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Selectable models</h1>
+      <p class="lede">
+        All questions locked from <code>0018-answers.json</code>
+        (2026-07-25T11:28:57.601Z). Catalog of models in Settings ⚙,
+        per-session picker, optional cron pin. CLI <code>--model</code> remains
+        the permanent failsafe. Session cost tracking is deferred.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Status</b> Accepted · ready to implement</div>
+        <div class="meta"><b>Date</b> 2026-07-25</div>
+        <div class="meta"><b>Extends</b> 0001 · 0003 · 0007 · 0008 · 0015 · 0016</div>
+        <div class="meta"><b>Schema</b> v3 <code>model_catalog</code></div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>KD3</strong> cron pin → session → process</span>
+        <span class="chip"><strong>KD1</strong> SQLite catalog</span>
+        <span class="chip"><strong>KD6</strong> active budget on trim/compact</span>
+        <span class="chip"><strong>defer</strong> cost tracking ADR</span>
+      </div>
+    </section>
+
+    <section id="goals">
+      <h2>Goals</h2>
+      <table>
+        <tr><th>#</th><th>Goal</th></tr>
+        <tr><td>1</td><td>CLI process model is always failsafe fallback</td></tr>
+        <tr><td>2</td><td>Settings catalog: identity, endpoint, auth-env, costs, caps, context</td></tr>
+        <tr><td>3</td><td>Per-session model selection for next turn</td></tr>
+        <tr><td>4</td><td>Mid-session switch → active budget for trim + compact; capability strip/fail</td></tr>
+        <tr><td>5</td><td>Cron tools + UI optional <code>model_id</code> pin</td></tr>
+        <tr><td>6</td><td>Store cost fields now; spend dashboards later</td></tr>
+        <tr><td>7</td><td>Secrets env-only (ADR-0016); catalog stores env <em>names</em></td></tr>
+      </table>
+      <div class="callout warn">
+        <strong>Non-goals v1:</strong> session cost tracking, auto model routing,
+        multimodal wire (flags only), literal keys in DB, non-OpenAI protocols.
+      </div>
+    </section>
+
+    <section id="resolve">
+      <h2>Effective model resolve</h2>
+      <pre class="mock">per turn:
+  1. CronModelID in TurnOpts   (this fire only — does not rewrite session)
+  2. session.model_id          (if set + enabled in catalog)
+  3. process CLI fallback      (--model / --base-url / limits / --api-key-env)
+
+dual fields:
+  model_id  = catalog slug (or "")
+  model     = last effective provider model string
+  API also exposes model_effective { limits, caps, source }</pre>
+      <h3>Context shrink</h3>
+      <p class="muted">
+        PATCH does not rewrite history. Next turn <code>trimHistory</code> uses
+        active budget. Auto-compact cascade after shrink is intentional.
+        In-turn compact uses the turn’s already-resolved <code>em</code>
+        (including cron pin); source trimmed to 80% of <code>em.Budget()</code>.
+      </p>
+      <h3>UI sketch</h3>
+      <div class="grid2">
+        <pre class="mock">Settings ⚙ → Models
+┌─────────────────────────────┐
+│ + Add model                 │
+│ ○ qwen-local  (process) RO  │
+│ ● gpt-hosted  128k tools ✓  │
+│   base: openrouter…         │
+│   $in/$out · caps · Test    │
+└─────────────────────────────┘</pre>
+        <pre class="mock">Session header
+[ session title ]  model: [gpt-hosted ▾]  idle
+Composer · context ~42% of 128k
+
+Cron job form
+… schedule …
+model: [process default ▾]  or catalog slug</pre>
+      </div>
+    </section>
+
+    <section id="locked">
+      <h2>Decisions locked (Q1–Q17)</h2>
+      <p class="muted">From <code>0018-answers.json</code> · 2026-07-25T11:28:57.601Z · all choice=rec</p>
+      <div class="q" data-qid="Q1" data-status="locked" data-decision="SQLite model_catalog schema v3; process fallback not a row" data-rec="SQLite model_catalog schema v3; process fallback not a row"></div>
+      <div class="q" data-qid="Q2" data-status="locked" data-decision="Multi base URL + per-entry api_key_env inherit/none" data-rec="Multi base URL + per-entry api_key_env inherit/none"></div>
+      <div class="q" data-qid="Q3" data-status="locked" data-decision="Empty model_id → process CLI for new sessions and cron" data-rec="Empty model_id → process CLI for new sessions and cron"></div>
+      <div class="q" data-qid="Q4" data-status="locked" data-decision="Keep stored model_id; resolve-time fallthrough + advisory" data-rec="Keep stored model_id; resolve-time fallthrough + advisory"></div>
+      <div class="q" data-qid="Q5" data-status="locked" data-decision="Strip when cap says unsupported; else fail-closed; text-only v1 strip is no-op" data-rec="Strip when cap says unsupported; else fail-closed; text-only v1 strip is no-op"></div>
+      <div class="q" data-qid="Q6" data-status="locked" data-decision="Settings Models section + session header picker + cron pin field" data-rec="Settings Models section + session header picker + cron pin field"></div>
+      <div class="q" data-qid="Q7" data-status="locked" data-decision="model_list + session_set_model tools; no agent catalog writes" data-rec="model_list + session_set_model tools; no agent catalog writes"></div>
+      <div class="q" data-qid="Q8" data-status="locked" data-decision="On-demand health only for catalog entries" data-rec="On-demand health only for catalog entries"></div>
+      <div class="q" data-qid="Q9" data-status="locked" data-decision="migrateV2toV3 stepwise; failure aborts process start" data-rec="migrateV2toV3 stepwise; failure aborts process start"></div>
+      <div class="q" data-qid="Q10" data-status="locked" data-decision="Cron pin wins for that fire only via TurnOpts; does not write session.model_id" data-rec="Cron pin wins for that fire only via TurnOpts; does not write session.model_id"></div>
+      <div class="q" data-qid="Q11" data-status="locked" data-decision="PATCH 409 if busy; 400 if closed; UI disables picker while busy" data-rec="PATCH 409 if busy; 400 if closed; UI disables picker while busy"></div>
+      <div class="q" data-qid="Q12" data-status="locked" data-decision="In-turn compact uses turn EffectiveModel incl cron pin; 80% budget source trim" data-rec="In-turn compact uses turn EffectiveModel incl cron pin; 80% budget source trim"></div>
+      <div class="q" data-qid="Q13" data-status="locked" data-decision="Soft cap 32 catalog entries" data-rec="Soft cap 32 catalog entries"></div>
+      <div class="q" data-qid="Q14" data-status="locked" data-decision="Defer session cost tracking; store cost fields only" data-rec="Defer session cost tracking; store cost fields only"></div>
+      <div class="q" data-qid="Q15" data-status="locked" data-decision="empty inherit process; none omit auth; named env never fall back to process key" data-rec="empty inherit process; none omit auth; named env never fall back to process key"></div>
+      <div class="q" data-qid="Q16" data-status="locked" data-decision="Dual fields: model_id slug + model last provider string; API model_effective" data-rec="Dual fields: model_id slug + model last provider string; API model_effective"></div>
+      <div class="q" data-qid="Q17" data-status="locked" data-decision="Advisory only on PATCH if history > new budget; no auto-compact on PATCH" data-rec="Advisory only on PATCH if history > new budget; no auto-compact on PATCH"></div>
+    </section>
+
+    <section id="prs">
+      <h2>PR plan (8)</h2>
+      <table>
+        <tr><th>PR</th><th>Title</th><th>Depends</th></tr>
+        <tr><td>1</td><td>Schema v3 + catalog DB layer</td><td>—</td></tr>
+        <tr><td>2</td><td>EffectiveModel resolver + client cache</td><td>1</td></tr>
+        <tr><td>3</td><td>Turn opts + loop/compact/persist/logging</td><td>2</td></tr>
+        <tr><td>4a</td><td>HTTP <code>/api/models</code> + health</td><td>1–2</td></tr>
+        <tr><td>4b</td><td>Session PATCH model_id + SSE</td><td>3</td></tr>
+        <tr><td>5</td><td>Settings Models UI</td><td>4a</td></tr>
+        <tr><td>6</td><td>Session picker chrome</td><td>4b</td></tr>
+        <tr><td>7</td><td>Cron model_id end-to-end</td><td>1+3</td></tr>
+        <tr><td>8</td><td>Agent tools + docs</td><td>4b</td></tr>
+      </table>
+      <p class="muted">Empty catalog ≡ legacy single-model behavior is required acceptance on PR1–PR3.</p>
+    </section>
+
+    <section>
+      <h2>Canonical doc</h2>
+      <p class="muted">Full design: <a href="0018-selectable-models.md"><code>adr/0018-selectable-models.md</code></a> · answers: <a href="0018-answers.json"><code>0018-answers.json</code></a>. Ready for PR1–PR8.</p>
+    </section>
+  </main>
+  <footer>Marble · ADR-0018 · selectable models · review kit</footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>

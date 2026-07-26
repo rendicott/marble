@@ -73,20 +73,12 @@ type Config struct {
 // Budget returns the maximum estimated tokens allowed for prompt material
 // (system + tools + messages) before a completion call.
 func (c Config) Budget() int {
-	b := c.ContextLimit - c.MaxOutput - c.ContextReserve
-	if b < 1024 {
-		return 1024
-	}
-	return b
+	return BudgetTokens(c.ContextLimit, c.MaxOutput, c.ContextReserve)
 }
 
 // UsageRatio returns est_prompt / budget (ADR-0005 Q5).
 func (c Config) UsageRatio(estPrompt int) float64 {
-	b := c.Budget()
-	if b <= 0 {
-		return 1
-	}
-	return float64(estPrompt) / float64(b)
+	return UsageRatioOf(estPrompt, c.Budget())
 }
 
 // ParseFlags reads CLI flags into Config.
@@ -183,9 +175,19 @@ func (c *Config) resolveAPIKey() {
 	c.APIKey = ""
 	c.APIKeyEnvUsed = ""
 	c.APIKeyEnvConfigured = false
-	raw := strings.TrimSpace(c.APIKeyEnv)
+	key, used, configured := ResolveAPIKeyEnv(c.APIKeyEnv)
+	c.APIKey = key
+	c.APIKeyEnvUsed = used
+	c.APIKeyEnvConfigured = configured
+}
+
+// ResolveAPIKeyEnv resolves a comma-separated list of env var names to a secret.
+// Never logs the secret. First non-empty env value wins. Empty list → no key.
+// Used by process CLI and per-catalog-entry api_key_env (ADR-0018).
+func ResolveAPIKeyEnv(apiKeyEnv string) (key, used string, configured bool) {
+	raw := strings.TrimSpace(apiKeyEnv)
 	if raw == "" {
-		return
+		return "", "", false
 	}
 	for _, name := range strings.Split(raw, ",") {
 		name = strings.TrimSpace(name)
@@ -196,11 +198,26 @@ func (c *Config) resolveAPIKey() {
 		if val == "" {
 			continue
 		}
-		c.APIKey = val
-		c.APIKeyEnvUsed = name
-		c.APIKeyEnvConfigured = true
-		return
+		return val, name, true
 	}
+	return "", "", false
+}
+
+// BudgetTokens returns max prompt tokens for limit/maxOut/reserve (shared by process + catalog).
+func BudgetTokens(contextLimit, maxOutput, contextReserve int) int {
+	b := contextLimit - maxOutput - contextReserve
+	if b < 1024 {
+		return 1024
+	}
+	return b
+}
+
+// UsageRatioOf returns est_prompt / budget.
+func UsageRatioOf(estPrompt, budget int) float64 {
+	if budget <= 0 {
+		return 1
+	}
+	return float64(estPrompt) / float64(budget)
 }
 
 // ModelAuthPublic returns safe fields for health / Settings (never the secret).

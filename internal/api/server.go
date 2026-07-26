@@ -51,6 +51,8 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/health", s.handleHealth)
 	s.Mux.HandleFunc("/api/sessions", s.handleSessions)
 	s.Mux.HandleFunc("/api/sessions/", s.handleSessionSub)
+	s.Mux.HandleFunc("/api/models", s.handleModels)
+	s.Mux.HandleFunc("/api/models/", s.handleModels)
 	s.Mux.HandleFunc("/api/workspace", s.handleWorkspace)
 	s.Mux.HandleFunc("/api/workspace/", s.handleWorkspace)
 	s.Mux.HandleFunc("/api/settings", s.handleSettings)
@@ -144,6 +146,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"budget":          s.Cfg.Budget(),
 		"workspace":       s.Cfg.Workspace,
 		"memory":          s.Cfg.Memory,
+	}
+	if d := s.db(); d != nil && d.Writable() {
+		if total, enabled, err := d.CountModelCatalog(); err == nil {
+			out["model_catalog_count"] = total
+			out["model_catalog_enabled"] = enabled
+		}
 	}
 	for k, v := range s.Cfg.ModelAuthPublic() {
 		out[k] = v
@@ -258,6 +266,10 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionStop(w, r, id)
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "attachments" {
+		s.handleSessionAttachments(w, r, id, parts[2:])
+		return
+	}
 
 	sess, err := s.Registry.EnsureLoaded(id)
 	if err != nil {
@@ -266,17 +278,30 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 1 {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			sum := sess.Summary()
+			s.markCronSession(&sum)
+			var me map[string]interface{}
+			if s.Registry != nil {
+				if em, err := s.Registry.EffectiveModelFor(id); err == nil {
+					me = em.Public()
+					sum.Model = em.Model
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"session":         sum,
+				"messages":        sess.UIMessages(),
+				"model_effective": me,
+			})
+			return
+		case http.MethodPatch:
+			s.handleSessionPatch(w, r, id)
+			return
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		sum := sess.Summary()
-		s.markCronSession(&sum)
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"session":  sum,
-			"messages": sess.UIMessages(),
-		})
-		return
 	}
 
 	switch parts[1] {
@@ -378,27 +403,65 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request, id string) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "closed", "id": id})
 }
 
+func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		ModelID *string `json:"model_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if body.ModelID == nil {
+		http.Error(w, "model_id required", http.StatusBadRequest)
+		return
+	}
+	// UI PATCH: reject while busy (ADR-0018 Q11). Agent tool allows busy (next-turn).
+	sess, em, err := s.Registry.SetSessionModelUI(id, *body.ModelID)
+	if err != nil {
+		if session.IsBusy(err) {
+			http.Error(w, "session busy", http.StatusConflict)
+			return
+		}
+		if strings.Contains(err.Error(), "closed") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	u := auth.UserFromContext(r.Context())
+	auth.LogAction("session_set_model", "session="+id+" model_id="+*body.ModelID, u)
+	sum := sess.Summary()
+	s.markCronSession(&sum)
+	sum.Model = em.Model
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session":         sum,
+		"model_effective": em.Public(),
+	})
+}
+
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
-		Content string `json:"content"`
+		Content       string   `json:"content"`
+		AttachmentIDs []string `json:"attachment_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(body.Content) == "" {
-		http.Error(w, "content required", http.StatusBadRequest)
+	if strings.TrimSpace(body.Content) == "" && len(body.AttachmentIDs) == 0 {
+		http.Error(w, "content or attachment_ids required", http.StatusBadRequest)
 		return
 	}
 	var actor *session.Actor
 	if u := auth.UserFromContext(r.Context()); u != nil {
 		actor = &session.Actor{Email: u.Email, Name: u.Name, Sub: u.Sub}
 	}
-	if err := s.Registry.PostUserMessage(id, body.Content, actor); err != nil {
+	if err := s.Registry.PostUserMessageWithAttachments(id, body.Content, actor, body.AttachmentIDs); err != nil {
 		if session.IsBusy(err) {
 			http.Error(w, "session busy", http.StatusConflict)
 			return
@@ -431,13 +494,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, sess *sess
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Disable proxy buffering (nginx etc.) so turn events flush promptly.
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
 	ch := sess.Subscribe()
 	defer sess.Unsubscribe(ch)
 
-	fmt.Fprintf(w, "event: hello\ndata: {\"session_id\":%q}\n\n", sess.ID)
+	// hello tells the client to resync transcript (SSE has no catch-up).
+	fmt.Fprintf(w, "event: hello\ndata: {\"session_id\":%q,\"resync\":true}\n\n", sess.ID)
 	flusher.Flush()
 
 	notify := r.Context().Done()

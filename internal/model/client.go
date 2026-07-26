@@ -14,7 +14,7 @@ import (
 // Message is an OpenAI-compatible chat message.
 type Message struct {
 	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
+	Content    Content    `json:"content,omitempty"`
 	Name       string     `json:"name,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
@@ -212,9 +212,13 @@ func normalizeMessage(m Message) Message {
 		m.Role = "assistant"
 	}
 	// Some local builds put the answer in reasoning with content null/empty.
-	if strings.TrimSpace(m.Content) == "" && strings.TrimSpace(m.Reasoning) != "" && len(m.ToolCalls) == 0 {
-		m.Content = strings.TrimSpace(m.Reasoning)
+	// Prefer string form for assistant/tool replies (no multimodal parts from model in v1).
+	if m.Content.IsEmpty() && strings.TrimSpace(m.Reasoning) != "" && len(m.ToolCalls) == 0 {
+		m.Content = ContentFromText(strings.TrimSpace(m.Reasoning))
 		m.Reasoning = ""
+	} else if len(m.Content.Parts) > 0 {
+		// Collapse assistant/tool responses to plain text for history simplicity.
+		m.Content = ContentFromText(m.Content.PlainText())
 	}
 	// Ensure tool call type is set.
 	for i := range m.ToolCalls {

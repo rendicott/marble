@@ -20,6 +20,7 @@ type SessionMeta struct {
 	MessageCount int        `json:"message_count"`
 	Workspace    string     `json:"workspace,omitempty"`
 	Model        string     `json:"model,omitempty"`
+	ModelID      string     `json:"model_id,omitempty"` // catalog slug (ADR-0018)
 }
 
 // TranscriptMessage is one persisted UI-facing turn.
@@ -69,6 +70,9 @@ func EncodeSession(doc *SessionDoc) string {
 	fmt.Fprintf(&b, "message_count: %d\n", len(doc.Messages))
 	fmt.Fprintf(&b, "workspace: %q\n", doc.Workspace)
 	fmt.Fprintf(&b, "model: %q\n", doc.Model)
+	if doc.ModelID != "" {
+		fmt.Fprintf(&b, "model_id: %q\n", doc.ModelID)
+	}
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "# Session %s — %s\n\n", doc.ID, doc.Title)
 
@@ -198,6 +202,8 @@ func parseFrontMatter(fm string) (SessionMeta, error) {
 			m.Workspace = val
 		case "model":
 			m.Model = val
+		case "model_id":
+			m.ModelID = val
 		}
 	}
 	if m.ID == "" {

@@ -40,7 +40,9 @@ type TurnContext struct {
 	// callbacks set by session loop
 	GetUsage       func() map[string]interface{}
 	Compact        func(style string, keepLast int) (string, error)
-	OnAttachment   func(Attachment)
+	OnAttachment   func(Attachment) // attach_file — ephemeral SSE (ADR-0005)
+	// OnChatAttachment is durable chat attach (ADR-0019 message_attach); loop appendUI+message.
+	OnChatAttachment func(Attachment)
 	OnHarnessNote  func(string) // optional
 	HistorySnippet func() string
 }
@@ -62,6 +64,13 @@ type Registry struct {
 	// Shell timeouts from config (fallback if policy unset)
 	ShellDefault time.Duration
 	ShellMax     time.Duration
+
+	// Model catalog helpers (ADR-0018) — wired from main
+	ListModels     func() ([]map[string]interface{}, error)
+	SetSessionModel func(sessionID, modelID string) (map[string]interface{}, error)
+
+	// StageChatAttachment stores bytes and returns id,mime,kind (ADR-0019).
+	StageChatAttachment func(sessionID, name string, data []byte) (id, mime, kind string, err error)
 
 	mu sync.Mutex
 }
@@ -142,6 +151,10 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.cronDelete(argsJSON)
 	case "cron_run":
 		out, err = r.cronRun(argsJSON)
+	case "model_list":
+		out, err = r.modelList(argsJSON)
+	case "session_set_model":
+		out, err = r.sessionSetModel(argsJSON, tc)
 	case "get_context_usage":
 		out, err = r.getContextUsage(tc)
 	case "session_compact":
@@ -158,6 +171,8 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.skillLoad(argsJSON)
 	case "attach_file":
 		out, err = r.attachFile(argsJSON, tc)
+	case "message_attach":
+		out, err = r.messageAttach(argsJSON, tc)
 	case "web_fetch":
 		out, err = r.webFetch(argsJSON, tc)
 	case "call_agent_process":

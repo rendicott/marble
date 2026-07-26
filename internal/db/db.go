@@ -15,7 +15,9 @@ import (
 // CurrentSchemaVersion is the schema this binary writes and fully supports.
 // v1: sessions, events, blobs, settings, daemon_state
 // v2: cron_jobs, cron_runs (ADR-0015)
-const CurrentSchemaVersion = 2
+// v3: model_catalog + model_id columns (ADR-0018)
+// v4: session_attachments (ADR-0019)
+const CurrentSchemaVersion = 4
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -45,6 +47,9 @@ func Open(memoryRoot string) (*DB, error) {
 	}
 	if err := os.MkdirAll(filepath.Join(abs, "blobs"), 0o755); err != nil {
 		return nil, fmt.Errorf("blobs dir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(abs, "attachments"), 0o755); err != nil {
+		return nil, fmt.Errorf("attachments dir: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(abs, "session"), 0o755); err != nil {
 		return nil, fmt.Errorf("session dir: %w", err)
@@ -126,6 +131,14 @@ func (d *DB) upgradeSchema(fromVer int) error {
 		switch v {
 		case 1:
 			if err := d.migrateV1toV2(); err != nil {
+				return err
+			}
+		case 2:
+			if err := d.migrateV2toV3(); err != nil {
+				return err
+			}
+		case 3:
+			if err := d.migrateV3toV4(); err != nil {
 				return err
 			}
 		default:

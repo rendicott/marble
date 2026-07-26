@@ -1,0 +1,144 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0018",
+  "title": "Selectable Models",
+  "updated_at": "2026-07-25T11:28:57.601Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "SQLite model_catalog schema v3; process fallback not a row",
+      "notes": "",
+      "question": "Q1 Catalog storage?",
+      "rec": "SQLite model_catalog schema v3; process fallback not a row"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Multi base URL + per-entry api_key_env inherit/none",
+      "notes": "",
+      "question": "Q2 Multiple base URLs / providers in v1?",
+      "rec": "Multi base URL + per-entry api_key_env inherit/none"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Empty model_id → process CLI for new sessions and cron",
+      "notes": "",
+      "question": "Q3 Default model for new sessions / cron when unset?",
+      "rec": "Empty model_id → process CLI for new sessions and cron"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Keep stored model_id; resolve-time fallthrough + advisory",
+      "notes": "",
+      "question": "Q4 Selected model deleted or disabled mid-session?",
+      "rec": "Keep stored model_id; resolve-time fallthrough + advisory"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Strip when cap says unsupported; else fail-closed; text-only v1 strip is no-op",
+      "notes": "",
+      "question": "Q5 Image / unsupported content handling?",
+      "rec": "Strip when cap says unsupported; else fail-closed; text-only v1 strip is no-op"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Settings Models section + session header picker + cron pin field",
+      "notes": "",
+      "question": "Q6 UI placement?",
+      "rec": "Settings Models section + session header picker + cron pin field"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "model_list + session_set_model tools; no agent catalog writes",
+      "notes": "",
+      "question": "Q7 Agent tools change session model?",
+      "rec": "model_list + session_set_model tools; no agent catalog writes"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "On-demand health only for catalog entries",
+      "notes": "",
+      "question": "Q8 Health checks per catalog entry?",
+      "rec": "On-demand health only for catalog entries"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "migrateV2toV3 stepwise; failure aborts process start",
+      "notes": "",
+      "question": "Q9 Schema migration strategy?",
+      "rec": "migrateV2toV3 stepwise; failure aborts process start"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Cron pin wins for that fire only via TurnOpts; does not write session.model_id",
+      "notes": "",
+      "question": "Q10 Cron pin vs session override?",
+      "rec": "Cron pin wins for that fire only via TurnOpts; does not write session.model_id"
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "PATCH 409 if busy; 400 if closed; UI disables picker while busy",
+      "notes": "",
+      "question": "Q11 Busy session model change?",
+      "rec": "PATCH 409 if busy; 400 if closed; UI disables picker while busy"
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "In-turn compact uses turn EffectiveModel incl cron pin; 80% budget source trim",
+      "notes": "",
+      "question": "Q12 Compact path model?",
+      "rec": "In-turn compact uses turn EffectiveModel incl cron pin; 80% budget source trim"
+    },
+    "Q13": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Soft cap 32 catalog entries",
+      "notes": "",
+      "question": "Q13 Max catalog size?",
+      "rec": "Soft cap 32 catalog entries"
+    },
+    "Q14": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Defer session cost tracking; store cost fields only",
+      "notes": "",
+      "question": "Q14 Session cost tracking?",
+      "rec": "Defer session cost tracking; store cost fields only"
+    },
+    "Q15": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "empty inherit process; none omit auth; named env never fall back to process key",
+      "notes": "",
+      "question": "Q15 api_key_env inherit semantics?",
+      "rec": "empty inherit process; none omit auth; named env never fall back to process key"
+    },
+    "Q16": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Dual fields: model_id slug + model last provider string; API model_effective",
+      "notes": "",
+      "question": "Q16 Durable model vs model_id display?",
+      "rec": "Dual fields: model_id slug + model last provider string; API model_effective"
+    },
+    "Q17": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Advisory only on PATCH if history > new budget; no auto-compact on PATCH",
+      "notes": "",
+      "question": "Q17 Switch-time compact policy?",
+      "rec": "Advisory only on PATCH if history > new budget; no auto-compact on PATCH"
+    }
+  }
+}

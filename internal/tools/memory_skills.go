@@ -395,6 +395,78 @@ func (r *Registry) attachFile(argsJSON string, tc *TurnContext) (string, error) 
 	}), nil
 }
 
+// messageAttach stores a chat-scoped attachment from a workspace path (ADR-0019).
+func (r *Registry) messageAttach(argsJSON string, tc *TurnContext) (string, error) {
+	var a struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := parseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if tc == nil || strings.TrimSpace(tc.SessionID) == "" {
+		return "", fmt.Errorf("no current session")
+	}
+	// Store via session runner is injected as callback path — read workspace file then OnChatAttachment.
+	// Tools package cannot import session; use path resolve under workspace.
+	abs, err := r.resolve(a.Path)
+	if err != nil {
+		return "", err
+	}
+	fi, err := os.Stat(abs)
+	if err != nil {
+		return "", err
+	}
+	if fi.IsDir() {
+		return "", fmt.Errorf("cannot attach directory")
+	}
+	if fi.Size() > 8<<20 {
+		return "", fmt.Errorf("file too large (max 8 MiB)")
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", err
+	}
+	name := a.Name
+	if name == "" {
+		name = filepath.Base(a.Path)
+	}
+	// Sniff via simple extension; full sniff is on StageAttachment side if we had access.
+	// Prefer OnChatAttachment with bytes staged through a hook if available.
+	if r.StageChatAttachment != nil {
+		id, mime, kind, err := r.StageChatAttachment(tc.SessionID, name, data)
+		if err != nil {
+			return "", err
+		}
+		preview := ""
+		if kind == "document" && len(data) > 0 {
+			preview = string(data)
+			if len(preview) > 2048 {
+				preview = preview[:2048] + "…"
+			}
+		}
+		if tc.OnChatAttachment != nil {
+			tc.OnChatAttachment(Attachment{
+				Path: id, Name: name, Inline: kind == "image", Mime: mime, Size: fi.Size(), Preview: preview,
+			})
+		}
+		return mustJSON(map[string]interface{}{
+			"attached": true,
+			"id":       id,
+			"name":     name,
+			"mime":     mime,
+			"kind":     kind,
+			"size":     fi.Size(),
+			"preview":  preview,
+			"note":     "chat attachment (durable); not re-injected as tool result to model",
+		}), nil
+	}
+	return "", fmt.Errorf("message_attach not configured")
+}
+
 func utf8Printable(b []byte) bool {
 	if len(b) == 0 {
 		return true

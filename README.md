@@ -1,10 +1,35 @@
 # Marble
 
-**Marble** is a small, ownable **agent harness** written in Go. It talks to a single **OpenAI-compatible** model endpoint (local or keyed cloud), runs a tool-using agent loop, and exposes a multi-session web UI.
+**Marble** is a small, ownable **agent harness** written in Go. It talks to **OpenAI-compatible** model endpoints (local and/or keyed cloud), runs a tool-using agent loop, and exposes a multi-session web UI.
 
-> **MVP status.** Marble is intentionally minimal. It supports **one model** (one `--base-url` + `--model` pair per process), optional **Google OAuth** allowlist (shared full-admin sessions), and a single writer per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
+> **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.3.0
+## What's new since v0.3.0
+
+Unreleased on `main` (since tag **v0.3.0**). Highlights:
+
+### Selectable models (ADR-0018) — schema v3
+- **Model catalog** in SQLite (max 32 entries): display name, provider `model` string, optional `base_url`, per-entry `api_key_env`, context limits, capability flags (`tools` / `reasoning` / `images` / `voice`), cost metadata (stored for a future spend ADR — Marble does not bill)
+- **Process default** remains the CLI `--model` / `--base-url` / `--api-key-env` / context flags — always selectable, **read-only** in Settings (restart to change)
+- **Effective model** per turn: cron pin → session `model_id` → process fallback; budgets, trim, compact, and client construction use the active row
+- **Per-session picker** in the chat header; tools `model_list` / `session_set_model` (safe mid-turn; takes effect next turn)
+- **Cron optional `model_id`** — pin a catalog model for scheduled fires
+- **Settings → Models** — list / add / edit / delete / health-test; **Copy to new** prefills the add form from process or any catalog row (mobile-friendly)
+- Secrets stay in the environment only (never stored in the catalog or argv)
+
+### Multimodal attachments (ADR-0019) — schema v4
+- **Stage then send** — paste, drag-drop, or paperclip images and basic text documents; durable store under `$MEMORY/attachments/`
+- **OpenAI multimodal content parts** on the wire (`text` + `image_url` data URLs) for models with `cap_images`
+- **Capability strip / re-include** — images always accepted into chat history (`marble-att://` sentinels); stripped from the **outbound** prompt when the active model lacks image support, re-materialized when a vision model is active again
+- **Composer UX** — staging chips, non-blocking warning when staging images under a non-vision model, **Send locked while uploads are in flight**
+- **Transcript** chips + modal preview (images inline; text/markdown sanitized)
+- Agent tool **`message_attach`** for durable chat attachments; legacy **`attach_file`** remains workspace/UI-oriented
+
+### Loop / UI reliability
+- Final assistant messages after tool loops reliably surface over SSE (buffer + resync)
+- Attachment upload race fixed by disabling Send until stage POSTs complete
+
+### v0.3.0
 
 - **Public hardening** — mpub **Content-Security-Policy** (no scripts), global `X-Frame-Options` / `nosniff` / `Referrer-Policy`
 - **Private mpub** — anonymous viewers get **uniform 404** (no existence oracle / login redirect)
@@ -25,7 +50,7 @@ v0.1.x included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0
 ### Agent runtime
 - **Multi-turn agent loop** — user message → model ↔ tools → final reply
 - **Tool rounds** — soft advisory (default 65) / hard stop (default 80)
-- **Context budget** — trim history to fit; soft warn, auto-compact via LLM system agent
+- **Context budget** — trim history to the **active** model’s limits; soft warn, auto-compact via LLM system agent
 - **Soft wall-clock** advisory for long continuous tool runs
 - **Turn progress UI** — phase, iteration, tool rounds, context %, live steps, **Stop** to cancel
 - **System agents** — e.g. compaction sessions in a separate sidebar section
@@ -33,9 +58,12 @@ v0.1.x included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0
 
 ### Model providers
 - **OpenAI-compatible** Chat Completions (`/v1/chat/completions`, `/v1/models`)
+- **Process CLI model** — `--base-url`, `--model`, context flags, optional `--api-key-env` (always available as fallback)
+- **Catalog models (ADR-0018)** — additional endpoints/models from Settings; per-entry base URL and `api_key_env`; session picker + cron pin
 - **Local / open endpoints** — no API key by default (no `Authorization` header)
-- **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` reads the key from the environment (never from argv); first non-empty env wins
+- **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` (and catalog `api_key_env`) reads keys from the environment only; first non-empty env wins
 - **Health / Settings** show auth mode + env name + configured yes/no — never the secret
+- **Multimodal (ADR-0019)** — image (+ basic document) parts when catalog `cap_images` is set; process default stays text-only on the wire
 
 ### Auth & access (ADR-0017)
 - **open** (default) — no login; local-operator trust model
@@ -51,40 +79,46 @@ v0.1.x included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0
 - **Shell** — `shell_execute` with deny-list policy, timeouts, output caps; optional `--disable-shell`
 - **Background tasks** — start / check / kill long-running shell jobs
 - **Continuations** — one-shot delayed resume (`schedule_continuation`: delay and/or wait for BG task)
-- **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run`
+- **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
+- **Models (ADR-0018)** — `model_list`, `session_set_model`
 - **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available
 - **External agents (ADR-0014)** — `call_agent_process` (`format=grok|claude`) with optional `workdir`, high timeouts, `background` mode
 - **Memory & skills** — `memory_*` under `$MEMORY/knowledge/`, `skill_*` from skill roots; prompt nudges memory when unsure
 - **Context** — `get_context_usage`, `session_compact`
-- **Attachments** — `attach_file` (UI chips, not re-injected into the model)
+- **Attachments** — `message_attach` (durable chat chips + model-visible images when `cap_images`); `attach_file` (workspace path / UI-oriented)
 - **MCP** — optional stdio/HTTP servers from `$MEMORY/mcp.json` (e.g. Tavily web search)
 - **mpub** — publish HTML/markdown at `/mpub/{slug}`; tools: `mpub_publish` / `list` / `get` / `unpublish` / `mpub_set_visibility`
 
 ### Sessions & memory
 - **Multi-session** web UI with short session ids
 - **Deep links** — `/s/{session_id}` restores a session in the UI
-- **Markdown-first** transcripts under `$MEMORY/session/<id>.md`
-- **SQLite dual-write** (`marble.db`) for index, events, settings, cron, daemon state
+- **Markdown-first** transcripts under `$MEMORY/session/<id>.md` (including attachment sentinels)
+- **SQLite dual-write** (`marble.db`) for index, events, settings, cron, **model catalog**, **attachments**, daemon state
+- **Schema** — binary supports **v4** (v3 = catalog, v4 = attachments); stepwise migrate on open
 - **Limp mode** if the DB schema is unreadable/mismatched (chat + MD still work)
-- **Daemon** — periodic flush, prune closed sessions, blob GC, daily compaction
+- **Daemon** — periodic flush, prune closed sessions, blob/attachment GC, daily compaction
 - **Session info** panel — tokens, tool histogram, recent events
 - **Every-turn soul (ADR-0013)** — optional `$MEMORY/soul.md` injected as a second system message
 - **Cron session badges** — 🕐 next to sessions bound to durable cron jobs
+- **Per-session model_id** — catalog override until cleared back to process default
 
 ### Web UI
 - Chat with **markdown** rendering (user + assistant)
 - Left session list + system agents, **Close**, **Session info**
+- **Session model picker** — switch catalog model for the next turn
+- **Composer attachments** — paste / drop / paperclip; stage chips; Send waits for uploads
 - **Workspace explorer** modal (browse/edit/upload under the tool jail)
 - **System prompt & soul** modal (👁) — immutable system prompt + editable soul
-- **Cron jobs** modal (🕐) — list/create/edit/enable/run-now/history + next-fire preview
-- **Settings** modal (⚙) — runtime read-only (incl. model + OAuth auth), DB settings, MCP, UI prefs
-- SSE live updates for messages, tools, turn progress
+- **Cron jobs** modal (🕐) — list/create/edit/enable/run-now/history + next-fire preview + optional model pin
+- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, DB settings, MCP, UI prefs
+- SSE live updates for messages, tools, turn progress, attachments
 - Sign-in flow when Google mode is enabled
 
 ### Cron jobs (ADR-0015)
 - **Durable** SQLite schedules (survive restart); **not** a replacement for one-shot `schedule_continuation`
 - Schedule kinds: **5-field cron** and **interval** (min 60 seconds)
 - On fire: inject `[cron:id name]` + prompt into a target session and start a turn
+- Optional **model_id** pin (ADR-0018) for the cron turn’s effective model
 - Missing session → **create** a new session and rebind the job; busy → **skip**; limp/model-down → pause fires
 - Caps: 50 jobs, 3 concurrent cron turns; run history pruned (last 50/job and/or 30 days)
 - Same store for UI and agent tools
@@ -170,8 +204,8 @@ Open **http://127.0.0.1:8080/** (or `http://host:8080/s/{session_id}` for a deep
 | `--workspace` | Tool jail (files + shell cwd root) | `.` |
 | `--memory` | Session MD, DB, MCP config, mpub, soul, cron | `~/.marble` |
 | `--base-url` | OpenAI-compatible API root | `http://127.0.0.1:8000/v1` |
-| `--model` | Single model id for this process | set explicitly for your stack |
-| `--api-key-env` | Env var name(s) for model API key (optional) | empty = no auth |
+| `--model` | Process default model id (catalog can add more) | set explicitly for your stack |
+| `--api-key-env` | Env var name(s) for process model API key (optional) | empty = no auth |
 | `--oauth-client-id` | Google OAuth client ID | empty = open mode |
 | `--oauth-client-secret-env` | Env var name for OAuth client secret | — |
 | `--oauth-redirect-url` | Public OAuth callback URL | — |
@@ -313,11 +347,12 @@ cp adr/agent_process.json.example ~/.marble/agent_process.json
 
 ```
 ~/.marble/                 # --memory leaf (may be outside workspace)
-├── marble.db              # SQLite (WAL) — sessions, events, settings, cron_*
+├── marble.db              # SQLite (WAL) — sessions, events, settings, cron_*, model_catalog, attachments meta
 ├── marble.lock            # single-writer lock
 ├── session/<id>.md        # first-class transcripts
 ├── daily/YYYY-MM-DD.md
 ├── blobs/                 # large payload spill
+├── attachments/           # staged/committed chat files (ADR-0019)
 ├── knowledge/             # memory_write target
 ├── skills/                # optional skills
 ├── mpub/<slug>/           # published pages
@@ -336,7 +371,9 @@ Operator secrets (API keys) live **outside** the repo, typically:
 
 | Limitation | Notes |
 |------------|--------|
-| **One model per process** | Single `--base-url` + `--model`; optional one resolved API key; no multi-provider routing or hot model switch in v1 |
+| **Process model is CLI-only** | Change process `--model` / `--base-url` / key via restart; catalog entries are editable live in Settings |
+| **Process CapImages is false** | Vision requires a catalog entry with `cap_images` (no CLI multimodal flag yet) |
+| **No audio / PDF** | Multimodal v1 is images + basic text documents only |
 | **Auth is allowlist, not multi-tenant** | Optional Google OAuth; all allowlisted users full admin / shared sessions — not per-user isolation or RBAC |
 | **One harness per memory dir** | Second process fails on `marble.lock` |
 | **Shell is powerful** | Deny-list policy, not a full sandbox; same OS user as the harness |
@@ -352,16 +389,16 @@ cmd/marble-harness/     # process entry
 internal/
   config/               # CLI flags (API key, OAuth, TLS)
   auth/                 # Google OAuth, sessions, middleware (ADR-0017)
-  model/                # OpenAI-compatible client + optional Bearer auth
-  session/              # registry, agent loop, turn progress, daemon
+  model/                # OpenAI-compatible client + multimodal content parts
+  session/              # registry, agent loop, effective model, multimodal, daemon
   tools/                # tool implementations + catalog
   cron/                 # durable scheduler (ADR-0015)
   mpub/                 # published pages + visibility
   agentproc/            # external agent drivers (ADR-0014)
   mcp/                  # MCP client
   memory/               # session markdown store, soul
-  db/                   # SQLite dual-write (+ cron tables)
-  api/                  # HTTP JSON + SSE + mpub + cron routes
+  db/                   # SQLite dual-write (cron, model_catalog, attachments)
+  api/                  # HTTP JSON + SSE + models + attachments + mpub + cron
   web/static/           # embedded SPA
   workspacefs/          # explorer FS API
 adr/                    # architecture decision records
@@ -379,6 +416,8 @@ Notable ADRs:
 | 0015 | Cron jobs (UI + tools) |
 | 0016 | Optional model API key (`--api-key-env`) |
 | 0017 | Google OAuth, multi-user identity, optional TLS |
+| 0018 | Selectable models (catalog, per-session, cron pin) |
+| 0019 | Multimodal attachments (images + basic documents) |
 
 ## Releases
 

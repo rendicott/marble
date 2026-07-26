@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0019 Multimodal Attachments</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #3b1f4a 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #0f3d3e 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #f472b6, #818cf8);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 72ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--accent); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    .q {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.6rem 0.8rem; margin: 0.4rem 0; background: #141824; font-size: 0.9rem;
+    }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+  </style>
+</head>
+<body data-adr="0019" data-adr-title="Multimodal Attachments">
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Marble · ADR-0019</span>
+      <span class="status">ACCEPTED · ready to implement</span>
+    </div>
+    <nav class="toc">
+      <a href="#goals">Goals</a>
+      <a href="#locked">Decisions</a>
+      <a href="#prs">PRs</a>
+      <a href="0019-multimodal-attachments.md">Markdown</a>
+      <a href="0018-review.html">0018</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Multimodal chat — images &amp; basic docs</h1>
+      <p class="lede">
+        All questions locked from <code>0019-answers.json</code>
+        (2026-07-26T00:35:08.912Z). Paste/attach images &amp; basic docs; agent
+        <code>message_attach</code>; modal preview. No audio.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Status</b> Accepted · ready to implement</div>
+        <div class="meta"><b>Date</b> 2026-07-25 · locked 2026-07-26</div>
+        <div class="meta"><b>Schema</b> v4 <code>session_attachments</code></div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>Q11</strong> strip while unsupported · re-include on vision model</span>
+        <span class="chip"><strong>allow</strong> png/jpeg/webp/gif · md/txt/csv/json/html</span>
+        <span class="chip"><strong>defer</strong> audio · PDF · Office</span>
+      </div>
+      <div class="callout warn">
+        <strong>Q11 (custom):</strong> Images are always accepted into durable history.
+        Outbound Chat strips image parts only while the active model lacks the modality;
+        switching to a vision model re-includes them from <code>marble-att://</code> sentinels.
+        Not fail-closed 400 on send.
+      </div>
+    </section>
+
+    <section id="goals">
+      <h2>Goals (summary)</h2>
+      <table>
+        <tr><th>#</th><th>Goal</th></tr>
+        <tr><td>1</td><td>Paste / drag-drop / paperclip staging (409 busy)</td></tr>
+        <tr><td>2</td><td><code>$MEMORY/attachments/…</code> + SQLite v4</td></tr>
+        <tr><td>3</td><td>OpenAI multimodal content parts</td></tr>
+        <tr><td>4</td><td>Strip/re-include by <code>cap_images</code> (Q11)</td></tr>
+        <tr><td>5</td><td><code>message_attach</code> durable + modal; keep <code>attach_file</code> UI-only</td></tr>
+        <tr><td>6</td><td>Session MD markers (no base64)</td></tr>
+      </table>
+    </section>
+
+    <section id="locked">
+      <h2>Decisions locked (Q1–Q12)</h2>
+      <p class="muted">From <code>0019-answers.json</code> · 2026-07-26T00:35:08.912Z</p>
+      <div class="q" data-qid="Q1" data-status="locked" data-decision="Reject stage while busy (409); match message path" data-rec="Reject stage while busy (409); match message path"></div>
+      <div class="q" data-qid="Q2" data-status="locked" data-decision="8 MiB/file, 20 MiB total, 10 files; doc model inject 64 KiB" data-rec="8 MiB/file, 20 MiB total, 10 files; doc model inject 64 KiB"></div>
+      <div class="q" data-qid="Q3" data-status="locked" data-decision="Accept GIF as opaque image bytes" data-rec="Accept GIF as opaque image bytes"></div>
+      <div class="q" data-qid="Q4" data-status="locked" data-decision="Allow HTML store; GET as text/plain attachment; preview via DOMPurify only" data-rec="Allow HTML store; GET as text/plain attachment; preview via DOMPurify only"></div>
+      <div class="q" data-qid="Q5" data-status="locked" data-decision="message_attach tool result preview ≤2 KiB" data-rec="message_attach tool result preview ≤2 KiB"></div>
+      <div class="q" data-qid="Q6" data-status="locked" data-decision="Process CapImages remains false" data-rec="Process CapImages remains false"></div>
+      <div class="q" data-qid="Q7" data-status="locked" data-decision="No server thumbnails in v1" data-rec="No server thumbnails in v1"></div>
+      <div class="q" data-qid="Q8" data-status="locked" data-decision="Compact source uses placeholders only (no image bytes)" data-rec="Compact source uses placeholders only (no image bytes)"></div>
+      <div class="q" data-qid="Q9" data-status="locked" data-decision="image detail auto only" data-rec="image detail auto only"></div>
+      <div class="q" data-qid="Q10" data-status="locked" data-decision="Schema v4 session_attachments only" data-rec="Schema v4 session_attachments only"></div>
+      <div class="q" data-qid="Q11" data-status="locked" data-decision="Strip for only non-model supported duration, re include when modality supported model returns" data-rec="Fail closed HTTP 400 for new image sends when !cap_images"></div>
+      <div class="q" data-qid="Q12" data-status="locked" data-decision="Defer PDF; reject with convert guidance" data-rec="Defer PDF; reject with convert guidance"></div>
+    </section>
+
+    <section id="prs">
+      <h2>PR plan (8)</h2>
+      <table>
+        <tr><th>PR</th><th>Title</th><th>Depends</th></tr>
+        <tr><td>1</td><td>Schema v4 + attachment store + prune GC</td><td>—</td></tr>
+        <tr><td>2</td><td><code>model.Content</code> string|parts wire</td><td>—</td></tr>
+        <tr><td>3</td><td>Budget / trim / ApplyCapabilityFilter</td><td>2</td></tr>
+        <tr><td>4</td><td>Upload / safe GET / messages + strip/re-include pipeline</td><td>1–3</td></tr>
+        <tr><td>5</td><td>Session MD persistence + reload</td><td>4</td></tr>
+        <tr><td>6</td><td>UI staging, chips, modal</td><td>4–5</td></tr>
+        <tr><td>7</td><td><code>message_attach</code> durable tool</td><td>4–6</td></tr>
+        <tr><td>8</td><td>Docs / README</td><td>7</td></tr>
+      </table>
+      <p class="muted">Full design: <a href="0019-multimodal-attachments.md"><code>adr/0019-multimodal-attachments.md</code></a></p>
+    </section>
+  </main>
+  <footer>Marble · ADR-0019 · accepted · multimodal attachments</footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>

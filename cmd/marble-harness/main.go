@@ -148,6 +148,49 @@ func main() {
 	}
 	reg := session.NewRegistry(runner, store, sqldb, cfg.Workspace, cfg.Model)
 	runner.Reg = reg
+	toolReg.ListModels = func() ([]map[string]interface{}, error) {
+		out := []map[string]interface{}{runner.ProcessPublic()}
+		if sqldb != nil && sqldb.Writable() {
+			rows, err := sqldb.ListModelCatalog()
+			if err != nil {
+				return out, err
+			}
+			for i := range rows {
+				if !rows[i].Enabled {
+					continue
+				}
+				out = append(out, runner.CatalogRowPublic(&rows[i]))
+			}
+		}
+		return out, nil
+	}
+	toolReg.SetSessionModel = func(sessionID, modelID string) (map[string]interface{}, error) {
+		_, em, err := reg.SetSessionModel(sessionID, modelID) // allows busy → next turn
+		if err != nil {
+			return nil, err
+		}
+		// em.CatalogID is set when resolved from catalog; empty means process default.
+		mid := strings.TrimSpace(modelID)
+		if mid == "process" {
+			mid = ""
+		}
+		return map[string]interface{}{
+			"model_id":        mid,
+			"model_effective": em.Public(),
+			"applies":         "next_turn",
+		}, nil
+	}
+	toolReg.StageChatAttachment = func(sessionID, name string, data []byte) (id, mime, kind string, err error) {
+		row, err := runner.StageAttachment(sessionID, name, data)
+		if err != nil {
+			return "", "", "", err
+		}
+		// agent attach: commit immediately to a synthetic message id later; mark agent source
+		if sqldb != nil && sqldb.Writable() {
+			_ = sqldb.CommitAttachments(sessionID, "agent-pending", []string{row.ID}, "agent_attach")
+		}
+		return row.ID, row.MIME, row.Kind, nil
+	}
 
 	cont := continuation.New(func(sessionID, prompt string) {
 		s, err := reg.EnsureLoaded(sessionID)
@@ -181,7 +224,7 @@ func main() {
 	// ADR-0015 cron: durable schedules → inject prompt + start turn
 	var modelOK atomicBool
 	modelOK.set(true)
-	cronMgr := cron.New(sqldb, func(jobID, jobName, sessionID, prompt string) cron.FireResult {
+	cronMgr := cron.New(sqldb, func(jobID, jobName, sessionID, prompt, modelID string) cron.FireResult {
 		var s *session.Session
 		created := false
 		if strings.TrimSpace(sessionID) != "" {
@@ -205,7 +248,8 @@ func main() {
 		if s.IsBusy() {
 			return cron.FireResult{SessionID: s.ID, CreatedSession: created, Status: "skipped_busy"}
 		}
-		if !runner.PostCron(s, prompt) {
+		// modelID is requested catalog pin for this fire only (ADR-0018)
+		if !runner.PostCron(s, prompt, modelID) {
 			return cron.FireResult{SessionID: s.ID, CreatedSession: created, Status: "skipped_busy"}
 		}
 		st := "ok"

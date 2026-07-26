@@ -158,7 +158,7 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"id"},
 			}),
-		spec("cron_create", "Create a durable cron job. schedule_kind=cron (5-field cron_expr) or interval (interval_sec>=60). session_id optional (created on first fire if missing).",
+		spec("cron_create", "Create a durable cron job. schedule_kind=cron (5-field cron_expr) or interval (interval_sec>=60). session_id optional (created on first fire if missing). Optional model_id pins catalog model for fires.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -171,6 +171,7 @@ func allSpecs() []model.ToolSpec {
 					"session_id":    map[string]interface{}{"type": "string"},
 					"prompt":        map[string]interface{}{"type": "string"},
 					"max_runs":      map[string]interface{}{"type": "integer"},
+					"model_id":      map[string]interface{}{"type": "string", "description": "catalog slug pin for fires (optional)"},
 				},
 				"required": []string{"name", "prompt", "schedule_kind"},
 			}),
@@ -188,8 +189,21 @@ func allSpecs() []model.ToolSpec {
 					"session_id":    map[string]interface{}{"type": "string"},
 					"prompt":        map[string]interface{}{"type": "string"},
 					"max_runs":      map[string]interface{}{"type": "integer"},
+					"model_id":      map[string]interface{}{"type": "string"},
 				},
 				"required": []string{"id"},
+			}),
+		spec("model_list", "List selectable models: process CLI default plus enabled catalog entries (no secrets).",
+			map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			}),
+		spec("session_set_model", "Set this session's catalog model_id for the *next* turn (empty string = process default). Safe during the current turn. model_id must already exist in Settings → Models (use model_list first). Does not create catalog entries.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"model_id": map[string]interface{}{"type": "string", "description": "enabled catalog slug from model_list, or empty for process default"},
+				},
 			}),
 		spec("cron_delete", "Delete a cron job by id.",
 			map[string]interface{}{
@@ -266,6 +280,15 @@ func allSpecs() []model.ToolSpec {
 					"ref":  map[string]interface{}{"type": "string"},
 				},
 				"required": []string{"name"},
+			}),
+		spec("message_attach", "Attach an image or basic document to the chat transcript (durable chip + modal). Prefer workspace path. Not re-injected as a full tool result; vision models see user-uploaded images via history. No audio/PDF.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{"type": "string", "description": "Workspace-relative path"},
+					"name": map[string]interface{}{"type": "string", "description": "Display name"},
+				},
+				"required": []string{"path"},
 			}),
 		spec("attach_file", "Attach a workspace file to the current reply for UI inline/download (not re-injected into model context).",
 			map[string]interface{}{

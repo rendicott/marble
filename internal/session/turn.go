@@ -58,12 +58,28 @@ type TurnProgress struct {
 type turnControl struct {
 	cancel context.CancelFunc
 	prog   TurnProgress
+	opts   TurnOpts // set before runTurn; cleared in endTurn (ADR-0018)
+}
+
+func (s *Session) setTurnOpts(opts TurnOpts) {
+	s.mu.Lock()
+	s.turn.opts = opts
+	s.mu.Unlock()
+}
+
+func (s *Session) takeTurnOpts() TurnOpts {
+	s.mu.Lock()
+	opts := s.turn.opts
+	s.mu.Unlock()
+	return opts
 }
 
 func (s *Session) initTurnProgress(hard, soft int) {
 	now := time.Now()
 	s.mu.Lock()
+	opts := s.turn.opts // preserve turn opts across progress init
 	s.turn = turnControl{
+		opts: opts,
 		prog: TurnProgress{
 			SessionID:      s.ID,
 			Active:         true,

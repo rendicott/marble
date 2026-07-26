@@ -10,15 +10,18 @@ import (
 
 // Event is a streamable update for the UI.
 type Event struct {
-	Type       string          `json:"type"`
-	SessionID  string          `json:"session_id"`
-	Message    *Message        `json:"message,omitempty"`
-	Tool       *ToolInfo       `json:"tool,omitempty"`
-	Attachment *AttachmentInfo `json:"attachment,omitempty"`
-	Turn       *TurnProgress   `json:"turn,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	Status     string          `json:"status,omitempty"`
-	At         time.Time       `json:"at"`
+	Type       string                 `json:"type"`
+	SessionID  string                 `json:"session_id"`
+	Message    *Message               `json:"message,omitempty"`
+	Tool       *ToolInfo              `json:"tool,omitempty"`
+	Attachment *AttachmentInfo        `json:"attachment,omitempty"`
+	Turn       *TurnProgress          `json:"turn,omitempty"`
+	Error      string                 `json:"error,omitempty"`
+	Status     string                 `json:"status,omitempty"`
+	ModelID    string                 `json:"model_id,omitempty"`
+	Model      string                 `json:"model,omitempty"`
+	ModelEff   map[string]interface{} `json:"model_effective,omitempty"`
+	At         time.Time              `json:"at"`
 }
 
 // AttachmentInfo is a UI attachment (attach_file tool).
@@ -43,7 +46,7 @@ type ToolInfo struct {
 // Message is a transcript entry shown in the UI / stored in history.
 type Message struct {
 	ID         string    `json:"id"`
-	Role       string    `json:"role"` // user | assistant | tool | system
+	Role       string    `json:"role"` // user | assistant | tool | system | attachment
 	Content    string    `json:"content"`
 	ToolName   string    `json:"tool_name,omitempty"`
 	ToolCallID string    `json:"tool_call_id,omitempty"`
@@ -52,6 +55,8 @@ type Message struct {
 	UserEmail string `json:"user_email,omitempty"`
 	UserName  string `json:"user_name,omitempty"`
 	UserSub   string `json:"user_sub,omitempty"`
+	// Attachments are durable chat chips (ADR-0019).
+	Attachments []UIAttachment `json:"attachments,omitempty"`
 }
 
 // Actor is optional identity for a human-authored message.
@@ -79,6 +84,9 @@ type Summary struct {
 	// or was auto-created for cron (title prefix "cron:"). Enriched by the API layer.
 	Cron     bool     `json:"cron,omitempty"`
 	CronJobs []string `json:"cron_jobs,omitempty"` // job names when known
+	// Model selection (ADR-0018)
+	ModelID string `json:"model_id,omitempty"`
+	Model   string `json:"model,omitempty"` // last effective provider string
 }
 
 // Session is one independent conversation.
@@ -91,6 +99,11 @@ type Session struct {
 	UpdatedAt time.Time
 	ClosedAt  *time.Time
 	Status    string // active | closed
+
+	// ModelID is durable catalog slug ("" = process default). ADR-0018.
+	ModelID string
+	// ProviderModel is last effective provider model string (KD12).
+	ProviderModel string
 
 	mu      sync.Mutex
 	history []model.Message // model-facing history
@@ -115,7 +128,7 @@ func newSession(id, title string) *Session {
 		UpdatedAt: now,
 		Status:    "active",
 		history: []model.Message{
-			{Role: "system", Content: defaultSystemPrompt},
+			{Role: "system", Content: model.ContentFromText(defaultSystemPrompt)},
 		},
 		ui:   nil,
 		subs: make(map[chan Event]struct{}),
@@ -171,6 +184,8 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 		Busy:         s.busy,
 		Loaded:       loaded,
 		Dirty:        s.dirty,
+		ModelID:      s.ModelID,
+		Model:        s.ProviderModel,
 	}
 }
 
@@ -182,8 +197,12 @@ func (s *Session) UIMessages() []Message {
 	return out
 }
 
+// eventBufSize is large enough for a multi-tool turn's burst of progress
+// events without dropping user-visible transcript updates under light lag.
+const eventBufSize = 512
+
 func (s *Session) Subscribe() chan Event {
-	ch := make(chan Event, 32)
+	ch := make(chan Event, eventBufSize)
 	s.mu.Lock()
 	s.subs[ch] = struct{}{}
 	s.mu.Unlock()
@@ -203,6 +222,17 @@ func (s *Session) Unsubscribe(ch chan Event) {
 	}
 }
 
+// droppableSSE is true for high-frequency progress noise that the UI can
+// recover via GET /progress. Transcript and lifecycle events are not droppable.
+func droppableSSE(typ string) bool {
+	switch typ {
+	case "turn", "tool":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Session) publish(ev Event) {
 	ev.SessionID = s.ID
 	ev.At = time.Now()
@@ -215,7 +245,22 @@ func (s *Session) publish(ev Event) {
 	for _, ch := range subs {
 		select {
 		case ch <- ev:
+			continue
 		default:
+		}
+		// Buffer full. Drop progress noise; for critical events free one slot
+		// then retry so final assistant/status/error still reach the UI.
+		if droppableSSE(ev.Type) {
+			continue
+		}
+		select {
+		case <-ch: // drop oldest buffered event
+		default:
+		}
+		select {
+		case ch <- ev:
+		default:
+			// Still full of critical events — last resort non-block drop.
 		}
 	}
 }
@@ -301,6 +346,7 @@ func (s *Session) endTurn() {
 	s.UpdatedAt = time.Now()
 	s.dirty = true
 	s.turn.cancel = nil
+	s.turn.opts = TurnOpts{} // clear cron pin / turn-scoped opts (KD11)
 	s.mu.Unlock()
 	s.publish(Event{Type: "status", Status: "idle"})
 }
@@ -335,6 +381,10 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 	if kind == "" {
 		kind = "user"
 	}
+	model := s.ProviderModel
+	if model == "" {
+		model = modelName
+	}
 	return &memory.SessionDoc{
 		SessionMeta: memory.SessionMeta{
 			ID:           s.ID,
@@ -347,7 +397,8 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 			Status:       st,
 			MessageCount: len(msgs),
 			Workspace:    workspace,
-			Model:        modelName,
+			Model:        model,
+			ModelID:      s.ModelID,
 		},
 		Messages: msgs,
 	}
@@ -384,8 +435,10 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	if s.Status == "" {
 		s.Status = "active"
 	}
+	s.ModelID = doc.ModelID
+	s.ProviderModel = doc.Model
 	s.ui = make([]Message, 0, len(doc.Messages))
-	s.history = []model.Message{{Role: "system", Content: defaultSystemPrompt}}
+	s.history = []model.Message{{Role: "system", Content: model.ContentFromText(defaultSystemPrompt)}}
 	s.seq = 0
 	for _, m := range doc.Messages {
 		s.ui = append(s.ui, Message{
@@ -399,16 +452,18 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 			UserName:   m.UserName,
 			UserSub:    m.UserSub,
 		})
+		// Reload attachment markers into multimodal history when present (ADR-0019).
+		histContent := historyContentFromUIMessage(m)
 		switch m.Role {
 		case "user":
 			// Model history: content only (ADR-0017 Q13)
-			s.history = append(s.history, model.Message{Role: "user", Content: m.Content})
+			s.history = append(s.history, model.Message{Role: "user", Content: histContent})
 		case "assistant":
-			s.history = append(s.history, model.Message{Role: "assistant", Content: m.Content})
+			s.history = append(s.history, model.Message{Role: "assistant", Content: histContent})
 		case "tool":
 			s.history = append(s.history, model.Message{
 				Role:       "tool",
-				Content:    m.Content,
+				Content:    histContent,
 				Name:       m.ToolName,
 				ToolCallID: m.ToolCallID,
 			})
@@ -418,4 +473,10 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	}
 	s.dirty = false
 	s.busy = false
+}
+
+// historyContentFromUIMessage rebuilds model Content from UI/MD text, including
+// attachment markers <!-- att:id name=… mime=… --> (ADR-0019).
+func historyContentFromUIMessage(m memory.TranscriptMessage) model.Content {
+	return model.ContentFromText(m.Content)
 }

@@ -2,6 +2,7 @@ package session
 
 import (
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"time"
 
@@ -14,6 +15,10 @@ func (r *Registry) syncSessionRow(s *Session) {
 		return
 	}
 	s.mu.Lock()
+	model := s.ProviderModel
+	if model == "" {
+		model = r.model
+	}
 	row := db.SessionRow{
 		ID:           s.ID,
 		Title:        s.Title,
@@ -23,7 +28,8 @@ func (r *Registry) syncSessionRow(s *Session) {
 		MessageCount: len(s.ui),
 		Dirty:        s.dirty,
 		Workspace:    r.workspace,
-		Model:        r.model,
+		Model:        model,
+		ModelID:      s.ModelID,
 		MDPath:       filepath.Join("session", s.ID+".md"),
 	}
 	if s.ClosedAt != nil {
@@ -37,6 +43,10 @@ func (r *Registry) syncSessionRow(s *Session) {
 }
 
 func (r *Registry) logEvent(s *Session, kind, role, content, toolName, toolCallID, toolArgs string, usageIn, usageOut, estIn, estOut, latency *int, finish, errStr string) {
+	r.logEventMeta(s, kind, role, content, toolName, toolCallID, toolArgs, usageIn, usageOut, estIn, estOut, latency, finish, errStr, "")
+}
+
+func (r *Registry) logEventMeta(s *Session, kind, role, content, toolName, toolCallID, toolArgs string, usageIn, usageOut, estIn, estOut, latency *int, finish, errStr, metaJSON string) {
 	if r.sqldb == nil || !r.sqldb.Writable() {
 		return
 	}
@@ -57,6 +67,43 @@ func (r *Registry) logEvent(s *Session, kind, role, content, toolName, toolCallI
 		Model:        r.model,
 		FinishReason: finish,
 		Error:        errStr,
+		MetaJSON:     metaJSON,
+	}
+	ev.TokensInReported = usageIn
+	ev.TokensOutReported = usageOut
+	ev.TokensInEst = estIn
+	ev.TokensOutEst = estOut
+	ev.LatencyMs = latency
+	_ = r.sqldb.AppendEvent(ev)
+}
+
+// logModelCall records a model_call with effective model + meta_json (ADR-0018).
+func (r *Registry) logModelCall(s *Session, em EffectiveModel, role, content string, usageIn, usageOut, estIn, estOut, latency *int, finish, errStr string) {
+	if r.sqldb == nil || !r.sqldb.Writable() {
+		return
+	}
+	seq, err := r.sqldb.NextEventSeq(s.ID)
+	if err != nil {
+		seq = int(time.Now().UnixNano() % 1000000)
+	}
+	meta, _ := json.Marshal(map[string]interface{}{
+		"catalog_id":     em.CatalogID,
+		"source":         em.Source,
+		"display_name":   em.DisplayName,
+		"context_limit":  em.ContextLimit,
+		"budget":         em.Budget(),
+	})
+	ev := db.Event{
+		SessionID:    s.ID,
+		Seq:          seq,
+		TS:           time.Now().UTC().Format(time.RFC3339),
+		Kind:         "model_call",
+		Role:         role,
+		Content:      content,
+		Model:        em.Model,
+		FinishReason: finish,
+		Error:        errStr,
+		MetaJSON:     string(meta),
 	}
 	ev.TokensInReported = usageIn
 	ev.TokensOutReported = usageOut

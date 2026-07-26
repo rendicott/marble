@@ -22,14 +22,14 @@ func TestInjectSoul(t *testing.T) {
 	user := newSession("siduser0001", "u")
 	user.Kind = "user"
 	prompt := []model.Message{
-		{Role: "system", Content: SystemPrompt()},
-		{Role: "user", Content: "hi"},
+		{Role: "system", Content: model.ContentFromText(SystemPrompt())},
+		{Role: "user", Content: model.ContentFromText("hi")},
 	}
 	out := r.injectSoul(user, prompt)
 	if len(out) != 3 {
 		t.Fatalf("len %d", len(out))
 	}
-	if out[0].Role != "system" || out[1].Role != "system" || out[1].Content != "HOUSE RULES" {
+	if out[0].Role != "system" || out[1].Role != "system" || out[1].Content.PlainText() != "HOUSE RULES" {
 		t.Fatalf("%+v", out)
 	}
 	if out[2].Role != "user" {

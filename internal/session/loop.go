@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rendicott/marble/internal/config"
@@ -18,12 +19,23 @@ type Runner struct {
 	Client *model.Client
 	Tools  *tools.Registry
 	Reg    *Registry // set after construction for DB logging
+
+	// CatalogGet optional override for tests; default uses Reg.sqldb.
+	CatalogGet CatalogLookup
+
+	clientMu    sync.Mutex
+	clientCache map[string]*model.Client
 }
 
 // PostUserMessage appends a user message and runs the agent loop in a new goroutine.
 // actor may be nil (open mode / anonymous).
 func (r *Runner) PostUserMessage(s *Session, text string, actor *Actor) bool {
-	return r.postMessage(s, text, false, actor)
+	return r.PostUserMessageWithAttachments(s, text, actor, nil)
+}
+
+// PostUserMessageWithAttachments commits optional staged attachment ids (ADR-0019).
+func (r *Runner) PostUserMessageWithAttachments(s *Session, text string, actor *Actor, attachmentIDs []string) bool {
+	return r.postMessage(s, text, false, actor, TurnOpts{}, attachmentIDs)
 }
 
 // PostContinuation injects a scheduled continuation prompt (same as user turn).
@@ -35,33 +47,53 @@ func (r *Runner) PostContinuation(s *Session, text string) bool {
 	if !strings.HasPrefix(text, "[scheduled continuation]") {
 		text = "[scheduled continuation]\n" + text
 	}
-	return r.postMessage(s, text, true, nil)
+	return r.postMessage(s, text, true, nil, TurnOpts{}, nil)
 }
 
-// PostCron injects a cron fire prompt (ADR-0015). Caller supplies [cron:id name] prefix.
-func (r *Runner) PostCron(s *Session, text string) bool {
-	return r.postMessage(s, text, true, nil)
+// PostCron injects a cron fire prompt (ADR-0015/0018). modelID is optional catalog pin for this fire only.
+func (r *Runner) PostCron(s *Session, text, modelID string) bool {
+	return r.postMessage(s, text, true, nil, TurnOpts{CronModelID: strings.TrimSpace(modelID)}, nil)
 }
 
-func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *Actor) bool {
+func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *Actor, opts TurnOpts, attachmentIDs []string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(attachmentIDs) == 0 {
 		return true
+	}
+	// Build multimodal content before taking busy lock validation for attachments
+	content, uis, err := r.buildUserContent(s.ID, text, attachmentIDs)
+	if err != nil && len(attachmentIDs) > 0 {
+		// attachment resolve errors — surface via false; caller maps
+		return false
+	}
+	if err != nil {
+		// no attachments path: empty text already handled
+		content = model.ContentFromText(text)
 	}
 	if !s.tryBeginTurn() {
 		return false
 	}
+	s.setTurnOpts(opts)
+
+	display := text
+	if display == "" && len(uis) > 0 {
+		display = uis[0].Name
+		if len(uis) > 1 {
+			display = fmt.Sprintf("%d attachments", len(uis))
+		}
+	}
 
 	s.mu.Lock()
 	if len(s.ui) == 0 && !continuation {
-		s.Title = truncateTitle(text, 48)
+		s.Title = truncateTitle(display, 48)
 	}
 	uid := s.nextID("m")
 	um := Message{
-		ID:        uid,
-		Role:      "user",
-		Content:   text,
-		CreatedAt: time.Now(),
+		ID:          uid,
+		Role:        "user",
+		Content:     display,
+		CreatedAt:   time.Now(),
+		Attachments: uis,
 	}
 	if actor != nil {
 		um.UserEmail = actor.Email
@@ -69,17 +101,34 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *
 		um.UserSub = actor.Sub
 	}
 	s.appendUI(um)
-	// Model history: plain content only — never identity (ADR-0017 Q13).
-	s.history = append(s.history, model.Message{Role: "user", Content: text})
+	// Model history: never identity (ADR-0017 Q13). Multimodal sentinels (ADR-0019).
+	s.history = append(s.history, model.Message{Role: "user", Content: content})
 	s.mu.Unlock()
 
+	// Commit staged attachments
+	if r.Reg != nil && r.Reg.sqldb != nil && r.Reg.sqldb.Writable() && len(attachmentIDs) > 0 {
+		ids := make([]string, 0, len(uis))
+		for _, u := range uis {
+			ids = append(ids, u.ID)
+		}
+		_ = r.Reg.sqldb.CommitAttachments(s.ID, uid, ids, "user_upload")
+	}
+
 	if r.Reg != nil {
-		est := estimateTokens(text)
+		est := estimateTokens(display)
 		kind := "user_message"
 		if continuation {
 			kind = "continuation"
 		}
-		r.Reg.logEvent(s, kind, "user", text, "", "", "", nil, nil, intPtr(est), nil, nil, "", "")
+		meta := ""
+		if len(uis) > 0 {
+			ids := make([]string, len(uis))
+			for i, u := range uis {
+				ids[i] = u.ID
+			}
+			meta = attMetaJSON(ids)
+		}
+		r.Reg.logEventMeta(s, kind, "user", display, "", "", "", nil, nil, intPtr(est), nil, nil, "", "", meta)
 		r.Reg.syncSessionRow(s)
 	}
 
@@ -98,6 +147,16 @@ func (r *Runner) runTurn(s *Session) {
 		}
 	}()
 
+	opts := s.takeTurnOpts()
+	em := r.resolveEffective(s, opts)
+	// Persist last effective provider string (KD12)
+	s.mu.Lock()
+	s.ProviderModel = em.Model
+	s.mu.Unlock()
+	if em.Advisory != "" {
+		r.advisory(s, em.Advisory)
+	}
+
 	hard := r.Cfg.MaxToolIters
 	soft := r.Cfg.ToolRoundSoft
 	if soft <= 0 {
@@ -108,16 +167,22 @@ func (r *Runner) runTurn(s *Session) {
 	}
 
 	s.initTurnProgress(hard, soft)
-	s.appendStep(TurnStep{Kind: "starting", Detail: "turn started"})
+	s.appendStep(TurnStep{Kind: "starting", Detail: fmt.Sprintf("turn started model=%s source=%s", em.Model, em.Source)})
 	s.publishTurnProgress()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	s.setTurnCancel(cancel)
 
-	toolSpecs := r.Tools.Specs()
+	client := r.clientFor(em)
+	var toolSpecs []model.ToolSpec
+	if em.CapTools && r.Tools != nil {
+		toolSpecs = r.Tools.Specs()
+	} else if !em.CapTools {
+		r.advisory(s, "[harness] model has cap_tools=false; tools omitted for this turn")
+	}
 	toolEst := estimateTools(toolSpecs)
-	budget := r.Cfg.Budget()
+	budget := em.Budget()
 
 	readPaths := map[string]bool{}
 	highUsageStreak := 0
@@ -132,12 +197,13 @@ func (r *Runner) runTurn(s *Session) {
 		ReadPaths:   readPaths,
 		Ctx:         ctx,
 		GetUsage: func() map[string]interface{} {
-			return r.usageSnapshot(s, toolEst, lastReportedIn, lastReportedOut)
+			return r.usageSnapshot(s, em, toolEst, lastReportedIn, lastReportedOut)
 		},
 		Compact: func(style string, keepLast int) (string, error) {
-			return r.compactSession(ctx, s, style, keepLast)
+			return r.compactSession(ctx, s, style, keepLast, em)
 		},
 		OnAttachment: func(a tools.Attachment) {
+			// attach_file — ephemeral SSE only (ADR-0005)
 			s.publish(Event{
 				Type: "attachment",
 				Attachment: &AttachmentInfo{
@@ -145,6 +211,27 @@ func (r *Runner) runTurn(s *Session) {
 					Mime: a.Mime, Size: a.Size, Preview: a.Preview,
 				},
 			})
+		},
+		OnChatAttachment: func(a tools.Attachment) {
+			// message_attach — durable UI (ADR-0019 KD7)
+			s.mu.Lock()
+			uid := s.nextID("a")
+			um := Message{
+				ID:        uid,
+				Role:      "attachment",
+				Content:   a.Name,
+				CreatedAt: time.Now(),
+				Attachments: []UIAttachment{{
+					ID: a.Path, Name: a.Name, MIME: a.Mime, Kind: "document", Size: a.Size,
+				}},
+			}
+			// If path looks like att id, mark as image when mime says so
+			if strings.HasPrefix(a.Mime, "image/") {
+				um.Attachments[0].Kind = "image"
+			}
+			s.appendUI(um)
+			s.mu.Unlock()
+			s.publish(Event{Type: "message", Message: &um})
 		},
 	}
 
@@ -181,8 +268,13 @@ func (r *Runner) runTurn(s *Session) {
 		prompt := trimHistory(hist, budget, toolEst)
 		// ADR-0013: every-turn soul as second system message (user sessions only)
 		prompt = r.injectSoul(s, prompt)
+		var stripped bool
+		prompt, stripped = ApplyCapabilityFilter(prompt, em)
+		if stripped {
+			r.advisory(s, "[harness] image attachments omitted: active model has no image support (will re-include if you switch to a vision model)")
+		}
 		estIn := estimateAll(prompt) + toolEst
-		ratio := r.Cfg.UsageRatio(estIn)
+		ratio := em.UsageRatio(estIn)
 		s.setContextUsage(ratio)
 
 		var advisories []string
@@ -203,10 +295,10 @@ func (r *Runner) runTurn(s *Session) {
 			if toolRounds == soft || (ratio >= r.Cfg.ContextWarnRatio && toolRounds%10 == 0) {
 				r.advisory(s, note)
 			}
-			prompt = append([]model.Message{{Role: "system", Content: note}}, prompt...)
+			prompt = append([]model.Message{{Role: "system", Content: model.ContentFromText(note)}}, prompt...)
 		}
 
-		// Auto-compact path
+		// Auto-compact path (uses turn em — ADR-0018 KD6)
 		if ratio >= r.Cfg.ContextAutoCompactRatio {
 			highUsageStreak++
 		} else {
@@ -214,7 +306,7 @@ func (r *Runner) runTurn(s *Session) {
 		}
 		if highUsageStreak >= r.Cfg.ContextAutoCompactRounds {
 			r.advisory(s, fmt.Sprintf("[harness] auto-compact: usage ≥%.0f%% for %d rounds", r.Cfg.ContextAutoCompactRatio*100, highUsageStreak))
-			if _, err := r.compactSession(ctx, s, "auto", 12); err != nil {
+			if _, err := r.compactSession(ctx, s, "auto", 12, em); err != nil {
 				r.advisory(s, "[harness] auto-compact failed: "+err.Error())
 			} else {
 				highUsageStreak = 0
@@ -224,8 +316,9 @@ func (r *Runner) runTurn(s *Session) {
 				s.mu.Unlock()
 				prompt = trimHistory(hist, budget, toolEst)
 				prompt = r.injectSoul(s, prompt)
+				prompt, _ = ApplyCapabilityFilter(prompt, em)
 				estIn = estimateAll(prompt) + toolEst
-				s.setContextUsage(r.Cfg.UsageRatio(estIn))
+				s.setContextUsage(em.UsageRatio(estIn))
 			}
 		}
 
@@ -233,9 +326,19 @@ func (r *Runner) runTurn(s *Session) {
 		s.publish(Event{Type: "status", Status: "calling_model"})
 		s.publishTurnProgress()
 
-		result, err := r.Client.Chat(ctx, prompt, toolSpecs)
+		// KD13: materialize only deep clone for Chat (history stays sentinel)
+		outbound, mErr := r.materializeImages(s.ID, prompt)
+		if mErr != nil {
+			r.advisory(s, "[harness] attachment materialize: "+mErr.Error())
+			outbound = prompt
+		}
+		result, err := client.Chat(ctx, outbound, toolSpecs)
 		if err != nil {
 			stopNote = stopMessage(err, s)
+			// Capability / provider errors surface as harness-visible errors
+			if !em.CapImages && strings.Contains(strings.ToLower(err.Error()), "image") {
+				stopNote = "model rejected request (images unsupported): " + err.Error()
+			}
 			phase := phaseForErr(err, s)
 			s.finalizeTurnProgress(phase, stopNote)
 			if phase == "stopping" || errors.Is(err, context.Canceled) {
@@ -256,19 +359,19 @@ func (r *Runner) runTurn(s *Session) {
 			tout = intPtr(result.Usage.CompletionTokens)
 			lastReportedIn, lastReportedOut = tin, tout
 		}
-		estOut := estimateTokens(msg.Content)
+		estOut := estimateTokens(msg.Content.PlainText())
 		lat := result.LatencyMs
 		s.setLastModelLatency(lat)
 		s.appendStep(TurnStep{
 			Kind:    "model_call",
 			Iter:    iter,
-			Detail:  fmt.Sprintf("finish=%s", finish),
+			Detail:  fmt.Sprintf("finish=%s model=%s", finish, em.Model),
 			Latency: &lat,
 		})
 		s.publishTurnProgress()
 
 		if r.Reg != nil {
-			r.Reg.logEvent(s, "model_call", "assistant", msg.Content, "", "", "", tin, tout, intPtr(estIn), intPtr(estOut), &lat, finish, "")
+			r.Reg.logModelCall(s, em, "assistant", msg.Content.PlainText(), tin, tout, intPtr(estIn), intPtr(estOut), &lat, finish, "")
 		}
 
 		if len(msg.ToolCalls) > 0 {
@@ -277,7 +380,7 @@ func (r *Runner) runTurn(s *Session) {
 			s.mu.Lock()
 			s.history = append(s.history, model.Message{
 				Role:      "assistant",
-				Content:   msg.Content,
+				Content:   model.ContentFromText(msg.Content.PlainText()),
 				ToolCalls: msg.ToolCalls,
 			})
 			s.mu.Unlock()
@@ -346,7 +449,7 @@ func (r *Runner) runTurn(s *Session) {
 				s.appendUI(tm)
 				s.history = append(s.history, model.Message{
 					Role:       "tool",
-					Content:    toolResult,
+					Content:    model.ContentFromText(toolResult),
 					ToolCallID: call.ID,
 					Name:       name,
 				})
@@ -356,7 +459,7 @@ func (r *Runner) runTurn(s *Session) {
 			continue
 		}
 
-		content := strings.TrimSpace(msg.Content)
+		content := strings.TrimSpace(msg.Content.PlainText())
 		if content == "" {
 			content = "(empty model response)"
 		}
@@ -372,7 +475,7 @@ func (r *Runner) runTurn(s *Session) {
 			CreatedAt: time.Now(),
 		}
 		s.appendUI(am)
-		s.history = append(s.history, model.Message{Role: "assistant", Content: content})
+		s.history = append(s.history, model.Message{Role: "assistant", Content: model.ContentFromText(content)})
 		s.mu.Unlock()
 		if r.Reg != nil {
 			r.Reg.logEvent(s, "assistant_message", "assistant", content, "", "", "", tin, tout, nil, intPtr(estOut), &lat, finish, "")
@@ -436,13 +539,13 @@ func (r *Runner) injectSoul(s *Session, prompt []model.Message) []model.Message 
 	for i, m := range prompt {
 		out = append(out, m)
 		if !inserted && i == 0 && m.Role == "system" {
-			out = append(out, model.Message{Role: "system", Content: soul})
+			out = append(out, model.Message{Role: "system", Content: model.ContentFromText(soul)})
 			inserted = true
 		}
 	}
 	if !inserted {
 		// No leading system (unusual after trim) — still place soul at front as system
-		out = append([]model.Message{{Role: "system", Content: soul}}, prompt...)
+		out = append([]model.Message{{Role: "system", Content: model.ContentFromText(soul)}}, prompt...)
 	}
 	return out
 }
@@ -457,24 +560,27 @@ func (r *Runner) advisory(s *Session, note string) {
 	}
 }
 
-func (r *Runner) usageSnapshot(s *Session, toolEst int, tin, tout *int) map[string]interface{} {
+func (r *Runner) usageSnapshot(s *Session, em EffectiveModel, toolEst int, tin, tout *int) map[string]interface{} {
 	s.mu.Lock()
 	hist := make([]model.Message, len(s.history))
 	copy(hist, s.history)
 	n := len(s.ui)
 	s.mu.Unlock()
 	est := estimateAll(hist) + toolEst
-	ratio := r.Cfg.UsageRatio(est)
+	ratio := em.UsageRatio(est)
 	out := map[string]interface{}{
-		"context_limit":           r.Cfg.ContextLimit,
-		"max_output":              r.Cfg.MaxOutput,
-		"context_reserve":         r.Cfg.ContextReserve,
-		"budget":                  r.Cfg.Budget(),
+		"context_limit":           em.ContextLimit,
+		"max_output":              em.MaxOutput,
+		"context_reserve":         em.ContextReserve,
+		"budget":                  em.Budget(),
 		"estimated_prompt_tokens": est,
 		"usage_ratio":             ratio,
 		"message_count":           n,
 		"soft_warn":               ratio >= r.Cfg.ContextWarnRatio,
 		"recommend_compact":       ratio >= r.Cfg.ContextAutoCompactRatio,
+		"model":                   em.Model,
+		"model_source":            em.Source,
+		"catalog_id":              em.CatalogID,
 	}
 	if tin != nil {
 		out["reported_in"] = *tin
@@ -487,7 +593,8 @@ func (r *Runner) usageSnapshot(s *Session, toolEst int, tin, tout *int) map[stri
 }
 
 // compactSession runs LLM summary via a system agent session and replaces middle history.
-func (r *Runner) compactSession(ctx context.Context, target *Session, style string, keepLast int) (string, error) {
+// em is the current turn's EffectiveModel (including cron pin) — never re-resolved interactively.
+func (r *Runner) compactSession(ctx context.Context, target *Session, style string, keepLast int, em EffectiveModel) (string, error) {
 	if keepLast < 2 {
 		keepLast = 2
 	}
@@ -511,31 +618,41 @@ func (r *Runner) compactSession(ctx context.Context, target *Session, style stri
 
 	var b strings.Builder
 	for _, m := range old {
-		fmt.Fprintf(&b, "[%s] %s\n", m.Role, truncateTitle(m.Content, 2000))
+		fmt.Fprintf(&b, "[%s] %s\n", m.Role, truncateTitle(m.Content.PlainText(), 2000))
+	}
+	src := b.String()
+	// Trim source to 80% of em.Budget() (ADR-0018 KD6)
+	maxChars := em.Budget() * 3 * 8 / 10 // rough tokens→chars
+	if maxChars < 2000 {
+		maxChars = 2000
+	}
+	if len(src) > maxChars {
+		src = "…[trimmed for compact budget]\n" + src[len(src)-maxChars:]
 	}
 	prompt := fmt.Sprintf(`You are a system compaction agent for Marble.
 Summarize the following conversation history for style=%q.
 Preserve: goals, decisions, file paths, commands, errors, open threads.
-Be dense but complete. Output markdown summary only.\n\n%s`, style, b.String())
+Be dense but complete. Output markdown summary only.\n\n%s`, style, src)
 
 	var sysSess *Session
 	if r.Reg != nil {
 		sysSess = r.Reg.CreateSystem(fmt.Sprintf("compact · %s", targetID), targetID)
 		sysSess.mu.Lock()
-		sysSess.history = append(sysSess.history, model.Message{Role: "user", Content: prompt})
+		sysSess.history = append(sysSess.history, model.Message{Role: "user", Content: model.ContentFromText(prompt)})
 		sysSess.appendUI(Message{ID: sysSess.nextID("m"), Role: "user", Content: prompt, CreatedAt: time.Now()})
 		sysSess.mu.Unlock()
 	}
 
 	summaryMsgs := []model.Message{
-		{Role: "system", Content: "You compress agent transcripts into durable summaries."},
-		{Role: "user", Content: prompt},
+		{Role: "system", Content: model.ContentFromText("You compress agent transcripts into durable summaries.")},
+		{Role: "user", Content: model.ContentFromText(prompt)},
 	}
-	result, err := r.Client.Chat(ctx, summaryMsgs, nil)
+	client := r.clientFor(em)
+	result, err := client.Chat(ctx, summaryMsgs, nil)
 	if err != nil {
 		return "", err
 	}
-	summary := strings.TrimSpace(result.Message.Content)
+	summary := strings.TrimSpace(result.Message.Content.PlainText())
 	if summary == "" {
 		summary = strings.TrimSpace(result.Message.Reasoning)
 	}
@@ -545,7 +662,7 @@ Be dense but complete. Output markdown summary only.\n\n%s`, style, b.String())
 
 	if sysSess != nil {
 		sysSess.mu.Lock()
-		sysSess.history = append(sysSess.history, model.Message{Role: "assistant", Content: summary})
+		sysSess.history = append(sysSess.history, model.Message{Role: "assistant", Content: model.ContentFromText(summary)})
 		sysSess.appendUI(Message{ID: sysSess.nextID("m"), Role: "assistant", Content: summary, CreatedAt: time.Now()})
 		sysSess.mu.Unlock()
 		if r.Reg != nil {
@@ -556,7 +673,7 @@ Be dense but complete. Output markdown summary only.\n\n%s`, style, b.String())
 
 	block := model.Message{
 		Role:    "system",
-		Content: "[compacted history]\n" + summary,
+		Content: model.ContentFromText("[compacted history]\n" + summary),
 	}
 	newHist := make([]model.Message, 0, len(system)+1+len(keep))
 	newHist = append(newHist, system...)

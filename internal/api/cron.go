@@ -76,6 +76,7 @@ func (s *Server) handleCronJobs(w http.ResponseWriter, r *http.Request) {
 			SessionID    string `json:"session_id"`
 			Prompt       string `json:"prompt"`
 			MaxRuns      *int   `json:"max_runs"`
+			ModelID      string `json:"model_id"`
 		}
 		if err := readJSON(r, &body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -91,6 +92,7 @@ func (s *Server) handleCronJobs(w http.ResponseWriter, r *http.Request) {
 			SessionID:    body.SessionID,
 			Prompt:       body.Prompt,
 			MaxRuns:      body.MaxRuns,
+			ModelID:      body.ModelID,
 			CreatedBy:    "ui",
 		})
 		if err != nil {
@@ -153,6 +155,9 @@ func (s *Server) handleCronJobID(w http.ResponseWriter, r *http.Request, id stri
 				p := &i
 				in.MaxRuns = &p
 			}
+		}
+		if v, ok := body["model_id"].(string); ok {
+			in.ModelID = &v
 		}
 		j, err := s.Cron.Update(id, in)
 		if err != nil {

@@ -23,6 +23,7 @@
     interval: document.getElementById("cron-interval"),
     tz: document.getElementById("cron-tz"),
     session: document.getElementById("cron-session"),
+    model: document.getElementById("cron-model"),
     prompt: document.getElementById("cron-prompt"),
     maxRuns: document.getElementById("cron-max-runs"),
     cronFields: document.getElementById("cron-fields-cron"),
@@ -164,6 +165,7 @@
               <div class="muted cron-meta">
                 next ${fmtTime(j.next_run_at)} · last ${escapeHtml(j.last_status || "—")}
                 ${j.session_id ? ` · → <code>${escapeHtml(j.session_id)}</code>` : " · (new session on fire)"}
+                ${j.model_id ? ` · model <code>${escapeHtml(j.model_id)}</code>` : ""}
                 · runs ${j.run_count || 0}
               </div>
             </div>
@@ -228,6 +230,7 @@
     if (els.interval) els.interval.value = "300";
     if (els.tz) els.tz.value = "Local";
     if (els.session) els.session.value = "";
+    if (els.model) els.model.value = "";
     if (els.prompt) els.prompt.value = "";
     if (els.maxRuns) els.maxRuns.value = "";
     toggleKind();
@@ -246,6 +249,7 @@
     if (els.interval) els.interval.value = j.interval_sec || 60;
     if (els.tz) els.tz.value = j.timezone || "Local";
     if (els.session) els.session.value = j.session_id || "";
+    if (els.model) els.model.value = j.model_id || "";
     if (els.prompt) els.prompt.value = j.prompt || "";
     if (els.maxRuns) els.maxRuns.value = j.max_runs != null ? j.max_runs : "";
     toggleKind();
@@ -262,6 +266,7 @@
       interval_sec: els.interval ? parseInt(els.interval.value, 10) || 0 : 0,
       timezone: els.tz ? els.tz.value.trim() || "Local" : "Local",
       session_id: els.session ? els.session.value.trim() : "",
+      model_id: els.model ? els.model.value.trim() : "",
       prompt: els.prompt ? els.prompt.value : "",
     };
     const mr = els.maxRuns && els.maxRuns.value.trim() !== "" ? parseInt(els.maxRuns.value, 10) : null;
@@ -317,7 +322,7 @@
   if (els.save) els.save.addEventListener("click", () => save());
   if (els.kind) els.kind.addEventListener("change", toggleKind);
   ["input", "change"].forEach((ev) => {
-    [els.name, els.enabled, els.kind, els.expr, els.interval, els.tz, els.session, els.prompt, els.maxRuns].forEach((el) => {
+    [els.name, els.enabled, els.kind, els.expr, els.interval, els.tz, els.session, els.model, els.prompt, els.maxRuns].forEach((el) => {
       if (el) {
         el.addEventListener(ev, () => {
           setDirty(true);

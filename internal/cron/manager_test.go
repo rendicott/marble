@@ -19,7 +19,7 @@ func TestManagerCRUDAndFire(t *testing.T) {
 	}
 
 	fired := make(chan FireResult, 4)
-	m := New(d, func(jobID, jobName, sessionID, prompt string) FireResult {
+	m := New(d, func(jobID, jobName, sessionID, prompt, modelID string) FireResult {
 		if sessionID == "" {
 			res := FireResult{SessionID: "newsess1", CreatedSession: true, Status: "created_session"}
 			fired <- res

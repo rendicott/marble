@@ -16,7 +16,8 @@ type SessionRow struct {
 	MessageCount int
 	Dirty        bool
 	Workspace    string
-	Model        string
+	Model        string // last effective provider model string (ADR-0018 KD12)
+	ModelID      string // catalog slug or "" (ADR-0018)
 	MDPath       string
 }
 
@@ -37,8 +38,8 @@ func (d *DB) UpsertSession(s SessionRow) error {
 		closed = s.ClosedAt.String
 	}
 	_, err := d.SQL.Exec(`
-		INSERT INTO sessions (id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, md_path)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title,
 			status=excluded.status,
@@ -48,8 +49,9 @@ func (d *DB) UpsertSession(s SessionRow) error {
 			dirty=excluded.dirty,
 			workspace=excluded.workspace,
 			model=excluded.model,
+			model_id=excluded.model_id,
 			md_path=excluded.md_path
-	`, s.ID, s.Title, s.Status, s.CreatedAt, s.UpdatedAt, closed, s.MessageCount, dirty, s.Workspace, s.Model, s.MDPath)
+	`, s.ID, s.Title, s.Status, s.CreatedAt, s.UpdatedAt, closed, s.MessageCount, dirty, s.Workspace, s.Model, s.ModelID, s.MDPath)
 	return err
 }
 
@@ -59,7 +61,7 @@ func (d *DB) ListSessions(includeClosed bool) ([]SessionRow, error) {
 	if !d.Writable() {
 		return nil, nil
 	}
-	q := `SELECT id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, md_path
+	q := `SELECT id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path
 		FROM sessions`
 	if !includeClosed {
 		q += ` WHERE status != 'closed'`
@@ -75,7 +77,7 @@ func (d *DB) ListSessions(includeClosed bool) ([]SessionRow, error) {
 		var s SessionRow
 		var dirty int
 		if err := rows.Scan(&s.ID, &s.Title, &s.Status, &s.CreatedAt, &s.UpdatedAt, &s.ClosedAt,
-			&s.MessageCount, &dirty, &s.Workspace, &s.Model, &s.MDPath); err != nil {
+			&s.MessageCount, &dirty, &s.Workspace, &s.Model, &s.ModelID, &s.MDPath); err != nil {
 			return nil, err
 		}
 		s.Dirty = dirty != 0
