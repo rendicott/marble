@@ -4,54 +4,57 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.0
+## What's new in v0.4.1
 
-Highlights since **v0.3.0**:
+Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.4.0)** (schema **v5–v7**):
 
-### Selectable models (ADR-0018) — schema v3
-- **Model catalog** in SQLite (max 32 entries): display name, provider `model` string, optional `base_url`, per-entry `api_key_env`, context limits, capability flags (`tools` / `reasoning` / `images` / `voice`), cost metadata (stored for a future spend ADR — Marble does not bill)
-- **Process default** remains the CLI `--model` / `--base-url` / `--api-key-env` / context flags — always selectable, **read-only** in Settings (restart to change)
-- **Effective model** per turn: cron pin → session `model_id` → process fallback; budgets, trim, compact, and client construction use the active row
-- **Per-session picker** in the chat header; tools `model_list` / `session_set_model` (safe mid-turn; takes effect next turn)
-- **Cron optional `model_id`** — pin a catalog model for scheduled fires
-- **Settings → Models** — list / add / edit / delete / health-test; **Copy to new** prefills the add form from process or any catalog row (mobile-friendly)
-- Secrets stay in the environment only (never stored in the catalog or argv)
+### Remote computer use — marble-peer (ADR-0020 / ADR-0021) — schema v5
+- **Harness-side pairing hub** (`internal/peerhub`) + SQLite **computers** registry and session bind (`computer_id`)
+- **Settings → Computers** — register/list peers, online status, session bind
+- **Agent tools** — `computer_list` / `computer_bind` / `computer_screenshot` / `computer_desktop_act` / `computer_browser_*` (`ensure`, `tabs`, `open`, `snapshot`, `act` with `wait` / `set_input_files` / `click_text` / …) / `computer_confirm` / `computer_stop`
+- Peer binary lives in a **separate repo** (`marble-desktop-peer` → `marble-peer`); wire notes in [`docs/peer-protocol.md`](docs/peer-protocol.md)
+- Screenshots land as **chat attachments** for vision models (ADR-0019)
 
-### Multimodal attachments (ADR-0019) — schema v4
-- **Stage then send** — paste, drag-drop, or paperclip images and basic text documents; durable store under `$MEMORY/attachments/`
-- **OpenAI multimodal content parts** on the wire (`text` + `image_url` data URLs) for models with `cap_images`
-- **Capability strip / re-include** — images always accepted into chat history (`marble-att://` sentinels); stripped from the **outbound** prompt when the active model lacks image support, re-materialized when a vision model is active again
-- **Composer UX** — staging chips, non-blocking warning when staging images under a non-vision model, **Send locked while uploads are in flight**
-- **Transcript** chips + modal preview (images inline; text/markdown sanitized)
-- Agent tool **`message_attach`** for durable chat attachments; legacy **`attach_file`** remains workspace/UI-oriented
+### Long-turn efficiency (ADR-0022)
+- Higher default loop budget for real computer-use work: **`--max-tool-iters` 200**, **`--tool-round-soft` 150**, **`--soft-wall` 20m**, **`--hard-wall` 2h**
+- **Auto-continue** near the hard iter cap (`--auto-continue-reserve`, default 10) so turns end with a real assistant message + scheduled resume instead of a silent wall death
+- **Anti-thrash rails** (configurable): sleep-only shell hard-block (`--block-sleep-shell`), stuck escalate after K consecutive `computer_*` failures (`--stuck-escalate-k`), eval-mutate budget (`--eval-mutate-max`); identical-tool anti-repeat **off by default** (`--anti-repeat-n 0`) after false positives on legitimate poll loops
+- Outbound chat **normalize** after compact (avoids “system message must be at beginning” provider errors)
+- Tool-result / screenshot discipline for long multi-tool turns
 
-### Loop / UI reliability
-- Final assistant messages after tool loops reliably surface over SSE (buffer + resync)
-- Attachment upload race fixed by disabling Send until stage POSTs complete
+### Clerk — session attention dashboard (ADR-0023) — schema v6–v7
+- **📋 Clerk** icon next to the Marble logo (desktop + mobile) → attention roster
+- Idle sessions: process-model **summary**, **needs_user**, **action items** (heuristic fallback if the LLM fails)
+- Working sessions: last **user** message snippet only (no LLM thrash summary)
+- Sort: needs_user (longest idle) → idle → working; system agents excluded; closed hidden by default
+- Continuous refresh on busy→idle; seed missing summaries on harness start; manual refresh (rate-limited)
+- **Snooze** — 1h / 4h / 1d / tomorrow / 1w; hidden from main list until “Show snoozed”; **Wake** or send a message to clear (schema **v7** `snoozed_until`)
 
-### v0.3.0
+### Session UX
+- **Titles** track the latest user message unless **renamed** (`title_custom`); rename from session menu
+- Mobile layout polish (composer, overscroll, session chrome)
+- Collapsed system-agents section in the sidebar
 
-- **Public hardening** — mpub **Content-Security-Policy** (no scripts), global `X-Frame-Options` / `nosniff` / `Referrer-Policy`
-- **Private mpub** — anonymous viewers get **uniform 404** (no existence oracle / login redirect)
-- **Minimal public health** — unauthenticated `GET /api/health` in Google mode returns only `ok` / `auth_mode` / `tls_enabled` (full detail after login)
-- **OAuth login limits** — rate-limit login starts per client IP; cap + GC pending PKCE states
+### v0.4.0
 
-### v0.2.0
+- **Selectable models (ADR-0018)** — schema v3 catalog, session picker, cron pin, Settings → Models
+- **Multimodal attachments (ADR-0019)** — schema v4 stage/send, vision wire parts, chips + preview
+- Loop / UI reliability (final assistant over SSE; Send locked while uploads in flight)
 
-- **Google OAuth + multi-user (ADR-0017)** — Sign in with Google, email allowlist (all full admins), identity on chat history (not sent to the model)
-- **Optional in-process TLS** — `--tls-cert-file` / `--tls-key-file`
-- **mpub visibility** — new pages default **private**; `mpub_set_visibility` to promote/demote
-- **GitHub Actions releases** — multi-arch binaries on tags
+### Earlier
 
-v0.1.x included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0016).
+- **v0.3.0** — public hardening (mpub CSP, private 404, minimal public health, OAuth rate limits)
+- **v0.2.0** — Google OAuth (ADR-0017), optional TLS, mpub visibility, GitHub Actions releases
+- **v0.1.x** — durable cron (ADR-0015), `--api-key-env` (ADR-0016)
 
 ## Features
 
 ### Agent runtime
 - **Multi-turn agent loop** — user message → model ↔ tools → final reply
-- **Tool rounds** — soft advisory (default 65) / hard stop (default 80)
-- **Context budget** — trim history to the **active** model’s limits; soft warn, auto-compact via LLM system agent
-- **Soft wall-clock** advisory for long continuous tool runs
+- **Tool rounds** — soft advisory (default 150) / hard stop (default 200); near-cap **auto-continue**
+- **Context budget** — trim history to the **active** model’s limits; soft warn, auto-compact via LLM system agent; outbound message normalize after compact
+- **Soft / hard wall-clock** — advisory soft wall (default 20m) and hard turn deadline (default 2h)
+- **Anti-thrash (ADR-0022)** — optional identical-call fail, sleep-only shell block, computer stuck-escalate, browser eval-mutate cap
 - **Turn progress UI** — phase, iteration, tool rounds, context %, live steps, **Stop** to cancel
 - **System agents** — e.g. compaction sessions in a separate sidebar section
 - **Shell safety** — process-group kill on timeout/stop so backgrounded children cannot hang a turn
@@ -77,10 +80,11 @@ v0.1.x included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0
 - **Filesystem** — `file_read` / `file_write`, `list_files`, `grep`, `glob`, `codebase_summary`
 - **Edits** — `edit_file` (prior-read), `apply_patch` (atomic multi-hunk)
 - **Shell** — `shell_execute` with deny-list policy, timeouts, output caps; optional `--disable-shell`
-- **Background tasks** — start / check / kill long-running shell jobs
-- **Continuations** — one-shot delayed resume (`schedule_continuation`: delay and/or wait for BG task)
+- **Background tasks** — `start_background_task` / `check_background_task` / `kill_background_task` for long-running shell jobs (use these for servers; prefer over `shell_execute … &`)
+- **Continuations** — one-shot delayed resume (`schedule_continuation`: delay and/or wait for BG task); harness **auto-continue** near hard iter caps
 - **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
 - **Models (ADR-0018)** — `model_list`, `session_set_model`
+- **Computer use (ADR-0020)** — `computer_*` tools against a paired **marble-peer** (browser CDP + desktop + confirm)
 - **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available
 - **External agents (ADR-0014)** — `call_agent_process` (`format=grok|claude`) with optional `workdir`, high timeouts, `background` mode
 - **Memory & skills** — `memory_*` under `$MEMORY/knowledge/`, `skill_*` from skill roots; prompt nudges memory when unsure
@@ -92,26 +96,30 @@ v0.1.x included durable **cron** (ADR-0015) and model **`--api-key-env`** (ADR-0
 ### Sessions & memory
 - **Multi-session** web UI with short session ids
 - **Deep links** — `/s/{session_id}` restores a session in the UI
+- **Titles** — auto from last user message unless operator **renames** (`title_custom`)
 - **Markdown-first** transcripts under `$MEMORY/session/<id>.md` (including attachment sentinels)
-- **SQLite dual-write** (`marble.db`) for index, events, settings, cron, **model catalog**, **attachments**, daemon state
-- **Schema** — binary supports **v4** (v3 = catalog, v4 = attachments); stepwise migrate on open
+- **SQLite dual-write** (`marble.db`) for index, events, settings, cron, **model catalog**, **attachments**, **computers**, **clerk**, daemon state
+- **Schema** — binary supports **v7** (v3 catalog · v4 attachments · v5 computers · v6 clerk · v7 clerk snooze); stepwise migrate on open
 - **Limp mode** if the DB schema is unreadable/mismatched (chat + MD still work)
 - **Daemon** — periodic flush, prune closed sessions, blob/attachment GC, daily compaction
 - **Session info** panel — tokens, tool histogram, recent events
 - **Every-turn soul (ADR-0013)** — optional `$MEMORY/soul.md` injected as a second system message
 - **Cron session badges** — 🕐 next to sessions bound to durable cron jobs
 - **Per-session model_id** — catalog override until cleared back to process default
+- **Per-session computer_id** — bind a marble-peer for `computer_*` tools
 
 ### Web UI
 - Chat with **markdown** rendering (user + assistant)
-- Left session list + system agents, **Close**, **Session info**
+- Left session list + system agents, **Close**, **Session info**, **Rename**
+- **Clerk (📋)** — attention dashboard: summaries, needs-you, snooze, jump-to-session
 - **Session model picker** — switch catalog model for the next turn
 - **Composer attachments** — paste / drop / paperclip; stage chips; Send waits for uploads
 - **Workspace explorer** modal (browse/edit/upload under the tool jail)
 - **System prompt & soul** modal (👁) — immutable system prompt + editable soul
 - **Cron jobs** modal (🕐) — list/create/edit/enable/run-now/history + next-fire preview + optional model pin
-- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, DB settings, MCP, UI prefs
-- SSE live updates for messages, tools, turn progress, attachments
+- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, **Computers** peers, DB settings, MCP, UI prefs
+- **Mobile-first** polish for composer, panels, and session chrome
+- SSE live updates for messages, tools, turn progress, attachments, peer confirms
 - Sign-in flow when Google mode is enabled
 
 ### Cron jobs (ADR-0015)
@@ -215,6 +223,14 @@ Open **http://127.0.0.1:8080/** (or `http://host:8080/s/{session_id}` for a deep
 | `--context-limit` | Model context window (tokens) | `262144` |
 | `--max-output` | Max generation tokens per model call | `32768` |
 | `--context-reserve` | Reserved for tools/formatting | `8192` |
+| `--max-tool-iters` | Hard max model↔tool rounds per user turn | `200` |
+| `--tool-round-soft` | Soft advisory tool-round threshold | `150` |
+| `--soft-wall` / `--hard-wall` | Soft advisory / hard turn deadline | `20m` / `2h` |
+| `--auto-continue-reserve` | Auto-continue when remaining iters ≤ N (`0` = off) | `10` |
+| `--anti-repeat-n` | Fail after N identical tool fingerprints (`0` = off) | `0` |
+| `--block-sleep-shell` | Reject pure sleep/timeout `shell_execute` | `true` |
+| `--stuck-escalate-k` | Escalate after K consecutive `computer_*` failures | `3` |
+| `--eval-mutate-max` | Cap mutate browser evals in recent window | `5` |
 | `--addr` | UI / API listen address | `:8080` |
 
 Full list: `./bin/marble-harness -h`
@@ -347,7 +363,8 @@ cp adr/agent_process.json.example ~/.marble/agent_process.json
 
 ```
 ~/.marble/                 # --memory leaf (may be outside workspace)
-├── marble.db              # SQLite (WAL) — sessions, events, settings, cron_*, model_catalog, attachments meta
+├── marble.db              # SQLite (WAL) — sessions, events, settings, cron_*, model_catalog,
+│                          #   attachments, computers, clerk_session_state, daemon
 ├── marble.lock            # single-writer lock
 ├── session/<id>.md        # first-class transcripts
 ├── daily/YYYY-MM-DD.md
@@ -387,21 +404,24 @@ Operator secrets (API keys) live **outside** the repo, typically:
 ```
 cmd/marble-harness/     # process entry
 internal/
-  config/               # CLI flags (API key, OAuth, TLS)
+  config/               # CLI flags (API key, OAuth, TLS, loop walls / thrash)
   auth/                 # Google OAuth, sessions, middleware (ADR-0017)
   model/                # OpenAI-compatible client + multimodal content parts
   session/              # registry, agent loop, effective model, multimodal, daemon
-  tools/                # tool implementations + catalog
+  tools/                # tool implementations + catalog (incl. computer_*, thrash)
+  peerhub/              # marble-peer WebSocket / pairing hub (ADR-0020)
+  clerk/                # session attention dashboard (ADR-0023)
   cron/                 # durable scheduler (ADR-0015)
   mpub/                 # published pages + visibility
   agentproc/            # external agent drivers (ADR-0014)
   mcp/                  # MCP client
   memory/               # session markdown store, soul
-  db/                   # SQLite dual-write (cron, model_catalog, attachments)
-  api/                  # HTTP JSON + SSE + models + attachments + mpub + cron
+  db/                   # SQLite dual-write (cron, catalog, attachments, computers, clerk)
+  api/                  # HTTP JSON + SSE + models + attachments + mpub + cron + clerk + computers
   web/static/           # embedded SPA
   workspacefs/          # explorer FS API
 adr/                    # architecture decision records
+docs/                   # protocol notes (e.g. peer-protocol.md)
 ```
 
 Design docs: [`adr/`](adr/) (HTML review pages + answers JSON for locked decisions).
@@ -418,10 +438,14 @@ Notable ADRs:
 | 0017 | Google OAuth, multi-user identity, optional TLS |
 | 0018 | Selectable models (catalog, per-session, cron pin) |
 | 0019 | Multimodal attachments (images + basic documents) |
+| 0020 | Marble Peer — remote computer use (harness contract) |
+| 0021 | `marble-desktop-peer` implementation (separate repo) |
+| 0022 | Long-turn efficiency (anti-thrash, walls, auto-continue) |
+| 0023 | Clerk — session attention dashboard (+ snooze) |
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.4.0)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.4.1](https://github.com/rendicott/marble/releases/tag/v0.4.1)**.
 
 | Asset | Platform |
 |-------|----------|
@@ -446,14 +470,14 @@ chmod +x marble-harness-linux-amd64
 **Publish a release** (maintainers — **GitHub Actions only**; do not upload locally built binaries):
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.4.1
+git push origin v0.4.1
 # Workflow "Release" builds on ubuntu-latest, tests, and attaches assets
 ```
 
 If a tag already exists but the workflow failed (e.g. GitHub outage), re-run from the Actions tab:
 
-**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.0`).
+**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.1`).
 
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 

@@ -17,6 +17,7 @@ import (
 	"github.com/rendicott/marble/internal/cron"
 	"github.com/rendicott/marble/internal/mcp"
 	"github.com/rendicott/marble/internal/model"
+	"github.com/rendicott/marble/internal/peerhub"
 	"github.com/rendicott/marble/internal/shellpolicy"
 )
 
@@ -37,6 +38,11 @@ type TurnContext struct {
 	ReadPaths   map[string]bool
 	// Ctx is the turn cancel context (ADR-0010); shell/MCP should honor it.
 	Ctx context.Context
+	// LastScreenshotAt is set when computer_screenshot succeeds this turn.
+	// Desktop clicks require a recent shot so x,y are vision-grounded.
+	LastScreenshotAt time.Time
+	// Thrash is ADR-0022 turn-scoped anti-repeat / escalate state.
+	Thrash *ThrashState
 	// callbacks set by session loop
 	GetUsage       func() map[string]interface{}
 	Compact        func(style string, keepLast int) (string, error)
@@ -44,6 +50,9 @@ type TurnContext struct {
 	// OnChatAttachment is durable chat attach (ADR-0019 message_attach); loop appendUI+message.
 	OnChatAttachment func(Attachment)
 	OnHarnessNote  func(string) // optional
+	// OnPeerConfirm notifies the session UI that a computer_confirm is waiting
+	// (Accept/Deny from Marble harness, not only the peer machine).
+	OnPeerConfirm func(confirm map[string]interface{})
 	HistorySnippet func() string
 }
 
@@ -72,6 +81,16 @@ type Registry struct {
 	// StageChatAttachment stores bytes and returns id,mime,kind (ADR-0019).
 	StageChatAttachment func(sessionID, name string, data []byte) (id, mime, kind string, err error)
 
+	// Desktop peers (ADR-0020)
+	PeerHub              *peerhub.Hub
+	ListComputers        func() ([]map[string]interface{}, error)
+	GetSessionComputerID func(sessionID string) (string, error)
+	SetSessionComputerID func(sessionID, computerID string) error
+
+	// Thrash is ADR-0022 anti-repeat / escalate / sleep-block policy (set from CLI).
+	Thrash    ThrashPolicy
+	ThrashSet bool // true once main (or tests) assigned Thrash, including intentional zeros
+
 	mu sync.Mutex
 }
 
@@ -97,6 +116,13 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		tc.ReadPaths = map[string]bool{}
 	}
 
+	// ADR-0022: anti-repeat, escalate lock, sleep-only shell, eval-mutate, budgets.
+	if err := r.preflightThrash(name, argsJSON, tc); err != nil {
+		msg := "error: " + err.Error()
+		r.postflightThrash(name, argsJSON, msg, tc)
+		return msg
+	}
+
 	parent := context.Background()
 	if tc.Ctx != nil {
 		parent = tc.Ctx
@@ -107,7 +133,9 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		// timeout enforced inside MCP sessions; outer bound 2m; honor turn cancel
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		return clamp(r.MCP.Execute(ctx, name, argsJSON), max)
+		out := clamp(r.MCP.Execute(ctx, name, argsJSON), max)
+		r.postflightThrash(name, argsJSON, out, tc)
+		return out
 	}
 
 	var out string
@@ -187,13 +215,53 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.mpubUnpublish(argsJSON)
 	case "mpub_set_visibility":
 		out, err = r.mpubSetVisibility(argsJSON)
+	case "computer_list":
+		out, err = r.computerList(argsJSON)
+	case "computer_bind":
+		out, err = r.computerBind(argsJSON, tc)
+	case "computer_screenshot":
+		out, err = r.computerScreenshot(argsJSON, tc)
+	case "computer_desktop_act":
+		out, err = r.computerDesktopAct(argsJSON, tc)
+	case "computer_browser_ensure":
+		out, err = r.computerBrowserEnsure(argsJSON, tc)
+	case "computer_browser_tabs":
+		out, err = r.computerBrowser(argsJSON, tc, "browser_tabs")
+	case "computer_browser_open":
+		out, err = r.computerBrowser(argsJSON, tc, "browser_open")
+	case "computer_browser_snapshot":
+		out, err = r.computerBrowser(argsJSON, tc, "browser_snapshot")
+	case "computer_browser_act":
+		out, err = r.computerBrowser(argsJSON, tc, "browser_act")
+	case "computer_confirm":
+		out, err = r.computerConfirm(argsJSON, tc)
+	case "computer_stop":
+		out, err = r.computerStop(argsJSON, tc)
 	default:
-		return fmt.Sprintf("error: unknown tool %q", name)
+		msg := fmt.Sprintf("error: unknown tool %q", name)
+		r.postflightThrash(name, argsJSON, msg, tc)
+		return msg
 	}
 	if err != nil {
-		return "error: " + err.Error()
+		msg := "error: " + err.Error()
+		r.postflightThrash(name, argsJSON, msg, tc)
+		return msg
 	}
-	return clamp(out, max)
+	// Eval mutate soft warning (under hard limit)
+	if name == "computer_browser_act" {
+		r.ensureThrashPolicy()
+		if w := EvalMutateWarning(argsJSON, tc.Thrash, r.Thrash.EvalMutateMax); w != "" {
+			out = out + w
+		}
+	}
+	result := clamp(out, max)
+	r.postflightThrash(name, argsJSON, result, tc)
+	// Advisory when escalate lock just engaged
+	if tc.Thrash != nil && tc.Thrash.EscalateLock && tc.OnHarnessNote != nil {
+		// only note occasionally — caller may ignore duplicates
+		tc.OnHarnessNote("[harness] escalate lock: computer click blocked until confirm / different approach (ADR-0022)")
+	}
+	return result
 }
 
 func clamp(s string, max int) string {

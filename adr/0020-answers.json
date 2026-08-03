@@ -1,0 +1,88 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0020",
+  "title": "Marble Peer — Remote Computer Use",
+  "updated_at": "2026-07-27T02:40:13.716Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Playwright MCP/helper first; chromedp later if Node hurts",
+      "notes": "",
+      "question": "Q1 Browser impl: Playwright MCP/helper vs chromedp-native?",
+      "rec": "Playwright MCP/helper first; chromedp later if Node hurts"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Dedicated debug profile user logs into once",
+      "notes": "",
+      "question": "Q2 Chrome profile: attach default vs dedicated Marble profile?",
+      "rec": "Dedicated debug profile user logs into once"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "120s, deny on timeout",
+      "notes": "",
+      "question": "Q3 Confirm timeout default?",
+      "rec": "120s, deny on timeout"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No in v1 — interactive sessions only",
+      "notes": "",
+      "question": "Q4 Cron may use bound peer?",
+      "rec": "No in v1 — interactive sessions only"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Primary display only in v1",
+      "notes": "",
+      "question": "Q5 Multi-monitor?",
+      "rec": "Primary display only in v1"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Allow on private net with operator confirm; prefer HTTPS",
+      "notes": "",
+      "question": "Q6 Pairing over cleartext HTTP on private mesh?",
+      "rec": "Allow on private net with operator confirm; prefer HTTPS"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Serialize to 1 action queue per computer",
+      "notes": "",
+      "question": "Q7 Max concurrent peer actions?",
+      "rec": "Serialize to 1 action queue per computer"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "getlantern/systray or maintained fork (verify 3 OS)",
+      "notes": "",
+      "question": "Q8 Tray library?",
+      "rec": "getlantern/systray or maintained fork (verify 3 OS)"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "marble-peer binary; repo marble-desktop-peer",
+      "notes": "",
+      "question": "Q9 Binary name vs repo name?",
+      "rec": "marble-peer binary; repo marble-desktop-peer"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "OpenAPI/JSON in marble docs; extract Go module later if needed",
+      "notes": "",
+      "question": "Q10 Shared protocol: OpenAPI only vs published Go module?",
+      "rec": "OpenAPI/JSON schema in marble docs first; extract Go module later if needed"
+    }
+  }
+}

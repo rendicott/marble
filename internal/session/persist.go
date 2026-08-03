@@ -30,6 +30,7 @@ func (r *Registry) syncSessionRow(s *Session) {
 		Workspace:    r.workspace,
 		Model:        model,
 		ModelID:      s.ModelID,
+		ComputerID:   s.ComputerID,
 		MDPath:       filepath.Join("session", s.ID+".md"),
 	}
 	if s.ClosedAt != nil {

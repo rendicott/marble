@@ -74,6 +74,9 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *
 		return false
 	}
 	s.setTurnOpts(opts)
+	if r.Reg != nil && r.Reg.OnSessionBusy != nil {
+		r.Reg.OnSessionBusy(s.ID)
+	}
 
 	display := text
 	if display == "" && len(uis) > 0 {
@@ -84,8 +87,15 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *
 	}
 
 	s.mu.Lock()
-	if len(s.ui) == 0 && !continuation {
-		s.Title = truncateTitle(display, 48)
+	// Auto-title from latest user message unless operator pinned a custom name.
+	// System agents and cron-titled sessions never auto-title.
+	titleUpdated := false
+	if !continuation && shouldAutoTitleLocked(s) && strings.TrimSpace(display) != "" {
+		nt := truncateTitle(display, 48)
+		if nt != "" && nt != s.Title {
+			s.Title = nt
+			titleUpdated = true
+		}
 	}
 	uid := s.nextID("m")
 	um := Message{
@@ -103,7 +113,22 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *
 	s.appendUI(um)
 	// Model history: never identity (ADR-0017 Q13). Multimodal sentinels (ADR-0019).
 	s.history = append(s.history, model.Message{Role: "user", Content: content})
+	titleSnap := s.Title
+	customSnap := s.TitleCustom
 	s.mu.Unlock()
+
+	if titleUpdated {
+		s.publish(Event{
+			Type:        "session_meta",
+			SessionID:   s.ID,
+			Title:       titleSnap,
+			TitleCustom: customSnap,
+			At:          time.Now(),
+		})
+	}
+	if r.Reg != nil && r.Reg.OnUserMessage != nil && !continuation {
+		r.Reg.OnUserMessage(s.ID, display)
+	}
 
 	// Commit staged attachments
 	if r.Reg != nil && r.Reg.sqldb != nil && r.Reg.sqldb.Writable() && len(attachmentIDs) > 0 {
@@ -144,6 +169,10 @@ func (r *Runner) runTurn(s *Session) {
 		s.endTurn()
 		if r.Reg != nil {
 			r.Reg.syncSessionRow(s)
+			// ADR-0023 Clerk: enqueue idle summary after any busy→idle
+			if r.Reg.OnSessionIdle != nil {
+				r.Reg.OnSessionIdle(s)
+			}
 		}
 	}()
 
@@ -170,7 +199,11 @@ func (r *Runner) runTurn(s *Session) {
 	s.appendStep(TurnStep{Kind: "starting", Detail: fmt.Sprintf("turn started model=%s source=%s", em.Model, em.Source)})
 	s.publishTurnProgress()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	hardWall := r.Cfg.HardWall
+	if hardWall <= 0 {
+		hardWall = 2 * time.Hour
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hardWall)
 	defer cancel()
 	s.setTurnCancel(cancel)
 
@@ -188,6 +221,7 @@ func (r *Runner) runTurn(s *Session) {
 	highUsageStreak := 0
 	turnStart := time.Now()
 	toolRounds := 0
+	softWallLastAt := time.Time{} // throttle soft-wall advisories (was every model call)
 	var lastReportedIn, lastReportedOut *int
 	stopNote := ""
 
@@ -233,11 +267,25 @@ func (r *Runner) runTurn(s *Session) {
 			s.mu.Unlock()
 			s.publish(Event{Type: "message", Message: &um})
 		},
+		OnPeerConfirm: func(confirm map[string]interface{}) {
+			// Live Accept/Deny card in harness UI (operator may not have peer access).
+			s.publish(Event{Type: "confirm", Confirm: confirm})
+		},
+		OnHarnessNote: func(note string) {
+			r.advisory(s, note)
+		},
 	}
 
 	for iter := 0; iter < hard; iter++ {
 		if err := ctx.Err(); err != nil {
 			stopNote = stopMessage(err, s)
+			// Hard wall (time): auto-continue unless operator stop.
+			if r.shouldAutoContinueOnErr(err, s) {
+				r.autoStopAndContinueTC(s, stopNote, "auto:hard-wall", tc)
+				return
+			}
+			// Always leave a visible assistant end-turn so the UI does not look "stuck mid-tool".
+			r.forceEndAssistant(s, stopNote)
 			s.finalizeTurnProgress(phaseForErr(err, s), stopNote)
 			if errors.Is(err, context.Canceled) || s.Progress().StopRequested {
 				s.publish(Event{Type: "harness", Status: stopNote})
@@ -251,12 +299,28 @@ func (r *Runner) runTurn(s *Session) {
 		}
 
 		s.setIter(iter)
-		// Soft wall advisory
-		if toolRounds > 0 && time.Since(turnStart) >= r.Cfg.SoftWall && r.Cfg.SoftWall > 0 {
-			r.advisory(s, fmt.Sprintf(
-				"[harness] soft wall %s of continuous tool rounds. Consider schedule_continuation or a final user reply.",
-				r.Cfg.SoftWall,
-			))
+
+		// Near max tool iters: hard-stop + force schedule_continuation (do not die mid-work).
+		if r.nearMaxToolIters(hard, iter, toolRounds) {
+			reason := fmt.Sprintf(
+				"Approaching hard max tool iterations (iter %d / hard %d, tool_rounds %d, soft %d, reserve %d). Stopping this turn and auto-continuing.",
+				iter, hard, toolRounds, soft, r.Cfg.AutoContinueReserve,
+			)
+			r.autoStopAndContinueTC(s, reason, "auto:max-iters", tc)
+			return
+		}
+
+		// Soft wall advisory: first time elapsed ≥ SoftWall, then at most once per SoftWall
+		// period (previously every model call after 3m — noisy for long ops turns).
+		if toolRounds > 0 && r.Cfg.SoftWall > 0 {
+			elapsed := time.Since(turnStart)
+			if elapsed >= r.Cfg.SoftWall && (softWallLastAt.IsZero() || time.Since(softWallLastAt) >= r.Cfg.SoftWall) {
+				r.advisory(s, fmt.Sprintf(
+					"[harness] soft wall: continuous tool work for %s (threshold %s). Still running — will auto-continue near max-tool-iters if needed.",
+					elapsed.Round(time.Second), r.Cfg.SoftWall,
+				))
+				softWallLastAt = time.Now()
+			}
 		}
 
 		s.mu.Lock()
@@ -285,14 +349,39 @@ func (r *Runner) runTurn(s *Session) {
 			))
 		}
 		if toolRounds >= soft {
-			advisories = append(advisories, fmt.Sprintf(
-				"[harness] tool rounds=%d soft cap %d. Consider schedule_continuation, compact, or final user update.",
-				toolRounds, soft,
-			))
+			reserve := r.Cfg.AutoContinueReserve
+			if reserve <= 0 {
+				advisories = append(advisories, fmt.Sprintf(
+					"[harness] tool rounds=%d soft cap %d. Consider schedule_continuation, compact, or final user update.",
+					toolRounds, soft,
+				))
+			} else {
+				advisories = append(advisories, fmt.Sprintf(
+					"[harness] tool rounds=%d soft cap %d (hard %d). Prefer finishing or compacting; harness will auto-continue when remaining iters ≤ %d.",
+					toolRounds, soft, hard, reserve,
+				))
+			}
+		}
+		// ADR-0022: escalate lock advisory
+		if tc.Thrash != nil && tc.Thrash.EscalateLock {
+			advisories = append(advisories,
+				"[harness] escalate lock ON (ADR-0022): desktop/browser clicks hard-blocked. Use computer_confirm, screenshot/snapshot, shell/API, or a different approach — not more identical clicks.",
+			)
+		}
+		// ADR-0022 P3: soft checklist advisory mid long turn
+		if toolRounds >= soft/2 && soft > 0 && (tc.Thrash == nil || !tc.Thrash.ChecklistHint) {
+			advisories = append(advisories,
+				"[harness] multi-step work: write a short checklist to memory or a workspace file (done/pending/evidence). Prefer verifying the user-stated success condition over provider-internal \"completed\".",
+			)
+			if tc.Thrash == nil {
+				tc.Thrash = &tools.ThrashState{}
+			}
+			tc.Thrash.ChecklistHint = true
 		}
 		if len(advisories) > 0 {
 			note := strings.Join(advisories, "\n")
-			if toolRounds == soft || (ratio >= r.Cfg.ContextWarnRatio && toolRounds%10 == 0) {
+			if toolRounds == soft || (ratio >= r.Cfg.ContextWarnRatio && toolRounds%10 == 0) ||
+				(tc.Thrash != nil && tc.Thrash.EscalateLock && toolRounds%5 == 0) {
 				r.advisory(s, note)
 			}
 			prompt = append([]model.Message{{Role: "system", Content: model.ContentFromText(note)}}, prompt...)
@@ -304,9 +393,21 @@ func (r *Runner) runTurn(s *Session) {
 		} else {
 			highUsageStreak = 0
 		}
-		if highUsageStreak >= r.Cfg.ContextAutoCompactRounds {
-			r.advisory(s, fmt.Sprintf("[harness] auto-compact: usage ≥%.0f%% for %d rounds", r.Cfg.ContextAutoCompactRatio*100, highUsageStreak))
-			if _, err := r.compactSession(ctx, s, "auto", 12, em); err != nil {
+		// ADR-0022 KD13: computer-heavy long turns compact earlier
+		computerHeavy := toolRounds >= 40 && tc.ComputerHeavyShare(20) >= 0.5
+		needCompact := highUsageStreak >= r.Cfg.ContextAutoCompactRounds ||
+			(computerHeavy && ratio >= r.Cfg.ContextWarnRatio)
+		if needCompact {
+			why := fmt.Sprintf("usage ≥%.0f%% for %d rounds", r.Cfg.ContextAutoCompactRatio*100, highUsageStreak)
+			if computerHeavy && highUsageStreak < r.Cfg.ContextAutoCompactRounds {
+				why = fmt.Sprintf("computer-heavy turn (%.0f%% of last 20 tools are computer_*) at context %.0f%%", tc.ComputerHeavyShare(20)*100, ratio*100)
+			}
+			r.advisory(s, "[harness] auto-compact: "+why)
+			keep := 12
+			if computerHeavy {
+				keep = 16
+			}
+			if _, err := r.compactSession(ctx, s, "auto", keep, em); err != nil {
 				r.advisory(s, "[harness] auto-compact failed: "+err.Error())
 			} else {
 				highUsageStreak = 0
@@ -332,6 +433,8 @@ func (r *Runner) runTurn(s *Session) {
 			r.advisory(s, "[harness] attachment materialize: "+mErr.Error())
 			outbound = prompt
 		}
+		// Strict providers (vLLM): only one system block at the start; never mid-history.
+		outbound = normalizeOutboundChatMessages(outbound)
 		result, err := client.Chat(ctx, outbound, toolSpecs)
 		if err != nil {
 			stopNote = stopMessage(err, s)
@@ -339,6 +442,11 @@ func (r *Runner) runTurn(s *Session) {
 			if !em.CapImages && strings.Contains(strings.ToLower(err.Error()), "image") {
 				stopNote = "model rejected request (images unsupported): " + err.Error()
 			}
+			if r.shouldAutoContinueOnErr(err, s) {
+				r.autoStopAndContinueTC(s, stopNote, "auto:hard-wall", tc)
+				return
+			}
+			r.forceEndAssistant(s, stopNote)
 			phase := phaseForErr(err, s)
 			s.finalizeTurnProgress(phase, stopNote)
 			if phase == "stopping" || errors.Is(err, context.Canceled) {
@@ -388,6 +496,11 @@ func (r *Runner) runTurn(s *Session) {
 			for _, call := range msg.ToolCalls {
 				if err := ctx.Err(); err != nil {
 					stopNote = stopMessage(err, s)
+					if r.shouldAutoContinueOnErr(err, s) {
+						r.autoStopAndContinueTC(s, stopNote, "auto:hard-wall", tc)
+						return
+					}
+					r.forceEndAssistant(s, stopNote)
 					s.finalizeTurnProgress(phaseForErr(err, s), stopNote)
 					s.publish(Event{Type: "harness", Status: stopNote})
 					if r.Reg != nil {
@@ -438,6 +551,15 @@ func (r *Runner) runTurn(s *Session) {
 
 				s.mu.Lock()
 				tid := s.nextID("t")
+				// Inject vision parts for tool screenshots (computer_screenshot, etc.)
+				// so the model receives pixels on the next Chat call — not only UI chips.
+				modelContent := toolResultContent(toolResult)
+				if !em.CapImages && modelContent.HasImages() {
+					// Text fallback when process/catalog model cannot see images.
+					modelContent = model.ContentFromText(toolResult +
+						"\n[harness] WARNING: active model CapImages=false — screenshot was stored for the UI but NOT sent to the model. Switch this session to a vision-capable model (model_list / session_set_model) to see peer screenshots.")
+					r.advisory(s, "[harness] computer screenshot omitted from model context: active model has no image support — switch to a vision model to use desktop screenshots")
+				}
 				tm := Message{
 					ID:         tid,
 					Role:       "tool",
@@ -445,11 +567,12 @@ func (r *Runner) runTurn(s *Session) {
 					ToolName:   name,
 					ToolCallID: call.ID,
 					CreatedAt:  time.Now(),
+					Attachments: uiAttachmentsFromToolResult(toolResult),
 				}
 				s.appendUI(tm)
 				s.history = append(s.history, model.Message{
 					Role:       "tool",
-					Content:    model.ContentFromText(toolResult),
+					Content:    modelContent,
 					ToolCallID: call.ID,
 					Name:       name,
 				})
@@ -486,12 +609,132 @@ func (r *Runner) runTurn(s *Session) {
 		return
 	}
 
-	msg := fmt.Sprintf("stopped: exceeded hard max tool iterations (%d soft=%d)", hard, soft)
+	p := s.Progress()
+	msg := fmt.Sprintf("exceeded hard max tool iterations (%d soft=%d) after iter %d tool_rounds %d",
+		hard, soft, p.Iter, p.ToolRounds)
+	// Safety net if near-max check was skipped (e.g. reserve=0 path disabled mid-turn).
+	if r.Cfg.AutoContinueReserve > 0 {
+		r.autoStopAndContinueTC(s, msg, "auto:max-iters-exceeded", tc)
+		return
+	}
+	r.forceEndAssistant(s, msg+" — send another message to resume, or raise --max-tool-iters")
 	s.finalizeTurnProgress("error", msg)
 	s.publish(Event{Type: "error", Error: msg})
 	if r.Reg != nil {
 		r.Reg.logEvent(s, "error", "", msg, "", "", "", nil, nil, nil, nil, nil, "", msg)
 	}
+}
+
+// nearMaxToolIters is true when the next model call would consume an iteration
+// within AutoContinueReserve of the hard max (and we have done tool work).
+func (r *Runner) nearMaxToolIters(hard, iter, toolRounds int) bool {
+	reserve := r.Cfg.AutoContinueReserve
+	if reserve <= 0 || hard <= 0 {
+		return false
+	}
+	if toolRounds <= 0 {
+		// Pure chat near the limit can still finish without tools; don't force.
+		return false
+	}
+	if reserve >= hard {
+		// Misconfigured: treat as "always near" after first tool round.
+		return iter >= 1
+	}
+	return iter >= hard-reserve
+}
+
+// shouldAutoContinueOnErr is true for hard-wall timeouts (not operator cancel/stop).
+func (r *Runner) shouldAutoContinueOnErr(err error, s *Session) bool {
+	if err == nil {
+		return false
+	}
+	if s != nil && s.Progress().StopRequested {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// autoStopAndContinue ends the turn cleanly and schedules a short-delay continuation
+// so long tool work resumes without the user having to type "continue".
+// ADR-0022: continuation prompt carries thrash state packet (ban list, last tools, URL).
+func (r *Runner) autoStopAndContinue(s *Session, reason, label string) {
+	r.autoStopAndContinueTC(s, reason, label, nil)
+}
+
+func (r *Runner) autoStopAndContinueTC(s *Session, reason, label string, tc *tools.TurnContext) {
+	if s == nil {
+		return
+	}
+	const delaySec = 2
+	contID := ""
+	fireAt := ""
+	if r.Tools != nil && r.Tools.Cont != nil {
+		prompt := reason
+		if tc != nil {
+			prompt = tc.ContinuePacket(reason)
+		} else {
+			prompt = "Continue the unfinished work from the previous turn. " +
+				"Do not restart completed steps. Prefer API/script over GUI thrash. " +
+				"If UI stuck → computer_confirm. When done, summarize for the user.\n\n" +
+				"Why: " + reason
+		}
+		if j, err := r.Tools.Cont.Schedule(s.ID, prompt, delaySec, "", label); err == nil && j != nil {
+			contID = j.ID
+			fireAt = j.FireAt.UTC().Format(time.RFC3339)
+			r.advisory(s, fmt.Sprintf("[harness] auto-continuation scheduled id=%s delay=%ds label=%s", j.ID, delaySec, label))
+		} else if err != nil {
+			r.advisory(s, "[harness] auto-continuation schedule failed: "+err.Error())
+		}
+	}
+
+	msg := reason
+	if contID != "" {
+		msg += fmt.Sprintf("\n\n✅ Auto-continuation scheduled (id=%s, ~%ds, fire_at=%s). This turn is stopping cleanly; work will resume automatically.",
+			contID, delaySec, fireAt)
+	} else {
+		msg += "\n\nCould not schedule auto-continuation — send “continue” to resume."
+	}
+
+	r.forceEndAssistant(s, msg)
+	// "complete" (not error): progress kept, UI idle, continuation will re-busy the session.
+	s.finalizeTurnProgress("complete", reason)
+	s.publish(Event{Type: "harness", Status: msg})
+	if r.Reg != nil {
+		r.Reg.logEvent(s, "harness_advisory", "system", msg, "", "", "", nil, nil, nil, nil, nil, "", "auto_continue")
+		r.Reg.syncSessionRow(s)
+	}
+}
+
+// forceEndAssistant appends a short assistant message when a turn is cut off by
+// hard wall / max iters / operator stop so the session does not die mid-tool with no reply.
+func (r *Runner) forceEndAssistant(s *Session, reason string) {
+	if s == nil || strings.TrimSpace(reason) == "" {
+		return
+	}
+	content := "⚠️ **Turn interrupted** (harness limit)\n\n" + reason +
+		"\n\nProgress so far is kept in this session."
+	if !strings.Contains(reason, "Auto-continuation") && !strings.Contains(reason, "auto-continuation") {
+		content += " Send another message (e.g. “continue”) to resume."
+	}
+	s.mu.Lock()
+	aid := s.nextID("m")
+	am := Message{
+		ID:        aid,
+		Role:      "assistant",
+		Content:   content,
+		CreatedAt: time.Now(),
+	}
+	s.appendUI(am)
+	s.history = append(s.history, model.Message{Role: "assistant", Content: model.ContentFromText(content)})
+	s.mu.Unlock()
+	if r.Reg != nil {
+		r.Reg.logEvent(s, "assistant_message", "assistant", content, "", "", "", nil, nil, nil, nil, nil, "forced_end", "")
+		r.Reg.syncSessionRow(s)
+	}
+	s.publish(Event{Type: "message", Message: &am})
 }
 
 func stopMessage(err error, s *Session) string {
@@ -502,7 +745,14 @@ func stopMessage(err error, s *Session) string {
 		}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "turn timeout (15m wall)"
+		// Duration is taken from the turn progress when available (HardWall).
+		if s != nil {
+			p := s.Progress()
+			if p.ToolRounds > 0 || p.Iter > 0 {
+				return fmt.Sprintf("turn timeout (hard wall) after iter %d tool_rounds %d — raise --hard-wall or use schedule_continuation", p.Iter, p.ToolRounds)
+			}
+		}
+		return "turn timeout (hard wall)"
 	}
 	if err != nil {
 		return err.Error()
@@ -671,14 +921,33 @@ Be dense but complete. Output markdown summary only.\n\n%s`, style, src)
 		}
 	}
 
-	block := model.Message{
-		Role:    "system",
-		Content: model.ContentFromText("[compacted history]\n" + summary),
+	// Fold compact summary into the leading system message (or a single new system).
+	// A second system message after the first used to break strict backends with:
+	// "System message must be at the beginning" when soul/advisories also inject system
+	// roles and/or when trim reordered the stream (session 0wc75qxv9y /compact).
+	compactBlock := "[compacted history]\n" + summary
+	newHist := make([]model.Message, 0, 1+len(keep))
+	if len(system) > 0 {
+		base := system[0]
+		base.Content = model.ContentFromText(strings.TrimSpace(base.Content.PlainText()) + "\n\n" + compactBlock)
+		newHist = append(newHist, base)
+		// Drop any extra leading systems from the pre-compact hist (shouldn't exist)
+	} else {
+		newHist = append(newHist, model.Message{
+			Role:    "system",
+			Content: model.ContentFromText(compactBlock),
+		})
 	}
-	newHist := make([]model.Message, 0, len(system)+1+len(keep))
-	newHist = append(newHist, system...)
-	newHist = append(newHist, block)
-	newHist = append(newHist, keep...)
+	// Never re-inject system-role messages from the keep window (orphans break APIs).
+	for _, m := range keep {
+		if m.Role == "system" {
+			m.Role = "user"
+			m.Content = model.ContentFromText("[system note]\n" + m.Content.PlainText())
+			m.ToolCalls = nil
+			m.ToolCallID = ""
+		}
+		newHist = append(newHist, m)
+	}
 
 	target.mu.Lock()
 	target.history = newHist
@@ -696,10 +965,27 @@ Be dense but complete. Output markdown summary only.\n\n%s`, style, src)
 
 func truncateTitle(s string, n int) string {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	s = strings.Join(strings.Fields(s), " ")
 	if len(s) <= n {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// shouldAutoTitleLocked reports whether this session's title may be overwritten
+// from the latest user message. Caller holds s.mu.
+func shouldAutoTitleLocked(s *Session) bool {
+	if s == nil || s.TitleCustom {
+		return false
+	}
+	if s.Kind == "system" {
+		return false
+	}
+	t := strings.TrimSpace(s.Title)
+	if strings.HasPrefix(strings.ToLower(t), "cron:") {
+		return false
+	}
+	return true
 }
 
 func compact(s string, n int) string {

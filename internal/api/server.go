@@ -1,19 +1,23 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/rendicott/marble/internal/auth"
+	"github.com/rendicott/marble/internal/clerk"
 	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/cron"
 	"github.com/rendicott/marble/internal/mcp"
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/mpub"
+	"github.com/rendicott/marble/internal/peerhub"
 	"github.com/rendicott/marble/internal/session"
 	"github.com/rendicott/marble/internal/shellpolicy"
 	"github.com/rendicott/marble/internal/tools"
@@ -34,7 +38,11 @@ type Server struct {
 	Mpub     *mpub.Store
 	Cron     *cron.Manager
 	Auth     *auth.Manager
-	Mux      *http.ServeMux
+	PeerHub  *peerhub.Hub
+	Clerk    *clerk.Manager
+	// sealedTokens maps pairing_id → device_token once (pair confirm → peer poll).
+	sealedTokens map[string]string
+	Mux          *http.ServeMux
 }
 
 // New constructs the HTTP server with routes.
@@ -60,6 +68,10 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/prompt", s.handlePrompt)
 	s.Mux.HandleFunc("/api/cron", s.handleCron)
 	s.Mux.HandleFunc("/api/cron/", s.handleCron)
+	s.Mux.HandleFunc("/api/computers", s.handleComputers)
+	s.Mux.HandleFunc("/api/computers/", s.handleComputers)
+	s.Mux.HandleFunc("/api/clerk", s.handleClerk)
+	s.Mux.HandleFunc("/api/clerk/", s.handleClerk)
 	// mpub before SPA catch-all (ADR-0009)
 	s.Mux.HandleFunc("/mpub", s.handleMpub)
 	s.Mux.HandleFunc("/mpub/", s.handleMpub)
@@ -95,6 +107,15 @@ func globalSecurityHeaders(next http.Handler) http.Handler {
 type statusWriter struct {
 	http.ResponseWriter
 	code int
+}
+
+// Hijack supports WebSocket upgrades through the logging wrapper (ADR-0020 peer WS).
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("hijack not supported")
+	}
+	return h.Hijack()
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -309,6 +330,8 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 		s.handleMessages(w, r, id)
 	case "events":
 		s.handleEvents(w, r, sess)
+	case "computer":
+		s.handleSessionComputer(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
@@ -406,38 +429,73 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request, id string) 
 func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
 		ModelID *string `json:"model_id"`
+		Title   *string `json:"title"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if body.ModelID == nil {
-		http.Error(w, "model_id required", http.StatusBadRequest)
+	if body.ModelID == nil && body.Title == nil {
+		http.Error(w, "model_id or title required", http.StatusBadRequest)
 		return
 	}
-	// UI PATCH: reject while busy (ADR-0018 Q11). Agent tool allows busy (next-turn).
-	sess, em, err := s.Registry.SetSessionModelUI(id, *body.ModelID)
-	if err != nil {
-		if session.IsBusy(err) {
-			http.Error(w, "session busy", http.StatusConflict)
-			return
-		}
-		if strings.Contains(err.Error(), "closed") {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
+
 	u := auth.UserFromContext(r.Context())
-	auth.LogAction("session_set_model", "session="+id+" model_id="+*body.ModelID, u)
+	var sess *session.Session
+	var em session.EffectiveModel
+	var err error
+
+	// Title rename (permanent pin) — allowed while busy.
+	if body.Title != nil {
+		sess, err = s.Registry.SetSessionTitle(id, *body.Title)
+		if err != nil {
+			if strings.Contains(err.Error(), "required") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		auth.LogAction("session_rename", "session="+id+" title="+*body.Title, u)
+	}
+
+	if body.ModelID != nil {
+		// UI PATCH model: reject while busy (ADR-0018 Q11).
+		sess, em, err = s.Registry.SetSessionModelUI(id, *body.ModelID)
+		if err != nil {
+			if session.IsBusy(err) {
+				http.Error(w, "session busy", http.StatusConflict)
+				return
+			}
+			if strings.Contains(err.Error(), "closed") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		auth.LogAction("session_set_model", "session="+id+" model_id="+*body.ModelID, u)
+	}
+
+	if sess == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 	sum := sess.Summary()
 	s.markCronSession(&sum)
-	sum.Model = em.Model
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"session":         sum,
-		"model_effective": em.Public(),
-	})
+	out := map[string]interface{}{"session": sum}
+	if body.ModelID != nil {
+		sum.Model = em.Model
+		out["session"] = sum
+		out["model_effective"] = em.Public()
+	} else if s.Registry != nil {
+		if eff, e2 := s.Registry.EffectiveModelFor(id); e2 == nil {
+			sum.Model = eff.Model
+			out["session"] = sum
+			out["model_effective"] = eff.Public()
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request, id string) {

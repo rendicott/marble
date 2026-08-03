@@ -145,10 +145,14 @@ func (r *Runner) processEffective() EffectiveModel {
 		ContextLimit:     r.Cfg.ContextLimit,
 		MaxOutput:        r.Cfg.MaxOutput,
 		ContextReserve:   r.Cfg.ContextReserve,
-		CapReasoning:     true,
-		CapImages:        false,
-		CapVoice:         false,
-		CapTools:         true,
+		CapReasoning: true,
+		// Process default CapImages=true so peer computer_screenshot / chat images
+		// reach the model. (Previously false: UI showed chips but model never saw
+		// pixels — agents claimed they "could not see" lock screens.) Override with
+		// a catalog entry that sets cap_images=0 if your endpoint is text-only.
+		CapImages: true,
+		CapVoice:  false,
+		CapTools:  true,
 	}
 }
 

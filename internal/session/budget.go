@@ -7,8 +7,53 @@ import (
 	"github.com/rendicott/marble/internal/token"
 )
 
+// normalizeOutboundChatMessages fixes message order for strict OpenAI-compatible
+// backends (vLLM etc.): "System message must be at the beginning."
+// - Merges all leading consecutive system messages into one
+// - Demotes any system that appears after user/assistant/tool to a user note
+func normalizeOutboundChatMessages(msgs []model.Message) []model.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	var sysParts []string
+	i := 0
+	for i < len(msgs) && msgs[i].Role == "system" {
+		t := strings.TrimSpace(msgs[i].Content.PlainText())
+		if t != "" {
+			sysParts = append(sysParts, t)
+		}
+		i++
+	}
+	rest := make([]model.Message, 0, len(msgs)-i)
+	for ; i < len(msgs); i++ {
+		m := msgs[i]
+		if m.Role == "system" {
+			// Orphan system mid-conversation — demote (never valid for strict APIs)
+			t := strings.TrimSpace(m.Content.PlainText())
+			if t == "" {
+				continue
+			}
+			m.Role = "user"
+			m.Content = model.ContentFromText("[system note]\n" + t)
+			m.ToolCalls = nil
+			m.ToolCallID = ""
+			m.Name = ""
+		}
+		rest = append(rest, m)
+	}
+	out := make([]model.Message, 0, 1+len(rest))
+	if len(sysParts) > 0 {
+		out = append(out, model.Message{
+			Role:    "system",
+			Content: model.ContentFromText(strings.Join(sysParts, "\n\n")),
+		})
+	}
+	out = append(out, rest...)
+	return out
+}
+
 // trimHistory returns a deep-enough copy of messages that fits within budget tokens.
-// Always keeps the system message (if first) and prefers the newest messages.
+// Always keeps leading system message(s) and prefers the newest messages.
 // Works on sentinel form (marble-att://), never base64 (ADR-0019).
 func trimHistory(messages []model.Message, budget int, toolSchemaEstimate int) []model.Message {
 	if budget < 512 {
@@ -25,12 +70,15 @@ func trimHistory(messages []model.Message, budget int, toolSchemaEstimate int) [
 		return msgs
 	}
 
+	// Keep all leading consecutive system messages (soul + compact + base).
 	var system []model.Message
 	rest := msgs
-	if len(msgs) > 0 && msgs[0].Role == "system" {
-		system = msgs[:1]
-		rest = msgs[1:]
+	i := 0
+	for i < len(msgs) && msgs[i].Role == "system" {
+		system = append(system, msgs[i])
+		i++
 	}
+	rest = msgs[i:]
 
 	sysCost := estimateAll(system)
 	for len(rest) > 1 && sysCost+estimateAll(rest) > available {

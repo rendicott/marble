@@ -18,19 +18,30 @@
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
+html, body {
+  height: 100%;
+  margin: 0;
+  /* Lock document scroll — only #transcript (and panels) should scroll */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 body {
   font-family: var(--sans);
   background: var(--bg);
   color: var(--text);
+  /* Avoid rubber-band blank under the app on mobile browsers */
+  position: fixed;
+  inset: 0;
+  width: 100%;
 }
 
 #app {
   display: grid;
   grid-template-columns: 260px 1fr;
   grid-template-rows: auto 1fr;
-  height: 100vh;
-  height: 100dvh;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 }
 #limp-banner {
   grid-column: 1 / -1;
@@ -318,23 +329,30 @@ a.icon-btn {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 #main-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.5rem 0.75rem;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
   background: rgba(21, 25, 34, 0.9);
+  min-width: 0;
+  max-width: 100%;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .main-head-right {
   display: flex;
   align-items: center;
   gap: 0.45rem;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
 }
 
 #session-title {
@@ -344,6 +362,7 @@ a.icon-btn {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .pill {
@@ -353,6 +372,12 @@ a.icon-btn {
   border-radius: 999px;
   border: 1px solid var(--border);
   text-transform: lowercase;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
 }
 .pill.idle { color: var(--muted); }
 .pill.running, .pill.calling_model { color: var(--warn); border-color: #6b5420; background: #2a220f; }
@@ -361,6 +386,8 @@ a.icon-btn {
 #transcript {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   padding: 1rem;
   display: flex;
   flex-direction: column;
@@ -369,12 +396,15 @@ a.icon-btn {
 }
 
 .bubble {
-  max-width: min(780px, 92%);
+  max-width: min(780px, 100%);
+  box-sizing: border-box;
   padding: 0.65rem 0.85rem;
   border-radius: 12px;
   line-height: 1.5;
   font-size: 0.92rem;
   word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .bubble.user {
   align-self: flex-end;
@@ -545,14 +575,25 @@ a.icon-btn {
 
 #composer {
   display: flex;
-  gap: 0.55rem;
+  flex-direction: column;
+  gap: 0.45rem;
   padding: 0.75rem;
   border-top: 1px solid var(--border);
   background: #12151c;
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  /* Keep composer above OS home indicator; no page scroll under it */
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
 }
 
 #input {
-  flex: 1;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   resize: none;
   border-radius: 12px;
   border: 1px solid var(--border);
@@ -577,9 +618,10 @@ a.icon-btn {
   background: linear-gradient(135deg, var(--accent), #5b7ef0);
   color: white;
   font-weight: 600;
-  padding: 0 1.1rem;
+  padding: 0.55rem 1.1rem;
   cursor: pointer;
   min-width: 84px;
+  min-height: 44px; /* comfortable thumb target */
 }
 #btn-send:disabled {
   opacity: 0.45;
@@ -599,8 +641,11 @@ a.icon-btn {
   #app {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto 1fr;
-    height: 100dvh;
-    height: 100vh;
+    height: 100%;
+    max-height: 100%;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
   }
 
   #limp-banner { grid-row: 1; grid-column: 1; }
@@ -612,10 +657,41 @@ a.icon-btn {
     border-bottom: 1px solid var(--border);
     max-height: none;
     z-index: 5;
+    max-width: 100%;
+    min-width: 0;
   }
 
   #btn-sessions {
     display: inline-flex;
+    /* Narrower session dropdown (layout.png: crowded next to brand) */
+    padding: 0.35rem 0.45rem;
+    font-size: 0.72rem;
+    max-width: 5.75rem;
+    min-width: 0;
+    overflow: hidden;
+  }
+  #btn-sessions .chevron {
+    flex-shrink: 0;
+  }
+
+  /* Logo only — drop "Marble" wordmark to free toolbar space */
+  .brand-name {
+    display: none;
+  }
+  .brand {
+    gap: 0;
+    flex-shrink: 0;
+  }
+  .sidebar-head {
+    gap: 0.35rem;
+    padding: 0.55rem 0.5rem;
+  }
+  .sidebar-actions {
+    gap: 0.28rem;
+    min-width: 0;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
   }
 
   /* Collapsed by default: only the head bar is visible */
@@ -646,11 +722,83 @@ a.icon-btn {
 
   #main {
     min-height: 0;
+    overflow: hidden;
+    max-width: 100%;
+  }
+
+  /*
+   * layout.png: wide model select forced status pill ("model · i1/200 · 21s")
+   * onto a second row. Keep title on its own line; model + status on one row.
+   */
+  #main-head {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.45rem;
+    padding: 0.5rem 0.55rem;
+  }
+  #session-title {
+    flex: 1 1 100%;
+    max-width: 100%;
+    font-size: 0.88rem;
+  }
+  .main-head-right {
+    flex: 1 1 100%;
+    flex-wrap: nowrap; /* keep iter status on same row as model */
+    justify-content: flex-start;
+    align-items: center;
+    gap: 0.3rem;
+    min-width: 0;
+  }
+  .model-picker-label {
+    display: none; /* "model" label wastes horizontal space */
+  }
+  .model-picker-wrap {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 9.5rem; /* narrower so status pill fits */
+  }
+  .model-picker {
+    max-width: 9.5rem;
+    width: auto;
+    min-width: 0;
+    font-size: 0.68rem;
+    padding: 0.2rem 0.3rem;
+  }
+  #status-pill {
+    flex: 0 0 auto;
+    max-width: none;
+    font-size: 0.68rem;
+    padding: 0.18rem 0.4rem;
+  }
+  #btn-session-info {
+    flex-shrink: 0;
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  #transcript {
+    padding: 0.75rem 0.65rem;
+    max-width: 100%;
+  }
+  .bubble {
+    max-width: 100%;
+  }
+  .turn-progress {
+    max-width: 100%;
   }
 
   #composer {
-    /* keep send usable with thumbs */
-    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Attach + Send already under the box; full-width actions on narrow screens */
+  .composer-actions {
+    width: 100%;
+  }
+  #btn-send {
+    flex: 1;
   }
 }
 
@@ -1345,19 +1493,39 @@ button.tip {
   background: rgba(94, 234, 212, 0.18);
 }
 
-/* Composer attachments (ADR-0019) */
+/* Composer: textarea full width; attach + send on the row below (no horizontal spill) */
 .composer-row {
   display: flex;
-  align-items: flex-end;
-  gap: 0.4rem;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
   width: 100%;
+  min-width: 0;
 }
-.composer-row #input { flex: 1; min-width: 0; }
+.composer-row #input {
+  width: 100%;
+  min-width: 0;
+  flex: none;
+}
+.composer-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  width: 100%;
+  min-width: 0;
+}
 .attach-btn {
   flex-shrink: 0;
   cursor: pointer;
-  margin-bottom: 0.15rem;
   user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
 }
 .attach-stage {
   display: flex;
@@ -1485,10 +1653,15 @@ button.tip {
   align-items: center;
   gap: 0.35rem;
   font-size: 0.78rem;
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: 100%;
 }
-.model-picker-label { white-space: nowrap; }
+.model-picker-label { white-space: nowrap; flex-shrink: 0; }
 .model-picker {
   max-width: 14rem;
+  min-width: 0;
+  width: 100%;
   font-size: 0.78rem;
   font-family: var(--mono, ui-monospace, monospace);
   background: var(--panel-2, #1e2330);
@@ -1496,6 +1669,7 @@ button.tip {
   border: 1px solid var(--border, #2a3142);
   border-radius: 8px;
   padding: 0.25rem 0.4rem;
+  box-sizing: border-box;
 }
 .model-picker:disabled { opacity: 0.55; }
 
@@ -1823,3 +1997,252 @@ button.tip {
 .cron-status.st-error { color: #fca5a5; border-color: #7f1d1d; }
 .err-text { color: #fca5a5; }
 .settings-banner.err { color: #fecaca; border-color: #7f1d1d; background: #2a1212; }
+
+/* Peer computer_confirm — Accept/Deny in harness (remote operators) */
+.peer-confirm-host {
+  padding: 0.5rem 0.75rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.peer-confirm-card {
+  background: #422006;
+  border: 1px solid #f59e0b;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+}
+.peer-confirm-title {
+  font-weight: 650;
+  color: var(--warn);
+  margin-bottom: 0.35rem;
+}
+.peer-confirm-prompt {
+  white-space: pre-wrap;
+  background: rgba(0,0,0,0.25);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  margin: 0.4rem 0 0.65rem;
+  font-size: 0.95rem;
+}
+.peer-confirm-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.peer-confirm-accept,
+.peer-confirm-deny {
+  flex: 1;
+  border: 0;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: #fff;
+}
+.peer-confirm-accept { background: #16a34a; }
+.peer-confirm-accept:hover { background: #15803d; }
+.peer-confirm-deny { background: #dc2626; }
+.peer-confirm-deny:hover { background: #b91c1c; }
+.peer-confirm-hint {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #d6d3d1;
+}
+
+/* ——— ADR-0023 Clerk dashboard ——— */
+.clerk-btn {
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+  justify-content: center;
+  font-size: 0.95rem;
+  margin-left: 0.15rem;
+}
+.brand .clerk-btn {
+  flex-shrink: 0;
+}
+.clerk-modal .clerk-dialog {
+  width: min(520px, 100%);
+  max-height: min(90vh, 900px);
+  display: flex;
+  flex-direction: column;
+}
+.clerk-show-closed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  margin-right: 0.25rem;
+  cursor: pointer;
+  user-select: none;
+}
+.clerk-status {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+.clerk-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.55rem 0.65rem 1rem;
+  min-height: 0;
+}
+.clerk-empty {
+  padding: 1.5rem 0.75rem;
+  text-align: center;
+}
+.clerk-row {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2, #1b2130);
+  margin-bottom: 0.55rem;
+  padding: 0.55rem 0.65rem;
+}
+.clerk-row.clerk-needs {
+  border-color: #6b5420;
+  background: linear-gradient(180deg, #1a1810 0%, #1b2130 55%);
+}
+.clerk-row.clerk-working {
+  border-color: #2a4058;
+}
+.clerk-row-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.clerk-icon {
+  font-size: 1.1rem;
+  line-height: 1.4;
+  flex-shrink: 0;
+  width: 1.4rem;
+  text-align: center;
+}
+.clerk-main {
+  flex: 1;
+  min-width: 0;
+}
+.clerk-line {
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.clerk-meta {
+  font-size: 0.72rem;
+  margin-top: 0.2rem;
+  font-family: var(--mono);
+}
+.clerk-actions {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.clerk-err {
+  font-size: 0.72rem;
+  margin-top: 0.25rem;
+}
+.clerk-open {
+  flex-shrink: 0;
+  align-self: center;
+}
+.clerk-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  align-self: center;
+}
+.clerk-row-actions .icon-btn {
+  min-width: 2.4rem;
+  font-size: 0.78rem;
+}
+.clerk-snooze {
+  opacity: 0.75;
+}
+.clerk-snooze:hover,
+.clerk-unsnooze:hover {
+  opacity: 1;
+}
+.clerk-row.clerk-snoozed,
+.clerk-row.clerk-is-snoozed {
+  opacity: 0.72;
+  border-style: dashed;
+  border-color: #3a3f4d;
+}
+.clerk-snoozed-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.3rem;
+  margin-left: 0.15rem;
+  border-radius: 999px;
+  background: #3b4558;
+  color: var(--text, #e7e9ee);
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+.clerk-snooze-menu {
+  position: fixed;
+  z-index: 10050;
+  min-width: 7.5rem;
+  background: var(--panel, #151922);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.clerk-snooze-menu-title {
+  font-size: 0.68rem;
+  padding: 0.2rem 0.45rem 0.1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.clerk-snooze-menu button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 0.4rem 0.55rem;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.clerk-snooze-menu button:hover {
+  background: var(--panel-2, #1b2130);
+}
+.clerk-snooze-menu .clerk-snooze-clear {
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  margin-top: 0.1rem;
+  border-radius: 0 0 7px 7px;
+}
+@media (max-width: 720px) {
+  .clerk-modal .clerk-dialog {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+  .clerk-modal {
+    padding: 0;
+    align-items: stretch;
+  }
+  .clerk-modal .fs-top-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.25rem;
+  }
+  .clerk-row-actions {
+    flex-direction: row;
+  }
+}

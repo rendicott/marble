@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0023 Clerk</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #1e3a5f 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #134e4a 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #5eead4, #7c9cff);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #1a3a28; color: var(--ok); border: 1px solid #2d6a4f;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 82ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--accent); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    .q {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.6rem 0.8rem; margin: 0.4rem 0; background: #141824; font-size: 0.9rem;
+    }
+    .q strong { color: var(--warn); font-family: var(--mono); font-size: 0.78rem; }
+    .q .rec { color: var(--muted); font-size: 0.84rem; margin-top: 0.2rem; }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+  </style>
+</head>
+<body data-adr="0023" data-adr-title="Clerk — Session Attention Dashboard">
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0023</span>
+      <span class="status">ACCEPTED · Q1–Q12 locked</span>
+    </div>
+    <nav class="toc">
+      <a href="#kd">Decisions</a>
+      <a href="#mock">Mock</a>
+      <a href="#questions">Locked Qs</a>
+      <a href="#prs">PRs</a>
+      <a href="0023-clerk.md">Markdown</a>
+      <a href="0022-review.html">0022</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Clerk — session attention dashboard</h1>
+      <p class="lede">
+        Accepted. Icon next to logo opens a continuous dashboard: idle summaries, needs-you vs done,
+        action items, working spinners with last-user snippets. Longest-idle attention first.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Status</b> Accepted · ready to implement</div>
+        <div class="meta"><b>Accepted</b> 2026-08-03</div>
+        <div class="meta"><b>Answers</b> 2026-08-03T08:06:16.955Z</div>
+        <div class="meta"><b>Extends</b> 0001 · 0003 · 0005 · 0008 · 0010 · 0018</div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>KD2</strong> needs_user → idle → working</span>
+        <span class="chip"><strong>KD4</strong> no system agents</span>
+        <span class="chip"><strong>KD5</strong> process model only</span>
+        <span class="chip"><strong>KD9</strong> one summarizer queue</span>
+        <span class="chip"><strong>KD12</strong> poll 3–5s</span>
+      </div>
+      <div class="callout">
+        Canonical: <a href="0023-clerk.md">0023-clerk.md</a> ·
+        answers <code>0023-answers.json</code>. Tell the agent to implement C0→C6 when ready.
+      </div>
+    </section>
+
+    <section id="kd">
+      <h2>Locked decisions</h2>
+      <table>
+        <tr><th>KD</th><th>Decision</th></tr>
+        <tr><td>1 / Q1</td><td>Clipboard/desk glyph next to logo; Clerk dashboard</td></tr>
+        <tr><td>2 / Q2</td><td>needs_user (longest idle) → idle (longest idle) → working (recently updated)</td></tr>
+        <tr><td>3 / Q3</td><td>Hide closed; Show closed toggle</td></tr>
+        <tr><td>4 / Q4</td><td>Exclude system agents v1</td></tr>
+        <tr><td>5 / Q5</td><td>Process default model only</td></tr>
+        <tr><td>6 / Q6</td><td>LLM needs_user; fallback ? / choose / option / confirm</td></tr>
+        <tr><td>7 / Q7</td><td>Summarize any busy→idle (complete/error/stop/timeout)</td></tr>
+        <tr><td>8 / Q8</td><td>~12 msgs / ~8k chars; no images</td></tr>
+        <tr><td>9 / Q9</td><td>Global one-at-a-time; coalesce; drop if busy</td></tr>
+        <tr><td>10 / Q10</td><td>Rate-limited Refresh</td></tr>
+        <tr><td>11 / Q11</td><td>Mobile sheet; desktop modal/drawer; no /clerk route</td></tr>
+        <tr><td>12 / Q12</td><td>Poll GET /api/clerk every 3–5s (SSE optional)</td></tr>
+      </table>
+    </section>
+
+    <section id="mock">
+      <h2>Mock roster (locked behavior)</h2>
+      <pre class="mock">┌ Clerk                              [Show closed] [Refresh] ✕ ┐
+│ ⚠ needs you · 12m idle · foo or bar? · [Open]                 │
+│ ○ idle · 4m · foo done · [Open]                               │
+│ ◌ working · "Build me an itinerary HTML…" · [Open]            │
+└───────────────────────────────────────────────────────────────┘</pre>
+    </section>
+
+    <section id="questions">
+      <h2>Questions (all locked)</h2>
+      <p class="muted">From <code>0023-answers.json</code> · <code>2026-08-03T08:06:16.955Z</code></p>
+
+      <div class="q" data-qid="Q1" data-status="locked"
+           data-decision="Clipboard / desk-clerk glyph in the brand row (next to logo), aria-label Clerk, title Clerk — session dashboard"
+           data-rec="Clipboard / desk-clerk glyph in the brand row (next to logo), aria-label Clerk, title Clerk — session dashboard">
+        <strong>Q1</strong> Icon / label
+        <div class="rec">Clipboard/desk glyph next to logo; Clerk</div>
+      </div>
+      <div class="q" data-qid="Q2" data-status="locked"
+           data-decision="Order: needs_user (longest idle first), then idle (longest idle first), then working (most recently updated first)."
+           data-rec="Order: needs_user (longest idle first), then idle (longest idle first), then working (most recently updated first).">
+        <strong>Q2</strong> Sort
+        <div class="rec">needs_user → idle → working</div>
+      </div>
+      <div class="q" data-qid="Q3" data-status="locked"
+           data-decision="Hide closed sessions by default; optional Show closed toggle in Clerk header."
+           data-rec="Hide closed sessions by default; optional Show closed toggle in Clerk header.">
+        <strong>Q3</strong> Closed
+        <div class="rec">Hide default; toggle</div>
+      </div>
+      <div class="q" data-qid="Q4" data-status="locked"
+           data-decision="Exclude system-agent sessions (compact · …) from Clerk entirely in v1."
+           data-rec="Exclude system-agent sessions (compact · …) from Clerk entirely in v1.">
+        <strong>Q4</strong> System agents
+        <div class="rec">Exclude v1</div>
+      </div>
+      <div class="q" data-qid="Q5" data-status="locked"
+           data-decision="Always process default model (--model / process catalog) for clerk summaries in v1; no per-session override."
+           data-rec="Always process default model (--model / process catalog) for clerk summaries in v1; no per-session override.">
+        <strong>Q5</strong> Summarizer model
+        <div class="rec">Process default only</div>
+      </div>
+      <div class="q" data-qid="Q6" data-status="locked"
+           data-decision="Primary: LLM needs_user flag. Fallback heuristics if LLM fails: last assistant ends with ?, or contains choose/option/confirm language."
+           data-rec="Primary: LLM needs_user flag. Fallback heuristics if LLM fails: last assistant ends with ?, or contains choose/option/confirm language.">
+        <strong>Q6</strong> needs_user
+        <div class="rec">LLM + heuristic fallback</div>
+      </div>
+      <div class="q" data-qid="Q7" data-status="locked"
+           data-decision="Yes — summarize after any transition to idle: complete, error, stop, timeout (so failed turns still show a status line)."
+           data-rec="Yes — summarize after any transition to idle: complete, error, stop, timeout (so failed turns still show a status line).">
+        <strong>Q7</strong> When to summarize
+        <div class="rec">Any busy→idle</div>
+      </div>
+      <div class="q" data-qid="Q8" data-status="locked"
+           data-decision="Feed last ~12 UI messages (or ~8k chars), preferring last user + last assistant + recent tool errors; skip image bytes."
+           data-rec="Feed last ~12 UI messages (or ~8k chars), preferring last user + last assistant + recent tool errors; skip image bytes.">
+        <strong>Q8</strong> Transcript size
+        <div class="rec">~12 msgs / ~8k chars</div>
+      </div>
+      <div class="q" data-qid="Q9" data-status="locked"
+           data-decision="Global queue: one summarizer call at a time; coalesce per session (latest idle wins); drop if session goes busy again."
+           data-rec="Global queue: one summarizer call at a time; coalesce per session (latest idle wins); drop if session goes busy again.">
+        <strong>Q9</strong> Concurrency
+        <div class="rec">One global; coalesce; drop if busy</div>
+      </div>
+      <div class="q" data-qid="Q10" data-status="locked"
+           data-decision="Include a Refresh control that re-summarizes visible idle sessions (rate-limited); auto path remains primary."
+           data-rec="Include a Refresh control that re-summarizes visible idle sessions (rate-limited); auto path remains primary.">
+        <strong>Q10</strong> Refresh
+        <div class="rec">Yes, rate-limited</div>
+      </div>
+      <div class="q" data-qid="Q11" data-status="locked"
+           data-decision="Mobile: full-screen sheet. Desktop: modal or right drawer (not a separate SPA route in v1)."
+           data-rec="Mobile: full-screen sheet. Desktop: modal or right drawer (not a separate SPA route in v1).">
+        <strong>Q11</strong> Panel chrome
+        <div class="rec">Sheet / modal-drawer; no route</div>
+      </div>
+      <div class="q" data-qid="Q12" data-status="locked"
+           data-decision="While Clerk open: poll GET /api/clerk every 3–5s + optional lightweight SSE clerk event if easy; poll-only is fine for v1."
+           data-rec="While Clerk open: poll GET /api/clerk every 3–5s + optional lightweight SSE clerk event if easy; poll-only is fine for v1.">
+        <strong>Q12</strong> Live updates
+        <div class="rec">Poll 3–5s; SSE optional</div>
+      </div>
+    </section>
+
+    <section id="prs">
+      <h2>Implementation plan</h2>
+      <table>
+        <tr><th>PR</th><th>Scope</th></tr>
+        <tr><td>C0</td><td>Schema <code>clerk_session_state</code> + repo</td></tr>
+        <tr><td>C1</td><td>Busy→idle hooks + last_user_snippet</td></tr>
+        <tr><td>C2</td><td>Summarizer worker (process model, queue)</td></tr>
+        <tr><td>C3</td><td><code>GET /api/clerk</code> + sorted roster</td></tr>
+        <tr><td>C4</td><td>Icon + sheet/modal UI</td></tr>
+        <tr><td>C5</td><td>Poll 3–5s + Open links</td></tr>
+        <tr><td>C6</td><td>Refresh, Show closed, polish</td></tr>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    Marble · ADR-0023 · <strong>accepted</strong> ·
+    <a href="0023-clerk.md">markdown</a> ·
+    answers <code>2026-08-03T08:06:16.955Z</code>
+  </footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>

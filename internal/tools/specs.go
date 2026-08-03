@@ -205,6 +205,93 @@ func allSpecs() []model.ToolSpec {
 					"model_id": map[string]interface{}{"type": "string", "description": "enabled catalog slug from model_list, or empty for process default"},
 				},
 			}),
+		// Desktop peer (ADR-0020)
+		spec("computer_list", "List registered desktop peers (marble-peer) and online status.",
+			map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}),
+		spec("computer_bind", "Bind this session to a computer_id for subsequent computer_* tools (empty clears).",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"computer_id": map[string]interface{}{"type": "string"},
+				},
+			}),
+		spec("computer_screenshot", "Capture the peer primary display as an image attachment. USE THIS when computer_browser_* returns CDP timeouts, bot walls, empty snapshots, or click_text not_found — then read the image and continue with computer_desktop_act (coords from the screenshot) or tell the user what is on screen. Also use for non-browser apps.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"computer_id": map[string]interface{}{"type": "string"},
+				},
+			}),
+		spec("computer_desktop_act", "OS-level click/type/key on the peer desktop (xdotool on XWayland). REQUIRED workflow for click: computer_screenshot → LOOK at image → pick x,y → action=click button=1. Clicks without a screenshot in the last 90s are rejected. After click, a post-click screenshot is attached automatically. Fallback when CDP struggles (timeout, bot wall, modal). Cannot complete OTP/SMS on a human phone.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"computer_id": map[string]interface{}{"type": "string"},
+					"action":      map[string]interface{}{"type": "string", "description": "click|type|key"},
+					"x":           map[string]interface{}{"type": "integer", "description": "Screen X from latest screenshot (pixels)"},
+					"y":           map[string]interface{}{"type": "integer", "description": "Screen Y from latest screenshot (pixels)"},
+					"text":        map[string]interface{}{"type": "string"},
+					"key":         map[string]interface{}{"type": "string"},
+					"button":      map[string]interface{}{"type": "string", "description": "1=left (default), 2=middle, 3=right. Never empty."},
+				},
+				"required": []string{"action"},
+			}),
+		spec("computer_browser_ensure", "On the peer: sync operator Chrome logins into a CDP-capable mirror profile and start/attach that browser. Chrome blocks debugging on the daily profile path — mirror keeps cookies/logins. Call first before other browser tools. force=true re-syncs and restarts the mirror window (does not kill daily Chrome).",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"computer_id": map[string]interface{}{"type": "string"},
+					"force":       map[string]interface{}{"type": "boolean", "description": "Re-sync logins from daily Chrome and restart the automation mirror browser"},
+				},
+			}),
+		spec("computer_browser_tabs", "List browser tabs on peer (CDP). Uses operator Chrome when browser_mode=user.",
+			map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"computer_id": map[string]interface{}{"type": "string"}},
+			}),
+		spec("computer_browser_open", "Open URL in peer browser (operator's logged-in Chrome when configured).",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"computer_id": map[string]interface{}{"type": "string"},
+					"url":         map[string]interface{}{"type": "string"},
+					"new_tab":     map[string]interface{}{"type": "boolean"},
+				},
+				"required": []string{"url"},
+			}),
+		spec("computer_browser_snapshot", "Page text snapshot of active tab (CDP). For Gmail: list_rows / message.body. If result has snapshot error, cdp timeout, bot_wall/akam-sw, or empty text: immediately call computer_screenshot and steer from the image (desktop click or report UI).",
+			map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"computer_id": map[string]interface{}{"type": "string"}},
+			}),
+		spec("computer_browser_act", "Browser CDP actions. Prefer for clean web UIs (Gmail open_gmail, Play Console forms). actions: open_gmail|search_gmail|click_text|open|click|type|press|eval|wait|set_input_files. wait: text=substring and/or target=CSS, x=timeout_ms (default 10000). set_input_files: text=absolute path(s) on peer (comma-sep), target=optional input[type=file] CSS — required for Play Console icon/screenshot uploads (OS file choosers cannot be driven by desktop coords reliably). click_text returns a mini post-click snapshot. CRITICAL: on cdp timeout, not_found, bot wall — STOP CDP retries; screenshot then desktop click or computer_confirm for OTP/SMS.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"computer_id": map[string]interface{}{"type": "string"},
+					"action":      map[string]interface{}{"type": "string", "description": "open_gmail|search_gmail|click_text|open|click|type|press|eval|wait|set_input_files"},
+					"target":      map[string]interface{}{"type": "string", "description": "CSS selector; URL for open; for set_input_files optional file input selector"},
+					"text":        map[string]interface{}{"type": "string", "description": "query/needle/typed text/key; for wait: substring; for set_input_files: absolute peer path(s), comma-separated"},
+					"x":           map[string]interface{}{"type": "integer", "description": "click x; for wait: timeout_ms (default 10000, max 60000)"},
+					"y":           map[string]interface{}{"type": "integer"},
+				},
+				"required": []string{"action"},
+			}),
+		spec("computer_confirm", "Ask a human to Accept/Deny a high-risk action (default DENY after 120s). Surfaces in Marble harness UI (Accept/Deny card in the session), AND on the peer (notification/tray/mini-UI). Prefer telling the user to click Accept in Marble if they are remote from the peer. Do not assume acceptance.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"computer_id": map[string]interface{}{"type": "string"},
+					"prompt":      map[string]interface{}{"type": "string", "description": "Clear description of what you want permission to do"},
+					"risk":        map[string]interface{}{"type": "string", "description": "e.g. high, money, auth"},
+				},
+				"required": []string{"prompt"},
+			}),
+		spec("computer_stop", "Cancel in-flight peer action.",
+			map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"computer_id": map[string]interface{}{"type": "string"}},
+			}),
 		spec("cron_delete", "Delete a cron job by id.",
 			map[string]interface{}{
 				"type": "object",

@@ -18,6 +18,7 @@ import (
 	"github.com/rendicott/marble/internal/api"
 	"github.com/rendicott/marble/internal/auth"
 	"github.com/rendicott/marble/internal/bgtask"
+	"github.com/rendicott/marble/internal/clerk"
 	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/continuation"
 	"github.com/rendicott/marble/internal/cron"
@@ -26,6 +27,7 @@ import (
 	"github.com/rendicott/marble/internal/memory"
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/mpub"
+	"github.com/rendicott/marble/internal/peerhub"
 	"github.com/rendicott/marble/internal/session"
 	"github.com/rendicott/marble/internal/shellpolicy"
 	"github.com/rendicott/marble/internal/tools"
@@ -140,6 +142,14 @@ func main() {
 		Agents:         agents,
 		ShellDefault:   cfg.ShellDefaultTimeout,
 		ShellMax:       cfg.ShellMaxTimeout,
+		// ADR-0022 thrash rails (explicit so 0 disables anti-repeat intentionally)
+		Thrash: tools.ThrashPolicy{
+			AntiRepeatN:     cfg.AntiRepeatN,
+			StuckEscalateK:  cfg.StuckEscalateK,
+			BlockSleepShell: cfg.BlockSleepShell,
+			EvalMutateMax:   cfg.EvalMutateMax,
+		},
+		ThrashSet: true,
 	}
 	runner := &session.Runner{
 		Cfg:    cfg,
@@ -277,6 +287,18 @@ func main() {
 		cont.CancelSession(sessionID)
 	}
 
+	// ADR-0023 Clerk — session attention dashboard
+	clerkMgr := clerk.New(sqldb, reg, func() *model.Client {
+		return runner.ClientFor(runner.ProcessPublicAsEM())
+	}, func() string {
+		return cfg.Model
+	})
+	reg.OnSessionIdle = clerkMgr.OnSessionIdle
+	reg.OnSessionBusy = clerkMgr.OnSessionBusy
+	reg.OnUserMessage = clerkMgr.OnUserMessage
+	clerkMgr.Start()
+	defer clerkMgr.Stop()
+
 	daemon := session.NewDaemon(reg, cfg.PersistEvery)
 	daemon.Start()
 
@@ -312,13 +334,47 @@ func main() {
 		log.Printf("auth: mode=open")
 	}
 
+	peerHub := peerhub.NewHub()
+	toolReg.PeerHub = peerHub
+	toolReg.ListComputers = func() ([]map[string]interface{}, error) {
+		if sqldb == nil || !sqldb.Writable() {
+			return nil, nil
+		}
+		rows, err := sqldb.ListComputers()
+		if err != nil {
+			return nil, err
+		}
+		online := peerHub.ListOnline()
+		out := make([]map[string]interface{}, 0, len(rows))
+		for _, c := range rows {
+			m := map[string]interface{}{
+				"id": c.ID, "display_name": c.DisplayName, "os": c.OS,
+				"enabled": c.Enabled, "online": false, "device_id": c.DeviceID,
+			}
+			if _, ok := online[c.ID]; ok {
+				m["online"] = true
+				m["live"] = online[c.ID]
+			}
+			out = append(out, m)
+		}
+		return out, nil
+	}
+	toolReg.GetSessionComputerID = func(sessionID string) (string, error) {
+		return reg.GetComputerID(sessionID)
+	}
+	toolReg.SetSessionComputerID = func(sessionID, computerID string) error {
+		return reg.SetComputerID(sessionID, computerID)
+	}
+
 	srv := api.New(cfg, client, reg, daemon, wsfs)
 	srv.MCP = mcpMgr
 	srv.Policy = policy
 	srv.Tools = toolReg
 	srv.Mpub = mpubStore
+	srv.PeerHub = peerHub
 	srv.Cron = cronMgr
 	srv.Auth = authMgr
+	srv.Clerk = clerkMgr
 	if authMgr != nil {
 		authMgr.RegisterRoutes(srv.Mux)
 	}

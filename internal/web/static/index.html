@@ -9,7 +9,31 @@
 <body>
   <div id="ctx-menu" role="menu" aria-hidden="true">
     <button type="button" data-action="info">Session info</button>
+    <button type="button" data-action="rename">Rename session</button>
+    <button type="button" data-action="copy-id">Copy session ID</button>
     <button type="button" data-action="close" class="danger">Close session</button>
+  </div>
+  <div id="clerk-modal" class="fs-modal clerk-modal" hidden>
+    <div class="fs-dialog clerk-dialog" id="clerk-dialog" role="dialog" aria-labelledby="clerk-title">
+      <div class="fs-top">
+        <div class="fs-title" id="clerk-title">Clerk</div>
+        <div class="fs-top-actions">
+          <label class="clerk-show-closed muted">
+            <input type="checkbox" id="clerk-show-closed" />
+            Show closed
+          </label>
+          <label class="clerk-show-closed muted" id="clerk-show-snoozed-wrap" title="Snoozed sessions stay off the main list until this is on">
+            <input type="checkbox" id="clerk-show-snoozed" />
+            Show snoozed
+            <span id="clerk-snoozed-badge" class="clerk-snoozed-badge" hidden></span>
+          </label>
+          <button type="button" id="clerk-refresh" class="icon-btn" title="Refresh idle summaries">↻</button>
+          <button type="button" id="clerk-close" class="icon-btn" title="Close">×</button>
+        </div>
+      </div>
+      <div id="clerk-status" class="clerk-status muted" hidden></div>
+      <div id="clerk-body" class="clerk-body"></div>
+    </div>
   </div>
   <div id="session-info-modal" class="fs-modal" hidden>
     <div class="fs-dialog session-info-dialog" id="session-info-dialog">
@@ -148,6 +172,7 @@
         <nav class="settings-nav" id="settings-nav">
           <button type="button" data-sec="runtime" class="sel">Runtime</button>
           <button type="button" data-sec="models">Models</button>
+          <button type="button" data-sec="computers">Computers</button>
           <button type="button" data-sec="memory">Memory &amp; DB</button>
           <button type="button" data-sec="shell">Shell</button>
           <button type="button" data-sec="agent">Agent</button>
@@ -190,8 +215,9 @@
     <aside id="sidebar">
       <div class="sidebar-head">
         <div class="brand">
-          <div class="mark"></div>
-          <span>Marble</span>
+          <div class="mark" aria-hidden="true"></div>
+          <span class="brand-name">Marble</span>
+          <button type="button" id="btn-clerk" class="icon-btn clerk-btn" title="Clerk — session dashboard" aria-label="Clerk — session dashboard">📋</button>
         </div>
         <div id="auth-bar" class="auth-bar" hidden></div>
         <div class="sidebar-actions">
@@ -214,8 +240,8 @@
         </label>
         <div id="session-list"></div>
         <div id="system-agents">
-          <button type="button" id="sys-agents-toggle" class="sys-agents-head" aria-expanded="true">
-            <span>▾ System agents</span>
+          <button type="button" id="sys-agents-toggle" class="sys-agents-head" aria-expanded="false">
+            <span>▸ System agents</span>
             <span id="sys-agents-count" class="muted">0</span>
           </button>
           <div id="system-list"></div>
@@ -258,13 +284,15 @@
         <div id="attach-stage" class="attach-stage" hidden></div>
         <p id="attach-warn" class="attach-warn muted" hidden></p>
         <div class="composer-row">
-          <label class="attach-btn icon-btn" title="Attach image or document">
-            📎
-            <input type="file" id="attach-input" hidden multiple
-              accept="image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,text/csv,application/json,text/html,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,.html,.log" />
-          </label>
           <textarea id="input" rows="2" placeholder="Message Marble… (paste images)" disabled></textarea>
-          <button id="btn-send" type="submit" disabled>Send</button>
+          <div class="composer-actions">
+            <label class="attach-btn icon-btn" title="Attach image or document">
+              📎
+              <input type="file" id="attach-input" hidden multiple
+                accept="image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,text/csv,application/json,text/html,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,.html,.log" />
+            </label>
+            <button id="btn-send" type="submit" disabled>Send</button>
+          </div>
         </div>
       </form>
     </main>
@@ -285,6 +313,7 @@
   <script src="/prompt.js"></script>
   <script src="/cron.js"></script>
   <script src="/session-info.js"></script>
+  <script src="/clerk.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

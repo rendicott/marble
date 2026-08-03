@@ -1,0 +1,104 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0022",
+  "title": "Long-Turn Efficiency — Anti-Thrash, Escalation, Tool Discipline, Checklist / DoD",
+  "updated_at": "2026-08-02T01:23:00.354Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes — anti-repeat on by default for all tool-using sessions; --anti-repeat-n=0 disables",
+      "notes": "",
+      "question": "Q1 Enable fingerprint anti-repeat by default?",
+      "rec": "Yes — anti-repeat on by default for all tool-using sessions; --anti-repeat-n=0 disables"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "N=3 consecutive identical fingerprints (simplest). Windowed 3-in-8 as optional later.",
+      "notes": "",
+      "question": "Q2 Repeat threshold: N and consecutive vs sliding window?",
+      "rec": "N=3 consecutive identical fingerprints (simplest). Windowed 3-in-8 as optional later."
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "K=3 consecutive computer_* failures (timeout, not_found, anti-repeat, requires screenshot) before escalate lock",
+      "notes": "",
+      "question": "Q3 How many consecutive computer-use failures before stuck→escalate lock?",
+      "rec": "K=3 consecutive computer_* failures (timeout, not_found, anti-repeat, requires screenshot) before escalate lock"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Hard-block further desktop click / browser click* while EscalateLock; allow confirm, snapshot, screenshot, open, shell API, different class",
+      "notes": "",
+      "question": "Q4 Escalate lock strength: hard-block same-class clicks vs advisory-only?",
+      "rec": "Hard-block further desktop click / browser click* while EscalateLock; allow confirm, snapshot, screenshot, open, shell API, different class"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Hard reject pure sleep/timeout shell commands; hint browser wait. Escape: --block-sleep-shell=false",
+      "notes": "",
+      "question": "Q5 Sleep-only shell_execute: hard reject or warn-only?",
+      "rec": "Hard reject pure sleep/timeout shell commands; hint browser wait. Escape: --block-sleep-shell=false"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Warn on eval mutations; hard error after M=5 eval-mutate in last 20 tools; suggest click_text/type/set_input_files",
+      "notes": "",
+      "question": "Q6 Raw eval used for click/type: warn-only vs hard after M?",
+      "rec": "Warn on eval mutations; hard error after M=5 eval-mutate in last 20 tools; suggest click_text/type/set_input_files"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "On by default: best-effort dismiss Chrome restore / Not now once per browser_open; meta overlays_dismissed; no loop",
+      "notes": "",
+      "question": "Q7 Peer auto-dismiss host overlays: on / off / opt-in flag only?",
+      "rec": "On by default: best-effort dismiss Chrome restore / Not now once per browser_open; meta overlays_dismissed; no loop"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "v1: convention + soft advisory to create checklist (file/memory); no new tool/schema yet. Tool later if convention fails.",
+      "notes": "",
+      "question": "Q8 Checklist: soul/convention only vs first-class task_checklist_* tool in v1?",
+      "rec": "v1: convention + soft advisory to create checklist (file/memory); no new tool/schema yet. Tool later if convention fails."
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Anti-repeat applies to all tools (shell, browser, desktop, edit). Escalate lock is computer_*-centric.",
+      "notes": "",
+      "question": "Q9 Anti-repeat scope: all tools vs computer_* only?",
+      "rec": "Anti-repeat applies to all tools (shell, browser, desktop, edit). Escalate lock is computer_*-centric."
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes v1: --anti-repeat-n, --block-sleep-shell, --stuck-escalate-k, --eval-mutate-max exposed as CLI + settings read-only",
+      "notes": "",
+      "question": "Q10 Require debug kill-switches in v1 (CLI flags + settings display)?",
+      "rec": "Yes v1: --anti-repeat-n, --block-sleep-shell, --stuck-escalate-k, --eval-mutate-max exposed as CLI + settings read-only"
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes: when toolRounds high and ≥50% of last 20 tools are computer_*, trigger compact earlier (keep checklist + last L)",
+      "notes": "",
+      "question": "Q11 Extra auto-compact on computer-heavy long turns (beyond 85%×3)?",
+      "rec": "Yes: when toolRounds high and ≥50% of last 20 tools are computer_*, trigger compact earlier (keep checklist + last L)"
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes — identical successful calls count (e.g. re-open same URL 3× is thrash). State-changing different args do not.",
+      "notes": "",
+      "question": "Q12 Should anti-repeat count successful identical calls?",
+      "rec": "Yes — identical successful calls count (e.g. re-open same URL 3× is thrash). State-changing different args do not."
+    }
+  }
+}

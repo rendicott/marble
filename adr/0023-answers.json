@@ -1,0 +1,104 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0023",
+  "title": "Clerk — Session Attention Dashboard",
+  "updated_at": "2026-08-03T08:06:16.955Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Clipboard / desk-clerk glyph in the brand row (next to logo), aria-label Clerk, title Clerk — session dashboard",
+      "notes": "",
+      "question": "Q1 Icon and label for the entry control?",
+      "rec": "Clipboard / desk-clerk glyph in the brand row (next to logo), aria-label Clerk, title Clerk — session dashboard"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Order: needs_user (longest idle first), then idle (longest idle first), then working (most recently updated first).",
+      "notes": "",
+      "question": "Q2 Sort order for the list?",
+      "rec": "Order: needs_user (longest idle first), then idle (longest idle first), then working (most recently updated first)."
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Hide closed sessions by default; optional Show closed toggle in Clerk header.",
+      "notes": "",
+      "question": "Q3 Closed sessions in Clerk?",
+      "rec": "Hide closed sessions by default; optional Show closed toggle in Clerk header."
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Exclude system-agent sessions (compact · …) from Clerk entirely in v1.",
+      "notes": "",
+      "question": "Q4 Include system-agent sessions?",
+      "rec": "Exclude system-agent sessions (compact · …) from Clerk entirely in v1."
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Always process default model (--model / process catalog) for clerk summaries in v1; no per-session override.",
+      "notes": "",
+      "question": "Q5 Which model summarizes?",
+      "rec": "Always process default model (--model / process catalog) for clerk summaries in v1; no per-session override."
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Primary: LLM needs_user flag. Fallback heuristics if LLM fails: last assistant ends with ?, or contains choose/option/confirm language.",
+      "notes": "",
+      "question": "Q6 How to detect needs_user?",
+      "rec": "Primary: LLM needs_user flag. Fallback heuristics if LLM fails: last assistant ends with ?, or contains choose/option/confirm language."
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes — summarize after any transition to idle: complete, error, stop, timeout (so failed turns still show a status line).",
+      "notes": "",
+      "question": "Q7 Summarize after error / stop / timeout as well as clean complete?",
+      "rec": "Yes — summarize after any transition to idle: complete, error, stop, timeout (so failed turns still show a status line)."
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Feed last ~12 UI messages (or ~8k chars), preferring last user + last assistant + recent tool errors; skip image bytes.",
+      "notes": "",
+      "question": "Q8 How much transcript to send the summarizer?",
+      "rec": "Feed last ~12 UI messages (or ~8k chars), preferring last user + last assistant + recent tool errors; skip image bytes."
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Global queue: one summarizer call at a time; coalesce per session (latest idle wins); drop if session goes busy again.",
+      "notes": "",
+      "question": "Q9 Concurrency / rate limit for summarizer?",
+      "rec": "Global queue: one summarizer call at a time; coalesce per session (latest idle wins); drop if session goes busy again."
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Include a Refresh control that re-summarizes visible idle sessions (rate-limited); auto path remains primary.",
+      "notes": "",
+      "question": "Q10 Manual refresh button?",
+      "rec": "Include a Refresh control that re-summarizes visible idle sessions (rate-limited); auto path remains primary."
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Mobile: full-screen sheet. Desktop: modal or right drawer (not a separate SPA route in v1).",
+      "notes": "",
+      "question": "Q11 Panel chrome: modal vs drawer vs dedicated route /clerk?",
+      "rec": "Mobile: full-screen sheet. Desktop: modal or right drawer (not a separate SPA route in v1)."
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "While Clerk open: poll GET /api/clerk every 3–5s + optional lightweight SSE clerk event if easy; poll-only is fine for v1.",
+      "notes": "",
+      "question": "Q12 Live updates while panel open: SSE vs poll?",
+      "rec": "While Clerk open: poll GET /api/clerk every 3–5s + optional lightweight SSE clerk event if easy; poll-only is fine for v1."
+    }
+  }
+}

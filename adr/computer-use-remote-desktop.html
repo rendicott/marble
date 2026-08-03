@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · Research: Remote Desktop “Hands &amp; Eyes” for Computer Use</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --danger: #f87171; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #1f3a5a 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #3b1f4a 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.94); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+      backdrop-filter: blur(10px);
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #38bdf8, #818cf8);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #2a2410; color: var(--warn); border: 1px solid #6b5420;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.82rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1080px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.08rem; margin: 0 0 0.75rem; letter-spacing: -0.01em; }
+    h3 { font-size: 0.95rem; margin: 1.1rem 0 0.4rem; color: var(--accent-2); }
+    h4 { font-size: 0.88rem; margin: 0.85rem 0 0.35rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    p { margin: 0.45rem 0; }
+    ul, ol { margin: 0.4rem 0 0.6rem; padding-left: 1.25rem; }
+    li { margin: 0.25rem 0; }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 78ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.5rem 0.55rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    tr:last-child td { border-bottom: none; }
+    code {
+      font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border);
+    }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.9rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+      line-height: 1.45;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.65rem 0; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--accent); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.85rem 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .callout.danger { border-left-color: var(--danger); }
+    .callout.ok { border-left-color: var(--ok); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem; min-width: 9rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    .grid2 {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem;
+    }
+    @media (max-width: 720px) {
+      .grid2 { grid-template-columns: 1fr; }
+      main { padding: 1rem; }
+    }
+    .card {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 12px; padding: 0.85rem 1rem;
+    }
+    .card h3 { margin-top: 0; }
+    .score {
+      display: inline-block; font-family: var(--mono); font-size: 0.75rem;
+      padding: 0.1rem 0.4rem; border-radius: 6px; border: 1px solid var(--border);
+    }
+    .score.hi { color: var(--ok); border-color: #2d6a4f; background: #13251c; }
+    .score.mid { color: var(--warn); border-color: #6b5420; background: #2a220f; }
+    .score.lo { color: var(--danger); border-color: #7f1d1d; background: #2a1515; }
+    footer {
+      text-align: center; color: var(--muted); font-size: 0.8rem;
+      padding: 1rem 1.5rem 2rem;
+    }
+    .src { font-size: 0.82rem; }
+    .src li { margin: 0.35rem 0; }
+    .arch {
+      font-family: var(--mono); font-size: 0.7rem; line-height: 1.35;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 1rem; overflow-x: auto; color: #b8c4d8; white-space: pre;
+    }
+    .pill {
+      display: inline-block; font-size: 0.72rem; font-family: var(--mono);
+      padding: 0.15rem 0.45rem; border-radius: 999px; margin-right: 0.25rem;
+      border: 1px solid var(--border); color: var(--muted);
+    }
+    .pill.b { color: var(--accent-2); border-color: #2a5a52; }
+    .pill.p { color: var(--accent); border-color: #3a4a7a; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <span>Marble · Research</span>
+      <span class="status">draft · not an ADR</span>
+    </div>
+    <nav class="toc">
+      <a href="#goal">Goal</a>
+      <a href="#modes">Modes</a>
+      <a href="#market">Market</a>
+      <a href="#oss">Open source</a>
+      <a href="#build">Build</a>
+      <a href="#marble">Marble integration</a>
+      <a href="#recommend">Recommend</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#sources">Sources</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Remote desktop “hands &amp; eyes” for computer use</h1>
+      <p class="lede">
+        Research note on giving the Marble harness remote control of a <strong>user’s real personal computer browser</strong>
+        (and optionally the whole desktop) so the agent inherits existing logins, payment methods, and 2FA surface —
+        without Marble implementing on-behalf-of (OBO) OAuth, vaulted cards, or per-site scrapers.
+        Covers commercial products, open-source agents, build-vs-buy for Windows / Linux / macOS, and a concrete
+        registration + tool design for Marble.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Date</b>2026-07-26</div>
+        <div class="meta"><b>Audience</b>Marble operators / design</div>
+        <div class="meta"><b>Scope</b>Browser + desktop agents</div>
+        <div class="meta"><b>Fit</b>Plane tickets, dinner, taxes… with <em>user’s</em> auth</div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>key insight</strong> cloud Operator ≠ user cookies</span>
+        <span class="chip"><strong>best auth inherit</strong> CDP / real profile on user machine</span>
+        <span class="chip"><strong>Marble path</strong> local peer agent + tools</span>
+      </div>
+    </section>
+
+    <section id="goal">
+      <h2>1. Goal fit (what you actually want)</h2>
+      <p>
+        The desired product is <strong>not</strong> “Marble opens a clean cloud browser and logs in as the user.”
+        It is: <strong>Marble has remote hands and eyes on a machine the user already uses</strong>, so:
+      </p>
+      <ul>
+        <li>Amazon / airline / DoorDash / IRS / bank sites already show the user as signed-in.</li>
+        <li>Saved cards, Apple Pay / browser autofill, and device trust signals stay on the user’s machine.</li>
+        <li>2FA and CAPTCHAs can often complete where the user’s browser is already trusted (or the user taps once on the same machine).</li>
+        <li>Marble itself never stores passwords, session cookies, or PANs if designed correctly.</li>
+      </ul>
+
+      <div class="callout warn">
+        <strong>Hard product truth:</strong> most “Computer Use” demos (OpenAI Operator / CUA cloud browser, Browserbase sandboxes,
+        Anthropic’s Docker desktop demo) run in an <em>isolated</em> environment. They are great for general browsing and demos,
+        but they <em>do not</em> inherit a personal Chrome profile unless you deliberately attach to one.
+        For “order dinner with my saved card,” isolation is the wrong default.
+      </div>
+
+      <h3>Threat model (must design for this from day one)</h3>
+      <ul>
+        <li><strong>Prompt injection</strong> — a page can contain text that tricks the agent into “click Buy” or “export cookies.” Anthropic’s own computer-use docs call this out explicitly.</li>
+        <li><strong>Money movement</strong> — tickets, taxes, dinner are high-impact; need confirmations, allowlists, kill switch.</li>
+        <li><strong>Remote access malware pattern</strong> — Tailscale + RDP is also a known attacker pattern; user-facing pairing must be deliberate (not a hard-coded auth key).</li>
+        <li><strong>Site ToS / bot detection</strong> — pure pixel clicking looks human; CDP automation can look like automation. Both have tradeoffs.</li>
+      </ul>
+    </section>
+
+    <section id="modes">
+      <h2>2. Three architectural modes</h2>
+      <p class="muted">Pick the mode first; product choice follows.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Mode</th>
+            <th>Eyes</th>
+            <th>Hands</th>
+            <th>Inherits user auth?</th>
+            <th>Best for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>A. Browser-native (CDP / extension)</strong></td>
+            <td>DOM + accessibility tree + optional screenshot</td>
+            <td>Click/type via Playwright/Puppeteer/CDP</td>
+            <td><span class="score hi">Yes</span> if attached to real profile / live browser</td>
+            <td>Web tasks (tickets, food, taxes portals)</td>
+          </tr>
+          <tr>
+            <td><strong>B. Full desktop GUI</strong></td>
+            <td>Screenshot (vision)</td>
+            <td>OS mouse/keyboard (xdotool, nut.js, robotgo, AX/UI Automation)</td>
+            <td><span class="score hi">Yes</span> — whatever the user is logged into on that desktop</td>
+            <td>Native apps + browser; hard UIs; “anything a human can click”</td>
+          </tr>
+          <tr>
+            <td><strong>C. Cloud / VM browser</strong></td>
+            <td>Screenshot or DOM in remote Chrome</td>
+            <td>Same, but remote</td>
+            <td><span class="score lo">No</span> unless you sync profiles (painful / risky)</td>
+            <td>Scraping, demos, multi-tenant SaaS agents</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout ok">
+        <strong>Marble target for personal computer use:</strong> primarily <strong>Mode A on the user’s machine</strong>
+        (attach to their Chrome/Edge with existing cookies), with optional <strong>Mode B</strong> for OS dialogs,
+        wallet extensions, desktop 2FA prompts, or non-browser apps. Mode C is a fallback when the user will not install a peer.
+      </div>
+
+      <h3>How Mode A actually inherits auth</h3>
+      <ol>
+        <li>User’s Chrome/Edge is started (or already running) with <strong>remote debugging / CDP</strong> enabled, or</li>
+        <li>Playwright / agent-browser <code>connect_over_cdp</code> attaches to <code>http://127.0.0.1:9222</code>, or</li>
+        <li>Playwright MCP browser extension attaches to a selected profile / live tabs.</li>
+      </ol>
+      <p>
+        With raw CDP attach, the agent sees the <em>default browser context</em> — cookies, localStorage, extensions,
+        and logged-in sessions. Isolated Playwright contexts deliberately <em>do not</em>.
+      </p>
+      <div class="callout warn">
+        Chrome has been tightening CDP attach to the <em>default user data dir</em> in some builds (community reports of
+        “Google nuked our Playwright tool”). Practical workaround: dedicated debug profile that is a <em>copy</em> or
+        secondary profile the user keeps logged in, or extension-based attach. Design for this fragility.
+      </div>
+
+      <h3>Topology for “remote hands”</h3>
+      <pre class="arch">┌──────────────────────────┐         encrypted mesh          ┌────────────────────────────┐
+│  Marble harness (VPS /   │◄────── Tailscale / wire ───────►│  User PC (Win / Mac / Linux)│
+│  laptop / home server)   │         (or SSH reverse)        │  ┌──────────────────────┐  │
+│                          │                                 │  │ marble-peer agent     │  │
+│  session loop + tools    │  tool calls: screenshot, click  │  │  - CDP → Chrome/Edge  │  │
+│  computer_use_*          │  type, navigate, confirm…       │  │  - optional OS control │  │
+│                          │◄──────── HTTP/WS JSON ─────────►│  │  - HITL overlay        │  │
+└──────────────────────────┘                                 │  └──────────────────────┘  │
+                                                             │         ▲                  │
+                                                             │         │ CDP 9222         │
+                                                             │  ┌──────┴───────────────┐  │
+                                                             │  │ User browser profile │  │
+                                                             │  │ (real cookies/cards) │  │
+                                                             │  └──────────────────────┘  │
+                                                             └────────────────────────────┘</pre>
+    </section>
+
+    <section id="market">
+      <h2>3. Commercial &amp; frontier “computer use” landscape</h2>
+
+      <h3>3.1 Anthropic — Computer Use (API + Docker reference)</h3>
+      <ul>
+        <li><strong>What it is:</strong> Claude models trained to emit screenshot-based actions (move mouse, click, type, scroll). API tool family <code>computer_*</code>.</li>
+        <li><strong>Reference:</strong> open Docker demo (Ubuntu + XFCE + Firefox + VNC + Streamlit agent loop) using <code>xdotool</code> for input.</li>
+        <li><strong>Auth inherit:</strong> <span class="score mid">partial</span> — only what is inside the container/VM profile, not the user’s daily browser unless you build that.</li>
+        <li><strong>Marble fit:</strong> reuse the <em>action schema + loop</em> ideas; do not depend on Anthropic hosting the user’s desktop. Any vision-capable model Marble already catalogs can drive similar tools if you implement the executor locally.</li>
+      </ul>
+
+      <h3>3.2 OpenAI — CUA / Operator → ChatGPT Agent; Responses “computer use”</h3>
+      <ul>
+        <li><strong>Operator (2025)</strong> ran CUA against a <em>remote virtual browser</em> hosted by OpenAI — excellent for “do something on the web,” poor for “my Amazon account.”</li>
+        <li>Folded into broader <strong>ChatGPT Agent</strong> (visual browser + text browser + terminal) mid-2025; standalone Operator deprecated.</li>
+        <li><strong>API (2026 docs):</strong> computer-use tool patterns in Responses API; guidance still assumes isolated browser/VM + human-in-the-loop for high-impact actions.</li>
+        <li><strong>Codex Background Computer Use (2026):</strong> desktop-native background sessions (macOS-first narrative in industry writeups) — interesting, but product-locked and not a Marble-owned peer.</li>
+        <li><strong>Marble fit:</strong> optional <em>cloud Mode C</em> if you later want hosted browsing; wrong primary for personal auth inheritance.</li>
+      </ul>
+
+      <h3>3.3 Google Gemini computer use</h3>
+      <ul>
+        <li>Industry 2026 comparisons place Gemini in a <strong>browser-anchored automation</strong> bet (vs Anthropic portable tools vs OpenAI desktop sessions).</li>
+        <li>Same inheritance caveat: unless automation runs on the user’s machine with their profile, tax/dinner logins are re-auth hell.</li>
+      </ul>
+
+      <h3>3.4 Browser infrastructure SaaS (Mode C)</h3>
+      <table>
+        <thead>
+          <tr><th>Product</th><th>Role</th><th>Auth inherit personal PC?</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Browserbase</strong></td>
+            <td>Managed cloud Chrome + Stagehand / Director; CUA integrations</td>
+            <td><span class="score lo">No</span></td>
+            <td>Great agent infra; profiles are <em>their</em> cloud profiles, not the user’s laptop cookies</td>
+          </tr>
+          <tr>
+            <td><strong>Kernel</strong></td>
+            <td>Headful cloud browsers, long warm sessions, replays</td>
+            <td><span class="score lo">No</span></td>
+            <td>Strong for durable remote sessions; not personal desktop</td>
+          </tr>
+          <tr>
+            <td><strong>Steel / Browserless / etc.</strong></td>
+            <td>Self-host or managed CDP endpoints</td>
+            <td><span class="score lo">No</span> (unless self-host on user LAN with user profile — unusual)</td>
+            <td>Useful if Marble self-hosts a family browser VM</td>
+          </tr>
+          <tr>
+            <td><strong>Browser Use Cloud</strong></td>
+            <td>Hosted web agents + open-source harness</td>
+            <td><span class="score lo">No</span> by default</td>
+            <td>OSS library can run against local Chrome (see OSS)</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>3.5 Local / “permissioned desktop” commercial agents</h3>
+      <ul>
+        <li><strong>Lapu-style desktop agents:</strong> run on-device with OS accessibility APIs (AX on macOS, UI Automation on Windows); files and browser stay local. Closest commercial mental model to “hands on my PC,” but closed product — hard to embed as Marble tools without official APIs.</li>
+        <li><strong>Bytebot-class “agent computer”:</strong> dedicated remote worker machine (VM/desktop the agent owns). Solves isolation and watchability; still not “my personal browser” unless that box is where the user lives.</li>
+      </ul>
+    </section>
+
+    <section id="oss">
+      <h2>4. Open-source agents &amp; building blocks (integrate-friendly)</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Layer</th>
+            <th>Platforms</th>
+            <th>Auth inherit</th>
+            <th>License / notes</th>
+            <th>Marble integration style</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Browser Use</strong></td>
+            <td>Browser agent loop (DOM + vision) over Playwright</td>
+            <td>Cross-platform</td>
+            <td><span class="score hi">Yes</span> if pointed at user Chrome / CDP</td>
+            <td>MIT; very active</td>
+            <td>Wrap as peer subprocess or port loop ideas; tool surface thinner than full GUI</td>
+          </tr>
+          <tr>
+            <td><strong>agent-browser</strong> (Vercel labs / Rust CLI)</td>
+            <td>AI-first browser CLI; CDP daemon; profiles/sessions</td>
+            <td>Cross-platform</td>
+            <td><span class="score hi">Yes</span> with <code>--cdp</code></td>
+            <td>Compact text for LLM context</td>
+            <td>Excellent <em>executor</em> behind Marble tools (<code>browser_nav</code>, <code>browser_click</code>)</td>
+          </tr>
+          <tr>
+            <td><strong>Playwright + MCP</strong></td>
+            <td>Official browser automation; MCP server for agents</td>
+            <td>Win / Mac / Linux</td>
+            <td><span class="score mid">Yes</span> via extension / CDP attach; default is isolated</td>
+            <td>Microsoft; mature</td>
+            <td>Already fits Marble’s MCP path (<code>mcp.json</code>) for local-only; remote needs peer</td>
+          </tr>
+          <tr>
+            <td><strong>Anthropic computer-use-demo</strong></td>
+            <td>Full desktop loop + tool defs</td>
+            <td>Linux container (reference)</td>
+            <td><span class="score lo">Container only</span></td>
+            <td>Apache-2.0 (quickstarts)</td>
+            <td>Copy tool schemas + safety patterns; reimplement executor on peer</td>
+          </tr>
+          <tr>
+            <td><strong>Open Interpreter</strong></td>
+            <td>Code + OS control + optional browser</td>
+            <td>Cross-platform</td>
+            <td><span class="score mid">Yes</span> if OS mode on user machine</td>
+            <td>AGPL-3.0 — license friction for embedding</td>
+            <td>Possible external process; AGPL may push toward clean-room tools</td>
+          </tr>
+          <tr>
+            <td><strong>Skyvern</strong></td>
+            <td>Vision + workflow web automation</td>
+            <td>Server-oriented</td>
+            <td><span class="score lo">Usually isolated</span></td>
+            <td>AGPL-3.0</td>
+            <td>Better for form-heavy sites in dedicated env than personal auth</td>
+          </tr>
+          <tr>
+            <td><strong>OpenAdapt</strong></td>
+            <td>Record / replay desktop; screenshot</td>
+            <td>Cross-platform</td>
+            <td><span class="score hi">Yes</span> on user desktop</td>
+            <td>MIT</td>
+            <td>Research-grade; less polished agent loop</td>
+          </tr>
+          <tr>
+            <td><strong>robotgo</strong> (Go)</td>
+            <td>Native mouse/keyboard/screenshot</td>
+            <td>Win / Mac / Linux</td>
+            <td>N/A (primitive)</td>
+            <td>Apache-2.0-ish ecosystem</td>
+            <td><strong>Ideal for a Go marble-peer</strong> (same language as harness)</td>
+          </tr>
+          <tr>
+            <td><strong>nut.js</strong> (Node)</td>
+            <td>Desktop automation toolkit</td>
+            <td>Win / Mac / Linux</td>
+            <td>N/A (primitive)</td>
+            <td>Commercial-friendly core</td>
+            <td>If peer is Node; solid production track record</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <strong>Integration preference for Marble:</strong> do not embed a 50k-star Python agent into the harness process.
+        Prefer a <strong>thin peer binary</strong> that speaks a small JSON protocol, optionally shelling out to
+        Playwright / agent-browser / robotgo under the hood. Marble already patterns this with
+        <code>call_agent_process</code> and MCP stdio servers.
+      </div>
+    </section>
+
+    <section id="build">
+      <h2>5. Build your own peer agent (Win / Linux / Mac)</h2>
+
+      <h3>5.1 Recommended split: two capability layers</h3>
+      <div class="grid2">
+        <div class="card">
+          <h3>Layer 1 — Browser (primary)</h3>
+          <ul>
+            <li>CDP attach to user’s Chromium browser</li>
+            <li>Tools: navigate, snapshot (a11y tree), click role/text, type, wait, tabs, screenshot</li>
+            <li>Optional: export-free cookie <em>use in place</em> (never upload cookies to Marble server)</li>
+          </ul>
+          <p class="muted">Covers ~90% of ticket / dinner / tax-portal tasks.</p>
+        </div>
+        <div class="card">
+          <h3>Layer 2 — OS desktop (secondary)</h3>
+          <ul>
+            <li>Screenshot + click coordinates + keystrokes</li>
+            <li>macOS: Accessibility permissions; Windows: UI Automation optional; Linux: X11/Wayland caveats</li>
+            <li>Use when CDP cannot touch OS dialogs, WebAuthn prompts, or native apps</li>
+          </ul>
+          <p class="muted">Higher risk; gate with confirmations.</p>
+        </div>
+      </div>
+
+      <h3>5.2 Platform notes</h3>
+      <table>
+        <thead>
+          <tr><th>OS</th><th>Browser path</th><th>Desktop path</th><th>Hard parts</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Windows</strong></td>
+            <td>Edge/Chrome <code>--remote-debugging-port=9222</code> or extension attach; Playwright</td>
+            <td>robotgo / nut.js; optional UI Automation</td>
+            <td>UAC prompts; Secure Desktop (cred UI); per-monitor DPI for coordinate click</td>
+          </tr>
+          <tr>
+            <td><strong>macOS</strong></td>
+            <td>Same CDP story; Chrome preferred over Safari (Safari WebDriver is different)</td>
+            <td>AXUIElement / nut.js; Screen Recording + Accessibility TCC prompts</td>
+            <td>Permission dialogs on first run; notarization if distributed as app; multiple spaces</td>
+          </tr>
+          <tr>
+            <td><strong>Linux</strong></td>
+            <td>Chrome/Chromium CDP; Firefox via Marionette (more friction)</td>
+            <td>xdotool + scrot on X11; Wayland is harder (portal APIs, fewer click injectors)</td>
+            <td>Wayland input injection; headless servers without a real seat</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>5.3 Effort estimate (order of magnitude)</h3>
+      <table>
+        <thead>
+          <tr><th>Milestone</th><th>Scope</th><th>Rough effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>M0 — MCP local only</strong></td>
+            <td>Document Playwright MCP + CDP attach on same machine as Marble</td>
+            <td>1–3 days operator docs + config (no new code if MCP already works)</td>
+          </tr>
+          <tr>
+            <td><strong>M1 — marble-peer browser</strong></td>
+            <td>Go binary: register, heartbeat, CDP tools, screenshot JPEG, Tailscale-friendly bind</td>
+            <td>2–4 engineer-weeks for solid v1 + tests</td>
+          </tr>
+          <tr>
+            <td><strong>M2 — HITL + safety</strong></td>
+            <td>Confirm high-risk actions, allowlisted domains, pause/kill, audit log</td>
+            <td>+1–2 weeks</td>
+          </tr>
+          <tr>
+            <td><strong>M3 — OS control</strong></td>
+            <td>robotgo screenshot/click/type; permission UX per OS</td>
+            <td>+2–4 weeks (esp. macOS packaging)</td>
+          </tr>
+          <tr>
+            <td><strong>M4 — polish</strong></td>
+            <td>Auto-start Chrome debug profile, tray app, Windows installer, signed Mac app</td>
+            <td>+3–6 weeks productization</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>5.4 Why Go fits Marble</h3>
+      <ul>
+        <li>Same module / release pipeline as <code>marble-harness</code>.</li>
+        <li><code>robotgo</code> for OS layer; chromedp or exec to Playwright for browser layer.</li>
+        <li>Single static-ish binary per GOOS/GOARCH in the existing GitHub Actions release matrix.</li>
+      </ul>
+    </section>
+
+    <section id="marble">
+      <h2>6. Integrating registration &amp; tools with Marble</h2>
+      <p>
+        Goal: the agent in a Marble chat can say “open DoorDash and reorder last night’s meal” and tools route to the
+        user’s peer, not a cloud browser. Keep secrets on the peer; Marble only sees screenshots and structured tool results.
+      </p>
+
+      <h3>6.1 Concepts</h3>
+      <table>
+        <thead>
+          <tr><th>Concept</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>computer</code> / peer</td><td>A registered endpoint (user laptop) with capabilities: <code>browser</code>, <code>desktop</code>, <code>confirm</code></td></tr>
+          <tr><td>Registration token</td>
+            <td>One-time code from Marble Settings → Computers; peer redeems over Tailscale/HTTPS</td></tr>
+          <tr><td>Binding</td>
+            <td>Session or global default: which peer this chat may drive</td></tr>
+          <tr><td>Capability filter</td>
+            <td>Like <code>cap_images</code>: only expose computer tools when a peer is online</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.2 Registration UX (operator)</h3>
+      <ol>
+        <li>Settings → <strong>Computers</strong> → <strong>Add computer</strong> → generates 60s pairing code + install link.</li>
+        <li>User installs <code>marble-peer</code> on Win/Mac/Linux; pastes code (or opens deep link).</li>
+        <li>Peer stores long-lived device credential in OS keychain / DPAPI / libsecret — <strong>not</strong> in chat.</li>
+        <li>Peer opens (or attaches) browser debug channel; reports capabilities + hostname.</li>
+        <li>Marble UI shows green “Home-PC · browser online · desktop optional.”</li>
+      </ol>
+
+      <h3>6.3 Network options</h3>
+      <div class="grid2">
+        <div class="card">
+          <h3>Preferred: Tailscale (or similar mesh)</h3>
+          <p>Marble and peer already on same tailnet. Peer listens on <code>100.x:port</code>. No public ports.</p>
+          <p class="muted">Matches how many operators already reach Marble today.</p>
+        </div>
+        <div class="card">
+          <h3>Fallback: reverse tunnel</h3>
+          <p>Peer dials out to harness WebSocket; harness never inbound-connects to home NAT.</p>
+          <p class="muted">Better for non-technical users without Tailscale.</p>
+        </div>
+      </div>
+
+      <h3>6.4 Tool surface (proposed)</h3>
+      <p>Expose a small, model-friendly set — either native tools or an MCP server shipped with the peer:</p>
+      <pre class="mock">computer_list            → [{id, name, os, caps, online, last_seen}]
+computer_bind            → {computer_id} | clear   # session default
+computer_screenshot      → image attachment (multimodal) + meta {w,h}
+computer_browser_tabs    → [{id, title, url}]
+computer_browser_open    → {url} | new_tab
+computer_browser_snapshot→ a11y / simplified DOM (text; cheap for LLM)
+computer_browser_act     → {action: click|type|press|scroll|select, target, text?}
+computer_desktop_act     → {action: click|type|key|move, x?, y?, text?}  # gated
+computer_confirm         → {prompt, risk: low|money|auth} → waits for user UI on peer
+computer_stop            → cancel in-flight peer actions</pre>
+
+      <p>
+        Multimodal already exists in Marble (ADR-0019): <code>computer_screenshot</code> can return a durable
+        <code>marble-att://</code> image into the session for vision models with <code>cap_images</code>.
+      </p>
+
+      <h3>6.5 Agent loop patterns</h3>
+      <ul>
+        <li><strong>DOM-first:</strong> prefer <code>browser_snapshot</code> + role-based click (Browser Use / Playwright style) — more reliable than pixels.</li>
+        <li><strong>Vision fallback:</strong> when snapshot fails (canvas, weird widgets), screenshot → model coordinates → desktop or CDP click.</li>
+        <li><strong>Money gate:</strong> before any navigation matching <code>/checkout|payment|submit|place.?order/i</code> or peer-detected payment form, force <code>computer_confirm</code>.</li>
+      </ul>
+
+      <h3>6.6 Relation to existing Marble pieces</h3>
+      <table>
+        <thead>
+          <tr><th>Existing</th><th>Reuse</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>MCP (<code>mcp.json</code>)</td><td>Ship <code>marble-peer</code> as stdio MCP <em>when peer is local</em>; remote needs HTTP/WS bridge</td></tr>
+          <tr><td><code>call_agent_process</code></td><td>Bad fit for interactive multi-step browser (timeouts); keep for coding agents</td></tr>
+          <tr><td>Model catalog / <code>cap_images</code></td><td>Vision models for screenshot steps; strip if no images</td></tr>
+          <tr><td>Cron</td><td>Optional: scheduled “check flight prices” on a bound peer — careful with unattended spend</td></tr>
+          <tr><td>OAuth multi-user</td><td>Only allowlisted admins may bind peers; peer is a high privilege surface</td></tr>
+          <tr><td>Attachments</td><td>Store screenshots as session attachments for audit</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.7 Security controls (non-negotiable)</h3>
+      <ul>
+        <li><strong>Domain allowlist / denylist</strong> per peer (e.g. allow <code>*.doordash.com</code>, deny <code>*/admin</code> banking transfer paths until confirmed).</li>
+        <li><strong>Human-in-the-loop</strong> for purchase, wire, tax file, password change.</li>
+        <li><strong>No cookie export tools</strong> — agent acts <em>in</em> the browser; never <code>GET /cookies</code> into model context.</li>
+        <li><strong>Session recording opt-in</strong> for dispute resolution; default off for privacy.</li>
+        <li><strong>Kill switch</strong> on peer tray icon + Marble Stop turn cancels peer actions.</li>
+        <li><strong>Rate limits</strong> on actions/min to slow runaway loops.</li>
+      </ul>
+
+      <div class="callout danger">
+        <strong>Do not</strong> implement “export passwords from Chrome and send to model.” That collapses the entire
+        value proposition into a credential theft product. Act in place; confirm for money; log actions, not secrets.
+      </div>
+
+      <h3>6.8 Minimal schema sketch (SQLite, future ADR)</h3>
+      <pre class="mock">computers (
+  id TEXT PRIMARY KEY,          -- slug
+  display_name TEXT,
+  device_pubkey TEXT,           -- peer auth
+  os TEXT,                      -- windows|darwin|linux
+  caps_json TEXT,               -- {browser,desktop,confirm}
+  last_seen_at INTEGER,
+  endpoints_json TEXT,          -- tailscale ip / ws path (no secrets)
+  policy_json TEXT,             -- domain allow, require_confirm_money
+  enabled INTEGER
+)
+session_computers (
+  session_id TEXT,
+  computer_id TEXT,             -- bound peer for this chat
+  PRIMARY KEY (session_id)
+)</pre>
+    </section>
+
+    <section id="recommend">
+      <h2>7. Recommendations for Marble</h2>
+
+      <h3>Do this</h3>
+      <ol>
+        <li><strong>Product position:</strong> “Marble drives <em>your</em> browser on <em>your</em> PC” — not another Operator clone.</li>
+        <li><strong>Near-term (days):</strong> document CDP + Playwright MCP on the same host as Marble for power users (proof of value without peer).</li>
+        <li><strong>v1 (weeks):</strong> <code>marble-peer</code> browser-only over Tailscale reverse/WS; tools listed above; HITL for money; screenshot → multimodal.</li>
+        <li><strong>v1.5:</strong> optional OS desktop layer via robotgo for dialogs only.</li>
+        <li><strong>Defer:</strong> cloud Browserbase as primary; OBO OAuth to airlines; storing cards in Marble.</li>
+      </ol>
+
+      <h3>Buy / wrap vs build matrix</h3>
+      <table>
+        <thead>
+          <tr><th>Need</th><th>Wrap / use</th><th>Build</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Reliable click/type in Chrome with logins</td>
+            <td>Playwright CDP or agent-browser</td>
+            <td>Thin RPC + policy + registration only</td>
+          </tr>
+          <tr>
+            <td>Vision click on arbitrary UI</td>
+            <td>Anthropic/OpenAI computer-use <em>schemas</em> + any vision model</td>
+            <td>Executor on peer (robotgo / xdotool)</td>
+          </tr>
+          <tr>
+            <td>Multi-tenant SaaS “agent browser”</td>
+            <td>Browserbase / Kernel</td>
+            <td>Don’t — wrong for personal auth story</td>
+          </tr>
+          <tr>
+            <td>End-user install experience</td>
+            <td>—</td>
+            <td>Tray app, pairing code, signed installers</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>What not to promise</h3>
+      <ul>
+        <li>100% unattended tax filing without human confirm.</li>
+        <li>Bypassing bank step-up auth or WebAuthn without user presence.</li>
+        <li>That cloud CUA will “just use my Chrome passwords.”</li>
+      </ul>
+    </section>
+
+    <section id="roadmap">
+      <h2>8. Suggested phased roadmap (Marble-shaped)</h2>
+      <ol>
+        <li><strong>ADR draft</strong> — “Remote computer peer / computer use tools” (pair with this research).</li>
+        <li><strong>Spike:</strong> Playwright MCP + real Chrome profile on one machine; manual tool calls from chat.</li>
+        <li><strong>Protocol:</strong> peer WebSocket API + device auth; <code>computer_list</code> / <code>screenshot</code> / <code>browser_act</code>.</li>
+        <li><strong>UI:</strong> Settings → Computers; session bind chip; confirm modal on peer.</li>
+        <li><strong>Safety:</strong> domain policy, money confirm, audit events in SQLite.</li>
+        <li><strong>Desktop layer</strong> (optional) after browser path is trusted.</li>
+        <li><strong>Release artifacts:</strong> <code>marble-peer-windows-amd64</code>, <code>darwin-arm64</code>, <code>linux-amd64</code> next to harness binaries.</li>
+      </ol>
+
+      <div class="callout ok">
+        <strong>Success metric for personal use:</strong> user says “reorder my usual Thai place” → peer opens already-logged-in
+        site → user taps Confirm on peer for payment → done — with zero new passwords entered into Marble.
+      </div>
+    </section>
+
+    <section id="sources">
+      <h2>9. Sources &amp; further reading</h2>
+      <ul class="src">
+        <li>Anthropic — <a href="https://www.anthropic.com/news/3-5-models-and-computer-use" target="_blank" rel="noopener">Computer use announcement</a>;
+          <a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool" target="_blank" rel="noopener">Computer use tool docs</a>;
+          <a href="https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo" target="_blank" rel="noopener">computer-use-demo</a></li>
+        <li>OpenAI — <a href="https://openai.com/index/computer-using-agent/" target="_blank" rel="noopener">Computer-Using Agent</a>;
+          <a href="https://developers.openai.com/api/docs/guides/tools-computer-use" target="_blank" rel="noopener">Computer use API guide</a></li>
+        <li>WorkOS — <a href="https://workos.com/blog/anthropics-computer-use-versus-openais-computer-using-agent-cua" target="_blank" rel="noopener">Anthropic vs OpenAI CUA</a></li>
+        <li>Industry 2026 matrix — <a href="https://www.digitalapplied.com/blog/computer-use-agents-2026-claude-openai-gemini-matrix" target="_blank" rel="noopener">Claude vs OpenAI vs Gemini bets</a></li>
+        <li>Playwright — <a href="https://playwright.dev/python/docs/api/class-browsertype#browser-type-connect-over-cdp" target="_blank" rel="noopener">connect_over_cdp</a>;
+          <a href="https://playwright.dev/mcp/configuration/browser-extension" target="_blank" rel="noopener">MCP CDP / extension attach</a></li>
+        <li>Auth inheritance writeup — <a href="https://dev.to/timtech4u/your-browser-has-a-remote-control-and-nobody-told-you-5e97" target="_blank" rel="noopener">CDP remote control + real sessions</a></li>
+        <li>Browser Use — <a href="https://browser-use.com/" target="_blank" rel="noopener">browser-use.com</a>;
+          <a href="https://github.com/browser-use/browser-use" target="_blank" rel="noopener">GitHub</a></li>
+        <li>agent-browser — <a href="https://agent-browser.dev/" target="_blank" rel="noopener">agent-browser.dev</a></li>
+        <li>Browserbase — <a href="https://www.browserbase.com/" target="_blank" rel="noopener">browserbase.com</a>;
+          <a href="https://www.browserbase.com/computer-use" target="_blank" rel="noopener">computer use infra</a></li>
+        <li>Steel comparison — <a href="https://llms.steel.dev/articles/browser-infrastructure-for-ai-agents-compared/" target="_blank" rel="noopener">Browser infra compared</a></li>
+        <li>OSS rankings — <a href="https://fazm.ai/blog/best-open-source-ai-computer-use-agent-2026" target="_blank" rel="noopener">Best open source computer use agents 2026</a></li>
+        <li>Desktop primitives — <a href="https://github.com/go-vgo/robotgo" target="_blank" rel="noopener">robotgo</a>;
+          <a href="https://nutjs.dev/" target="_blank" rel="noopener">nut.js</a></li>
+        <li>Remote mesh — <a href="https://tailscale.com/blog/tailscale-rustdesk-remote-desktop-access" target="_blank" rel="noopener">Tailscale + RustDesk</a>
+          (pattern for secure remote access; peer should still use app-level auth)</li>
+        <li>Simon Willison — <a href="https://simonwillison.net/2024/Oct/22/computer-use/" target="_blank" rel="noopener">Initial explorations of Anthropic computer use</a></li>
+      </ul>
+      <p class="muted" style="margin-top:1rem">
+        This document is research for design decisions, not a locked ADR. Prefer a follow-on ADR before implementation.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    Marble · research note · remote computer use / personal browser inheritance · 2026-07-26
+  </footer>
+</body>
+</html>

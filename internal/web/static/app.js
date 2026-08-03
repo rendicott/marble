@@ -48,9 +48,12 @@
   let es = null;
   let busy = false;
   let ctxSessionId = null;
+  // Peer computer_confirm waiting for harness-side Accept/Deny
+  let pendingConfirms = {}; // id -> confirm object
   let longPressTimer = null;
   let showClosed = false;
-  let sysExpanded = sessionStorage.getItem("marble-sys-agents-open") !== "0";
+  // Collapsed by default (mobile-friendly); only open when user expanded this browser tab.
+  let sysExpanded = sessionStorage.getItem("marble-sys-agents-open") === "1";
   let turnProgress = null;
   let turnExpanded = false;
   let turnTickTimer = null;
@@ -551,10 +554,43 @@
       closeBtn.disabled = !s || s.status === "closed";
       closeBtn.style.display = !s || s.status === "closed" ? "none" : "";
     }
-    els.ctx.style.left = Math.min(x, window.innerWidth - 180) + "px";
-    els.ctx.style.top = Math.min(y, window.innerHeight - 80) + "px";
+    // Keep menu on-screen (extra height for copy-id item).
+    els.ctx.style.left = Math.min(x, window.innerWidth - 200) + "px";
+    els.ctx.style.top = Math.min(y, window.innerHeight - 120) + "px";
     els.ctx.classList.add("open");
     els.ctx.setAttribute("aria-hidden", "false");
+  }
+
+  async function copySessionId(id) {
+    hideCtx();
+    if (!id) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(id);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = id;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      // brief non-blocking feedback via status pill if present
+      if (els.health) {
+        const prev = els.health.textContent;
+        els.health.textContent = "copied session id " + id;
+        setTimeout(() => {
+          if (els.health && els.health.textContent.indexOf("copied session id") === 0) {
+            els.health.textContent = prev;
+          }
+        }, 1800);
+      }
+    } catch (e) {
+      prompt("Copy session ID:", id);
+    }
   }
 
   function openSessionInfo(id) {
@@ -894,7 +930,107 @@
       const id = activeId;
       hydrateProgress(id);
       syncTranscript(id);
+      // Catch confirms if SSE event was missed while reconnecting.
+      pollPeerConfirms(id);
     }, 4000);
+  }
+
+  function ensureConfirmHost() {
+    let host = document.getElementById("peer-confirm-host");
+    if (host) return host;
+    host = document.createElement("div");
+    host.id = "peer-confirm-host";
+    host.className = "peer-confirm-host";
+    // Prefer above composer so buttons stay visible while tools run.
+    const composer = document.getElementById("composer") || els.form;
+    if (composer && composer.parentElement) {
+      composer.parentElement.insertBefore(host, composer);
+    } else if (els.transcript && els.transcript.parentElement) {
+      els.transcript.parentElement.appendChild(host);
+    } else {
+      document.body.appendChild(host);
+    }
+    return host;
+  }
+
+  function showPeerConfirm(c) {
+    if (!c || !c.id) return;
+    pendingConfirms[c.id] = c;
+    renderPeerConfirms();
+  }
+
+  function clearPeerConfirm(id) {
+    delete pendingConfirms[id];
+    renderPeerConfirms();
+  }
+
+  function renderPeerConfirms() {
+    const host = ensureConfirmHost();
+    const ids = Object.keys(pendingConfirms);
+    if (!ids.length) {
+      host.innerHTML = "";
+      host.hidden = true;
+      return;
+    }
+    host.hidden = false;
+    host.innerHTML = ids
+      .map((id) => {
+        const c = pendingConfirms[id];
+        const prompt = escapeHtml(c.prompt || "High-risk peer action");
+        const risk = escapeHtml(c.risk || "high");
+        const comp = escapeHtml(c.computer_id || "peer");
+        return `<div class="peer-confirm-card" data-id="${escapeHtml(id)}">
+  <div class="peer-confirm-title">⚠️ Confirmation required · ${comp} · risk ${risk}</div>
+  <div class="peer-confirm-prompt">${prompt}</div>
+  <div class="peer-confirm-actions">
+    <button type="button" class="peer-confirm-accept" data-id="${escapeHtml(id)}">Accept</button>
+    <button type="button" class="peer-confirm-deny" data-id="${escapeHtml(id)}">Deny</button>
+  </div>
+  <div class="peer-confirm-hint">You can approve here in Marble (no need to open the peer machine). Default deny after ~120s.</div>
+</div>`;
+      })
+      .join("");
+    host.querySelectorAll(".peer-confirm-accept").forEach((btn) => {
+      btn.onclick = () => resolvePeerConfirm(btn.getAttribute("data-id"), true);
+    });
+    host.querySelectorAll(".peer-confirm-deny").forEach((btn) => {
+      btn.onclick = () => resolvePeerConfirm(btn.getAttribute("data-id"), false);
+    });
+  }
+
+  async function resolvePeerConfirm(id, accept) {
+    if (!id) return;
+    try {
+      await api(`/api/computers/confirms/${encodeURIComponent(id)}`, {
+        method: "POST",
+        body: JSON.stringify({ accept: !!accept }),
+      });
+      clearPeerConfirm(id);
+    } catch (e) {
+      alert("Confirm failed: " + (e.message || e));
+    }
+  }
+
+  async function pollPeerConfirms(sessionId) {
+    if (!sessionId) return;
+    try {
+      const data = await api(
+        `/api/computers/confirms?session_id=${encodeURIComponent(sessionId)}`
+      );
+      const list = (data && data.confirms) || [];
+      // Drop resolved; add any new
+      const seen = {};
+      list.forEach((c) => {
+        if (!c || !c.id) return;
+        seen[c.id] = true;
+        if (!pendingConfirms[c.id]) showPeerConfirm(c);
+      });
+      Object.keys(pendingConfirms).forEach((id) => {
+        if (!seen[id]) clearPeerConfirm(id);
+      });
+    } catch {
+      /* ignore */
+    }
   }
 
   function connectEvents(id) {
@@ -988,11 +1124,30 @@
           setStatus("running");
         }
         if (window.MarbleSessionInfo) window.MarbleSessionInfo.refreshIfSession(id);
+      } else if (data.type === "confirm" && data.confirm) {
+        showPeerConfirm(data.confirm);
       } else if (data.type === "session_meta") {
-        setSessionModelPicker(data.model_id || "", busy);
+        if (data.model_id !== undefined && data.model_id !== null) {
+          setSessionModelPicker(data.model_id || "", busy);
+        }
         if (data.model_effective && data.model_effective.capabilities) {
           activeCapImages = !!data.model_effective.capabilities.images;
           updateAttachWarn();
+        }
+        // Title auto-update (last user message) or permanent rename
+        if (data.title) {
+          const i = sessions.findIndex((x) => x.id === id);
+          if (i >= 0) {
+            sessions[i] = {
+              ...sessions[i],
+              title: data.title,
+              title_custom: !!data.title_custom || sessions[i].title_custom,
+            };
+          }
+          renderSessionList();
+          if (activeId === id) {
+            setMainTitle(sessions[i] || { title: data.title, id }, id);
+          }
         }
         if (window.MarbleSessionInfo) window.MarbleSessionInfo.refreshIfSession(id);
       }
@@ -1053,6 +1208,8 @@
     hideCtx();
     activeId = id;
     setBusyPoll(false);
+    pendingConfirms = {};
+    renderPeerConfirms();
     renderSessionList();
     setSessionInfoEnabled(!!id);
     if (!(opts && opts.skipURL)) {
@@ -1077,6 +1234,7 @@
     if (sum.status !== "closed") {
       connectEvents(id);
       if (busy) setBusyPoll(true);
+      pollPeerConfirms(id);
     } else if (es) {
       es.close();
       es = null;
@@ -1094,6 +1252,34 @@
     await refreshSessions();
     await selectSession(s.id);
     els.input.focus();
+  }
+
+  async function renameSession(id) {
+    hideCtx();
+    if (!id) return;
+    const s = sessions.find((x) => x.id === id);
+    const cur = (s && s.title) || "";
+    const next = prompt("Rename session (permanent — will not follow new messages):", cur);
+    if (next === null) return; // cancel
+    const title = String(next).trim();
+    if (!title) {
+      alert("Title cannot be empty.");
+      return;
+    }
+    const res = await api(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    });
+    const sum = (res && res.session) || res;
+    if (sum && sum.id) {
+      const i = sessions.findIndex((x) => x.id === sum.id);
+      if (i >= 0) sessions[i] = { ...sessions[i], ...sum };
+      else await refreshSessions();
+    } else {
+      await refreshSessions();
+    }
+    renderSessionList();
+    if (activeId === id) setMainTitle(sum || sessions.find((x) => x.id === id), id);
   }
 
   async function closeSession(id) {
@@ -1150,6 +1336,10 @@
       if (!btn || !ctxSessionId) return;
       if (btn.dataset.action === "info") {
         openSessionInfo(ctxSessionId);
+      } else if (btn.dataset.action === "rename") {
+        renameSession(ctxSessionId).catch((err) => alert(err.message));
+      } else if (btn.dataset.action === "copy-id") {
+        copySessionId(ctxSessionId);
       } else if (btn.dataset.action === "close") {
         closeSession(ctxSessionId).catch((err) => alert(err.message));
       }
@@ -1508,4 +1698,10 @@
     });
   });
   setInterval(refreshHealth, 30000);
+
+  // Expose for Clerk dashboard (ADR-0023) and other panels
+  window.MarbleApp = {
+    selectSession: (id, opts) => selectSession(id, opts || {}),
+    refreshSessions: () => refreshSessions(),
+  };
 })();

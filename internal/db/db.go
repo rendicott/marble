@@ -17,7 +17,10 @@ import (
 // v2: cron_jobs, cron_runs (ADR-0015)
 // v3: model_catalog + model_id columns (ADR-0018)
 // v4: session_attachments (ADR-0019)
-const CurrentSchemaVersion = 4
+// v5: computers + pairings + sessions.computer_id (ADR-0020)
+// v6: clerk_session_state (ADR-0023 Clerk dashboard)
+// v7: clerk_session_state.snoozed_until (Clerk snooze)
+const CurrentSchemaVersion = 7
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -139,6 +142,18 @@ func (d *DB) upgradeSchema(fromVer int) error {
 			}
 		case 3:
 			if err := d.migrateV3toV4(); err != nil {
+				return err
+			}
+		case 4:
+			if err := d.migrateV4toV5(); err != nil {
+				return err
+			}
+		case 5:
+			if err := d.migrateV5toV6(); err != nil {
+				return err
+			}
+		case 6:
+			if err := d.migrateV6toV7(); err != nil {
 				return err
 			}
 		default:

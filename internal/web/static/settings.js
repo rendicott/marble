@@ -69,7 +69,19 @@
     max_tool_iters: "Hard stop tool rounds per user turn. CLI --max-tool-iters. Example: 80",
     tool_round_soft: "Soft advisory threshold before hard stop. Example: 65",
     soft_wall_sec:
-      "Soft wall-clock of continuous tool rounds without a final reply. Example: 180 (3m)",
+      "Soft wall-clock of continuous tool rounds before first advisory (not a stop). CLI --soft-wall. Example: 1200 (20m)",
+    hard_wall_sec:
+      "Hard wall-clock deadline for an entire user turn; ends turn with timeout error. CLI --hard-wall. Example: 2700 (45m)",
+    auto_continue_reserve:
+      "When remaining max-tool-iters ≤ this, hard-stop and auto schedule_continuation. CLI --auto-continue-reserve. 0 disables. Example: 10",
+    anti_repeat_n:
+      "ADR-0022: hard-fail after N consecutive identical tool+args. CLI --anti-repeat-n. Default 0 (off) — too crude for poll loops; set 3 to enable",
+    stuck_escalate_k:
+      "ADR-0022: escalate lock after K consecutive computer_* failures. CLI --stuck-escalate-k. Default 3",
+    block_sleep_shell:
+      "ADR-0022: hard-reject pure sleep/timeout shell_execute. CLI --block-sleep-shell. Default true",
+    eval_mutate_max:
+      "ADR-0022: hard error after M mutate browser evals in last 20 tools. CLI --eval-mutate-max. 0=warn only. Default 5",
     tool_round_db:
       "DB copies of soft/hard (informational). Loop still primarily uses CLI flags in v1.",
 
@@ -158,6 +170,99 @@
       return `env (${cfg}${used})`;
     }
     return "none";
+  }
+
+  async function renderComputersSection(editable) {
+    try {
+      const res = await api("/api/computers");
+      const computers = res.computers || [];
+      const rows = computers
+        .map((c) => {
+          const id = c.id || "";
+          const on = c.online ? "online" : "offline";
+          return `<div class="settings-group model-row">
+            <div class="model-row-head">
+              <div class="model-row-title">
+                <span class="model-row-name">${escapeHtml(c.display_name || id)}</span>
+                <span class="settings-chip">${escapeHtml(on)}</span>
+              </div>
+              <div class="model-row-actions">
+                ${editable ? `<button type="button" class="icon-btn pc-revoke" data-id="${escapeAttr(id)}">Revoke</button>` : ""}
+              </div>
+            </div>
+            <div class="model-row-meta mono muted">
+              <span>${escapeHtml(id)}</span>
+              <span>${escapeHtml(c.os || "")}</span>
+            </div>
+          </div>`;
+        })
+        .join("");
+      els.pane.innerHTML = `
+        <h3>Computers</h3>
+        <p class="hint">Desktop peers (marble-peer). Pair with mutual H-code / P-code. See docs/peer-protocol.md.</p>
+        ${rows || "<p class='hint'>No computers paired yet.</p>"}
+        <div class="model-list-actions">
+          ${editable ? `<button type="button" class="icon-btn" id="pc-pair">Pair computer</button>` : ""}
+        </div>
+        <div id="pc-pair-panel" class="settings-group" hidden></div>
+      `;
+      const pairBtn = els.pane.querySelector("#pc-pair");
+      const panel = els.pane.querySelector("#pc-pair-panel");
+      if (pairBtn && panel) {
+        pairBtn.onclick = async () => {
+          const start = await api("/api/computers/pair/start", { method: "POST", body: "{}" });
+          panel.hidden = false;
+          panel.innerHTML = `
+            <h4>Pair new computer</h4>
+            <p class="hint">On the desktop run:<br>
+            <code class="mono">marble-peer pair --harness ${escapeHtml(start.harness_url_hint || "")} --code ${escapeHtml(start.h_code)}</code></p>
+            <p>H-code: <strong class="mono">${escapeHtml(start.h_code)}</strong></p>
+            <div class="settings-field">
+              <label>P-code (from peer)</label>
+              <input type="text" id="pc-pcode" class="mono" autocomplete="off" />
+            </div>
+            <div class="settings-field">
+              <label>Display name</label>
+              <input type="text" id="pc-name" value="laptop" />
+            </div>
+            <div class="settings-field">
+              <label>Id slug</label>
+              <input type="text" id="pc-id" class="mono" value="laptop" />
+            </div>
+            <button type="button" class="icon-btn" id="pc-confirm">Confirm pair</button>
+            <p class="hint model-editor-err" id="pc-err" hidden></p>
+          `;
+          panel.querySelector("#pc-confirm").onclick = async () => {
+            const errEl = panel.querySelector("#pc-err");
+            try {
+              await api("/api/computers/pair/confirm", {
+                method: "POST",
+                body: JSON.stringify({
+                  pairing_id: start.pairing_id,
+                  p_code: panel.querySelector("#pc-pcode").value.trim(),
+                  display_name: panel.querySelector("#pc-name").value.trim(),
+                  id: panel.querySelector("#pc-id").value.trim(),
+                }),
+              });
+              renderComputersSection(editable);
+            } catch (e) {
+              errEl.hidden = false;
+              errEl.textContent = e.message || String(e);
+            }
+          };
+        };
+      }
+      els.pane.querySelectorAll(".pc-revoke").forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute("data-id");
+          if (!confirm("Revoke computer “" + id + "”?")) return;
+          await api("/api/computers/" + encodeURIComponent(id), { method: "DELETE" });
+          renderComputersSection(editable);
+        };
+      });
+    } catch (e) {
+      els.pane.innerHTML = `<h3>Computers</h3><p class="hint model-editor-err">${escapeHtml(e.message || String(e))}</p>`;
+    }
   }
 
   async function renderModelsSection(editable) {
@@ -578,7 +683,7 @@
     if (section === "mcp")
       els.save.disabled = !mcpDirty || (data && data.runtime && data.runtime.mcp_disabled_cli);
     if (section === "ui") els.save.disabled = !dirty;
-    if (section === "runtime" || section === "agent" || section === "about" || section === "models")
+    if (section === "runtime" || section === "agent" || section === "about" || section === "models" || section === "computers")
       els.save.disabled = true;
   }
 
@@ -668,6 +773,9 @@
     } else if (section === "models") {
       els.pane.innerHTML = `<h3>Models</h3><p class="hint">Loading catalog…</p>`;
       renderModelsSection(editable);
+    } else if (section === "computers") {
+      els.pane.innerHTML = `<h3>Computers</h3><p class="hint">Loading peers…</p>`;
+      renderComputersSection(editable);
     } else if (section === "memory") {
       els.pane.innerHTML = `
         <h3>Memory &amp; DB</h3>
@@ -701,6 +809,12 @@
         ${ro("Max tool iters (hard)", r.max_tool_iters, "max_tool_iters")}
         ${ro("Tool round soft", r.tool_round_soft, "tool_round_soft")}
         ${ro("Soft wall (sec)", r.soft_wall_sec, "soft_wall_sec")}
+        ${ro("Hard wall (sec)", r.hard_wall_sec, "hard_wall_sec")}
+        ${ro("Auto-continue reserve", r.auto_continue_reserve, "auto_continue_reserve")}
+        ${ro("Anti-repeat N", r.anti_repeat_n, "anti_repeat_n")}
+        ${ro("Stuck escalate K", r.stuck_escalate_k, "stuck_escalate_k")}
+        ${ro("Block sleep shell", r.block_sleep_shell, "block_sleep_shell")}
+        ${ro("Eval mutate max", r.eval_mutate_max, "eval_mutate_max")}
         ${ro("DB tool_round_soft / hard", `${p.tool_round_soft || "—"} / ${p.tool_round_hard || "—"}`, "tool_round_db")}
       `;
     } else if (section === "mcp") {

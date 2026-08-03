@@ -1,0 +1,88 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0021",
+  "title": "marble-desktop-peer — Desktop Agent Implementation",
+  "updated_at": "2026-07-27T03:20:46.838Z",
+  "answers": {
+    "Q_P1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Leave Chrome running by default; --kill-browser-on-exit opt-in",
+      "notes": "",
+      "question": "Q_P1 On Quit: kill managed Chromium or leave running?",
+      "rec": "Leave Chrome running by default; --kill-browser-on-exit opt-in"
+    },
+    "Q_P2": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Prefer no Node pre-install if practical; if too much work or binary unwieldy, depend on system Node",
+      "notes": "Owner: I'd prefer users don't have to have node pre installed if possible. If it's too much work or the binary gets to be unwieldy then we can just depend on node",
+      "question": "Q_P2 Slim binary vs fat with Node in v1?",
+      "rec": "Slim — document Node; fat later"
+    },
+    "Q_P3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Desktop full primary for computer_screenshot",
+      "notes": "",
+      "question": "Q_P3 Screenshot default: desktop vs browser viewport?",
+      "rec": "Desktop full primary for computer_screenshot"
+    },
+    "Q_P4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Keychain when available, file 0600 fallback",
+      "notes": "",
+      "question": "Q_P4 Credential store: keychain vs file-first?",
+      "rec": "Keychain when available, file 0600 fallback"
+    },
+    "Q_P5": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Default 120s per action; max 5 min; harness may set higher deadline and retry",
+      "notes": "Default 120s but max up to 5 min, harness can set higher and retry",
+      "question": "Q_P5 Action hard timeout (non-confirm)?",
+      "rec": "120s per action default, configurable"
+    },
+    "Q_P6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Portable binary + optional install-autostart; no system packages v1",
+      "notes": "",
+      "question": "Q_P6 Installer vs portable zip only?",
+      "rec": "Portable binary + optional install-autostart; no system packages v1"
+    },
+    "Q_P7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Drive system Chrome/Edge/Chromium first",
+      "notes": "",
+      "question": "Q_P7 System Chrome/Edge vs embed Chromium?",
+      "rec": "Drive system Chrome/Edge/Chromium first"
+    },
+    "Q_P8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Bind 18765, else 18766–18775, else random; write port to state file",
+      "notes": "",
+      "question": "Q_P8 Mini UI port conflict strategy?",
+      "rec": "Bind 18765, else 18766–18775, else random; write port to state file"
+    },
+    "Q_P9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No telemetry v1",
+      "notes": "",
+      "question": "Q_P9 Telemetry?",
+      "rec": "No telemetry v1"
+    },
+    "Q_P10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Copy to peer adr/0001; marble keeps 0021 as pointer + system context",
+      "notes": "",
+      "question": "Q_P10 Canonical home for this ADR after peer repo exists?",
+      "rec": "Copy to peer adr/0001; marble keeps 0021 as pointer + system context"
+    }
+  }
+}

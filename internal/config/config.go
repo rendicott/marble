@@ -28,6 +28,20 @@ type Config struct {
 	ToolRoundSoft int
 	// SoftWall is continuous tool-round wall clock before advisory (ADR-0005 Q2).
 	SoftWall time.Duration
+	// HardWall is the absolute turn deadline (context timeout). Long computer-use /
+	// Play Console turns often exceed 15m; soft wall is advisory only.
+	HardWall time.Duration
+	// AutoContinueReserve: when max-tool-iters remaining ≤ this, hard-stop the turn
+	// and schedule_continuation so work resumes automatically (0 = disabled).
+	AutoContinueReserve int
+	// ADR-0022 thrash / efficiency rails
+	// AntiRepeatN: consecutive identical tool fingerprints before hard error.
+	// Default 0 (off): legitimate polls (agent status, curl health, file size, ping)
+	// share fingerprints and are hard to exempt completely. Opt-in via --anti-repeat-n=3.
+	AntiRepeatN     int
+	StuckEscalateK  int  // consecutive computer_* failures before escalate lock
+	BlockSleepShell bool // hard-reject pure sleep/timeout shell commands
+	EvalMutateMax   int  // hard error after this many mutate-evals in last 20 tools; 0 = warn only
 	// ContextWarnRatio soft-warns when usage_ratio >= this (default 0.60).
 	ContextWarnRatio float64
 	// ContextAutoCompactRatio auto-compact trigger (default 0.85).
@@ -98,9 +112,22 @@ func ParseFlags(args []string) (Config, error) {
 	fs.StringVar(&cfg.Memory, "memory", defaultMemory, "Memory leaf root (session/ and daily/ live here; may be outside workspace)")
 	fs.DurationVar(&cfg.PersistEvery, "persist-interval", 5*time.Minute, "Background session persist interval")
 	fs.StringVar(&cfg.Addr, "addr", ":8080", "HTTP listen address")
-	fs.IntVar(&cfg.MaxToolIters, "max-tool-iters", 80, "Hard max tool-call rounds per user turn")
-	fs.IntVar(&cfg.ToolRoundSoft, "tool-round-soft", 65, "Soft advisory tool-round threshold")
-	fs.DurationVar(&cfg.SoftWall, "soft-wall", 3*time.Minute, "Soft wall-clock for continuous tool rounds without final reply")
+	// Computer-use / Play Console turns routinely exceed 80 model rounds (screenshot↔click loops).
+	fs.IntVar(&cfg.MaxToolIters, "max-tool-iters", 200, "Hard max model rounds (with tools) per user turn")
+	fs.IntVar(&cfg.ToolRoundSoft, "tool-round-soft", 150, "Soft advisory tool-round threshold")
+	// 20m default: long research/ops turns often exceed 3m; advisory is not a hard stop.
+	fs.DurationVar(&cfg.SoftWall, "soft-wall", 20*time.Minute, "Soft wall-clock for continuous tool rounds before first advisory (not a hard stop)")
+	// 2h default: long computer-use turns routinely ran past 15m/45m with no final assistant message.
+	fs.DurationVar(&cfg.HardWall, "hard-wall", 2*time.Hour, "Hard wall-clock deadline for an entire user turn (context timeout; ends turn)")
+	// Stop a few rounds before the hard max and auto-schedule a continuation so long turns don't die mid-work.
+	fs.IntVar(&cfg.AutoContinueReserve, "auto-continue-reserve", 10, "When remaining max-tool-iters ≤ this, hard-stop turn and schedule auto-continuation (0 disables)")
+	// ADR-0022: identical-arg anti-repeat is OPT-IN (default off).
+	// Polling file size / URL / ping / agent task_id all look like "thrash" to a fingerprint.
+	// Prefer stuck-escalate (computer_*) + sleep-block + eval-mutate limits instead.
+	fs.IntVar(&cfg.AntiRepeatN, "anti-repeat-n", 0, "Hard-fail after N consecutive identical tool fingerprints (0=off default; try 3 only if you want strict thrash rails)")
+	fs.IntVar(&cfg.StuckEscalateK, "stuck-escalate-k", 3, "Escalate lock after K consecutive computer_* failures")
+	fs.BoolVar(&cfg.BlockSleepShell, "block-sleep-shell", true, "Hard-reject pure sleep/timeout shell_execute (use browser wait)")
+	fs.IntVar(&cfg.EvalMutateMax, "eval-mutate-max", 5, "Hard error after this many mutate browser evals in last 20 tools (0 = warn only)")
 	fs.IntVar(&cfg.MaxToolResult, "max-tool-result", 32000, "Max characters returned from a single tool call")
 	fs.BoolVar(&cfg.DisableShell, "disable-shell", false, "Disable shell_execute and background shell tasks")
 	fs.DurationVar(&cfg.ShellDefaultTimeout, "shell-default-timeout", 60*time.Second, "Default shell_execute timeout")

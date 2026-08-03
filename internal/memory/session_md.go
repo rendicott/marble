@@ -21,6 +21,8 @@ type SessionMeta struct {
 	Workspace    string     `json:"workspace,omitempty"`
 	Model        string     `json:"model,omitempty"`
 	ModelID      string     `json:"model_id,omitempty"` // catalog slug (ADR-0018)
+	// TitleCustom is true when the operator set an explicit name (do not auto-title from messages).
+	TitleCustom bool `json:"title_custom,omitempty"`
 }
 
 // TranscriptMessage is one persisted UI-facing turn.
@@ -49,6 +51,9 @@ func EncodeSession(doc *SessionDoc) string {
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "id: %s\n", doc.ID)
 	fmt.Fprintf(&b, "title: %q\n", doc.Title)
+	if doc.TitleCustom {
+		b.WriteString("title_custom: true\n")
+	}
 	if doc.Kind != "" {
 		fmt.Fprintf(&b, "kind: %s\n", doc.Kind)
 	}
@@ -181,6 +186,8 @@ func parseFrontMatter(fm string) (SessionMeta, error) {
 			m.ID = val
 		case "title":
 			m.Title = val
+		case "title_custom":
+			m.TitleCustom = val == "true" || val == "1" || val == "yes"
 		case "kind":
 			m.Kind = val
 		case "parent_session_id":

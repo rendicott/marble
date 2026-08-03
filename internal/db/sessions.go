@@ -18,6 +18,7 @@ type SessionRow struct {
 	Workspace    string
 	Model        string // last effective provider model string (ADR-0018 KD12)
 	ModelID      string // catalog slug or "" (ADR-0018)
+	ComputerID   string // bound peer computer slug (ADR-0020)
 	MDPath       string
 }
 
@@ -37,9 +38,10 @@ func (d *DB) UpsertSession(s SessionRow) error {
 	if s.ClosedAt.Valid {
 		closed = s.ClosedAt.String
 	}
+	// Prefer full row including computer_id when column exists (schema v5+).
 	_, err := d.SQL.Exec(`
-		INSERT INTO sessions (id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, computer_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title,
 			status=excluded.status,
@@ -50,8 +52,9 @@ func (d *DB) UpsertSession(s SessionRow) error {
 			workspace=excluded.workspace,
 			model=excluded.model,
 			model_id=excluded.model_id,
-			md_path=excluded.md_path
-	`, s.ID, s.Title, s.Status, s.CreatedAt, s.UpdatedAt, closed, s.MessageCount, dirty, s.Workspace, s.Model, s.ModelID, s.MDPath)
+			md_path=excluded.md_path,
+			computer_id=excluded.computer_id
+	`, s.ID, s.Title, s.Status, s.CreatedAt, s.UpdatedAt, closed, s.MessageCount, dirty, s.Workspace, s.Model, s.ModelID, s.MDPath, s.ComputerID)
 	return err
 }
 
@@ -61,7 +64,7 @@ func (d *DB) ListSessions(includeClosed bool) ([]SessionRow, error) {
 	if !d.Writable() {
 		return nil, nil
 	}
-	q := `SELECT id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path
+	q := `SELECT id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, COALESCE(computer_id,'')
 		FROM sessions`
 	if !includeClosed {
 		q += ` WHERE status != 'closed'`
@@ -77,7 +80,7 @@ func (d *DB) ListSessions(includeClosed bool) ([]SessionRow, error) {
 		var s SessionRow
 		var dirty int
 		if err := rows.Scan(&s.ID, &s.Title, &s.Status, &s.CreatedAt, &s.UpdatedAt, &s.ClosedAt,
-			&s.MessageCount, &dirty, &s.Workspace, &s.Model, &s.ModelID, &s.MDPath); err != nil {
+			&s.MessageCount, &dirty, &s.Workspace, &s.Model, &s.ModelID, &s.MDPath, &s.ComputerID); err != nil {
 			return nil, err
 		}
 		s.Dirty = dirty != 0

@@ -24,6 +24,12 @@ type Registry struct {
 
 	// Optional process managers (set by main).
 	OnSessionClose func(sessionID string)
+	// OnSessionIdle is called when a turn ends (busy→idle). Used by Clerk (ADR-0023).
+	OnSessionIdle func(s *Session)
+	// OnSessionBusy is called when a turn starts. Used by Clerk (ADR-0023).
+	OnSessionBusy func(sessionID string)
+	// OnUserMessage is called after a user message is accepted. Used by Clerk snippets.
+	OnUserMessage func(sessionID, display string)
 }
 
 // NewRegistry creates a registry. sqldb may be limp (non-writable).
@@ -45,6 +51,40 @@ func NewRegistry(runner *Runner, store *memory.Store, sqldb *db.DB, workspace, m
 
 // DB returns the sqlite wrapper (may be limp).
 func (r *Registry) DB() *db.DB { return r.sqldb }
+
+// GetComputerID returns the bound peer computer for a session.
+func (r *Registry) GetComputerID(sessionID string) (string, error) {
+	if s, ok := r.Get(sessionID); ok {
+		s.mu.Lock()
+		cid := s.ComputerID
+		s.mu.Unlock()
+		if cid != "" {
+			return cid, nil
+		}
+	}
+	if r.sqldb == nil {
+		return "", nil
+	}
+	return r.sqldb.GetSessionComputerID(sessionID)
+}
+
+// SetComputerID binds a session to a computer (ADR-0020).
+func (r *Registry) SetComputerID(sessionID, computerID string) error {
+	if r.sqldb != nil && r.sqldb.Writable() {
+		if err := r.sqldb.SetSessionComputerID(sessionID, computerID); err != nil {
+			return err
+		}
+	}
+	s, err := r.EnsureLoaded(sessionID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.ComputerID = computerID
+	s.dirty = true
+	s.mu.Unlock()
+	return r.PersistSession(s)
+}
 
 // Runner returns the agent runner (may be nil before wire).
 func (r *Registry) Runner() *Runner { return r.runner }
@@ -93,6 +133,12 @@ func (r *Registry) create(title, kind, parentID string) *Session {
 		s.Kind = "user"
 	}
 	s.ParentID = parentID
+	// Explicit create titles (system agents, cron-named sessions) stay pinned.
+	if s.Kind == "system" {
+		s.TitleCustom = true
+	} else if t := strings.TrimSpace(title); t != "" && !strings.EqualFold(t, "New session") {
+		s.TitleCustom = true
+	}
 	s.dirty = true
 	r.mu.Lock()
 	r.sessions[id] = s
@@ -100,6 +146,37 @@ func (r *Registry) create(title, kind, parentID string) *Session {
 	_ = r.PersistSession(s)
 	r.syncSessionRow(s)
 	return s
+}
+
+// SetSessionTitle permanently renames a session (title_custom=true). Empty title rejected.
+func (r *Registry) SetSessionTitle(id, title string) (*Session, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil, fmt.Errorf("title required")
+	}
+	if len(title) > 120 {
+		title = title[:120]
+	}
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.Title = title
+	s.TitleCustom = true
+	s.UpdatedAt = time.Now()
+	s.dirty = true
+	s.mu.Unlock()
+	_ = r.PersistSession(s)
+	r.syncSessionRow(s)
+	s.publish(Event{
+		Type:        "session_meta",
+		SessionID:   s.ID,
+		Title:       title,
+		TitleCustom: true,
+		At:          time.Now(),
+	})
+	return s, nil
 }
 
 // Get returns a loaded live session.
@@ -124,6 +201,11 @@ func (r *Registry) EnsureLoaded(id string) (*Session, error) {
 	}
 	s := newSession(doc.ID, doc.Title)
 	s.LoadFromDoc(doc)
+	if r.sqldb != nil && r.sqldb.Writable() {
+		if cid, err := r.sqldb.GetSessionComputerID(id); err == nil {
+			s.ComputerID = cid
+		}
+	}
 	r.mu.Lock()
 	if existing, ok := r.sessions[id]; ok {
 		r.mu.Unlock()
@@ -536,6 +618,8 @@ func (r *Registry) RunMaintenance() (pruned, blobs int, err error) {
 		if _, e2 := r.sqldb.DeleteSessionAttachments(id); e2 != nil && err == nil {
 			err = e2
 		}
+		// ADR-0023: drop clerk dashboard state with the pruned session
+		_ = r.sqldb.DeleteClerkState(id)
 		// remove from disk index but keep md files
 		r.mu.Lock()
 		delete(r.diskIndex, id)

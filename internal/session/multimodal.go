@@ -236,3 +236,87 @@ func attMetaJSON(ids []string) string {
 	b, _ := json.Marshal(map[string]interface{}{"attachment_ids": ids})
 	return string(b)
 }
+
+// toolResultContent builds model content for a tool result. When the result JSON
+// includes attachment_id / attachment_ids for staged images (e.g. computer_screenshot),
+// those are included as marble-att:// image parts so the next model call can *see* them
+// via materializeImages. Previously only a text JSON blob was stored — vision models
+// never received the pixels (UI showed the chip; model said it "couldn't see" the image).
+func toolResultContent(toolResult string) model.Content {
+	text := toolResult
+	ids := extractAttachmentIDs(toolResult)
+	if len(ids) == 0 {
+		return model.ContentFromText(text)
+	}
+	parts := []model.ContentPart{
+		{Type: "text", Text: text},
+	}
+	for _, id := range ids {
+		parts = append(parts, model.ContentPart{
+			Type: "image_url",
+			ImageURL: &model.ImageURL{
+				URL:    marbleAttScheme + id,
+				Detail: "high", // screenshots need readable UI chrome / lock screens
+			},
+		})
+	}
+	// Explicit instruction so models that get images still ground on the pixels.
+	parts = append(parts, model.ContentPart{
+		Type: "text",
+		Text: "[harness] The image part(s) above ARE the peer screenshot. Look at them: identify lock screen, OTP, dialogs, buttons. Do not claim you cannot see the image if image parts are present. If you see a lock/login screen, say so and stop automating until unlocked.",
+	})
+	return model.ContentFromParts(parts)
+}
+
+// extractAttachmentIDs pulls staged attachment ids from tool result JSON text.
+func extractAttachmentIDs(toolResult string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	// Whole result may be JSON object
+	var obj map[string]interface{}
+	if json.Unmarshal([]byte(toolResult), &obj) == nil {
+		if s, ok := obj["attachment_id"].(string); ok {
+			add(s)
+		}
+		if arr, ok := obj["attachment_ids"].([]interface{}); ok {
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					add(s)
+				}
+			}
+		}
+		return ids
+	}
+	// Or "tool → {json}" UI style — try last `{...}`
+	if i := strings.LastIndex(toolResult, "{"); i >= 0 {
+		if json.Unmarshal([]byte(toolResult[i:]), &obj) == nil {
+			if s, ok := obj["attachment_id"].(string); ok {
+				add(s)
+			}
+		}
+	}
+	return ids
+}
+
+// uiAttachmentsFromToolResult builds UI chips for tool messages that include images.
+func uiAttachmentsFromToolResult(toolResult string) []UIAttachment {
+	ids := extractAttachmentIDs(toolResult)
+	if len(ids) == 0 {
+		return nil
+	}
+	var out []UIAttachment
+	for _, id := range ids {
+		out = append(out, UIAttachment{
+			ID: id, Name: "screenshot.jpg", MIME: "image/jpeg", Kind: "image",
+		})
+	}
+	return out
+}

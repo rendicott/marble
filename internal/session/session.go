@@ -16,11 +16,14 @@ type Event struct {
 	Tool       *ToolInfo              `json:"tool,omitempty"`
 	Attachment *AttachmentInfo        `json:"attachment,omitempty"`
 	Turn       *TurnProgress          `json:"turn,omitempty"`
+	Confirm    map[string]interface{} `json:"confirm,omitempty"` // computer_confirm pending (Accept/Deny in harness UI)
 	Error      string                 `json:"error,omitempty"`
 	Status     string                 `json:"status,omitempty"`
 	ModelID    string                 `json:"model_id,omitempty"`
 	Model      string                 `json:"model,omitempty"`
 	ModelEff   map[string]interface{} `json:"model_effective,omitempty"`
+	Title      string                 `json:"title,omitempty"`       // session_meta title refresh
+	TitleCustom bool                  `json:"title_custom,omitempty"`
 	At         time.Time              `json:"at"`
 }
 
@@ -70,7 +73,8 @@ type Actor struct {
 type Summary struct {
 	ID           string     `json:"id"`
 	Title        string     `json:"title"`
-	Kind         string     `json:"kind"` // user | system
+	TitleCustom  bool       `json:"title_custom,omitempty"` // explicit rename — not auto from messages
+	Kind         string     `json:"kind"`                   // user | system
 	ParentID     string     `json:"parent_session_id,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
@@ -87,23 +91,30 @@ type Summary struct {
 	// Model selection (ADR-0018)
 	ModelID string `json:"model_id,omitempty"`
 	Model   string `json:"model,omitempty"` // last effective provider string
+	// Computer bind (ADR-0020)
+	ComputerID string `json:"computer_id,omitempty"`
 }
 
 // Session is one independent conversation.
 type Session struct {
 	ID        string
 	Title     string
-	Kind      string // user | system
-	ParentID  string // optional parent user session for system agents
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	ClosedAt  *time.Time
-	Status    string // active | closed
+	// TitleCustom is true when the operator permanently renamed this session.
+	// When false, title tracks the latest user message (truncated).
+	TitleCustom bool
+	Kind        string // user | system
+	ParentID    string // optional parent user session for system agents
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	ClosedAt    *time.Time
+	Status      string // active | closed
 
 	// ModelID is durable catalog slug ("" = process default). ADR-0018.
 	ModelID string
 	// ProviderModel is last effective provider model string (KD12).
 	ProviderModel string
+	// ComputerID is bound desktop peer slug (ADR-0020); "" = unbound.
+	ComputerID string
 
 	mu      sync.Mutex
 	history []model.Message // model-facing history
@@ -174,6 +185,7 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 	return Summary{
 		ID:           s.ID,
 		Title:        s.Title,
+		TitleCustom:  s.TitleCustom,
 		Kind:         kind,
 		ParentID:     s.ParentID,
 		CreatedAt:    s.CreatedAt,
@@ -186,6 +198,7 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 		Dirty:        s.dirty,
 		ModelID:      s.ModelID,
 		Model:        s.ProviderModel,
+		ComputerID:   s.ComputerID,
 	}
 }
 
@@ -389,6 +402,7 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 		SessionMeta: memory.SessionMeta{
 			ID:           s.ID,
 			Title:        s.Title,
+			TitleCustom:  s.TitleCustom,
 			Kind:         kind,
 			ParentID:     s.ParentID,
 			CreatedAt:    s.CreatedAt,
@@ -423,6 +437,7 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	defer s.mu.Unlock()
 	s.ID = doc.ID
 	s.Title = doc.Title
+	s.TitleCustom = doc.TitleCustom
 	s.Kind = doc.Kind
 	if s.Kind == "" {
 		s.Kind = "user"
