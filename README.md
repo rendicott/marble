@@ -85,7 +85,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Continuations** — one-shot delayed resume (`schedule_continuation`: delay and/or wait for BG task); harness **auto-continue** near hard iter caps
 - **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
 - **Models (ADR-0018)** — `model_list`, `session_set_model`
-- **Computer use (ADR-0020)** — `computer_*` tools against a paired **marble-peer** (browser CDP + desktop + confirm)
+- **Computer use (ADR-0020)** — `computer_*` tools against a paired **[marble-peer](https://github.com/rendicott/marble-desktop-peer)** (browser CDP + desktop + confirm)
 - **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available
 - **External agents (ADR-0014)** — `call_agent_process` (`format=grok|claude`) with optional `workdir`, high timeouts, `background` mode
 - **Memory & skills** — `memory_*` under `$MEMORY/knowledge/`, `skill_*` from skill roots; prompt nudges memory when unsure
@@ -107,7 +107,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Every-turn soul (ADR-0013)** — optional `$MEMORY/soul.md` injected as a second system message
 - **Cron session badges** — 🕐 next to sessions bound to durable cron jobs
 - **Per-session model_id** — catalog override until cleared back to process default
-- **Per-session computer_id** — bind a marble-peer for `computer_*` tools
+- **Per-session computer_id** — bind a [marble-peer](https://github.com/rendicott/marble-desktop-peer) for `computer_*` tools
 
 ### Web UI
 - Chat with **markdown** rendering (user + assistant)
@@ -118,7 +118,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Workspace explorer** modal (browse/edit/upload under the tool jail)
 - **System prompt & soul** modal (👁) — immutable system prompt + editable soul
 - **Cron jobs** modal (🕐) — list/create/edit/enable/run-now/history + next-fire preview + optional model pin
-- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, **Computers** peers, DB settings, MCP, UI prefs
+- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, **Computers** ([marble-peer](https://github.com/rendicott/marble-desktop-peer) pairing), DB settings, MCP, UI prefs
 - **Mobile-first** polish for composer, panels, and session chrome
 - SSE live updates for messages, tools, turn progress, attachments, peer confirms
 - Sign-in flow when Google mode is enabled
@@ -360,6 +360,32 @@ cp adr/agent_process.json.example ~/.marble/agent_process.json
 # enable grok/claude drivers; ensure binaries on PATH
 ```
 
+### 9. Optional remote computer use (marble-peer)
+
+Desktop hands/eyes for `computer_*` tools ship as a **separate binary**, not in this monorepo:
+
+| | |
+|--|--|
+| **Repo** | [github.com/rendicott/marble-desktop-peer](https://github.com/rendicott/marble-desktop-peer) |
+| **Binary** | `marble-peer` |
+| **Releases** | [v0.1.0+](https://github.com/rendicott/marble-desktop-peer/releases) (same multi-arch GitHub Actions pattern as marble-harness) |
+| **Data dir** | `~/.marble-peer` on the desktop machine |
+
+```bash
+# On the desktop (with a logged-in GUI seat + Chrome)
+# Download from https://github.com/rendicott/marble-desktop-peer/releases
+# or: go install / clone & build per peer README
+
+# 1. In Marble UI: Settings → Computers → Pair → copy H-code
+# 2. On the desktop:
+marble-peer pair --harness http://127.0.0.1:8080 --code HXXXXX --allow-http
+# 3. Confirm P-code in Marble Settings, then:
+marble-peer run
+# optional: marble-peer install-autostart   # Linux systemd --user + tray
+```
+
+Wire contract: [`docs/peer-protocol.md`](docs/peer-protocol.md). Peer install, Chrome mirror profile, tray, and keep-awake details: **[marble-desktop-peer README](https://github.com/rendicott/marble-desktop-peer#readme)**.
+
 ## Memory layout
 
 ```
@@ -410,7 +436,7 @@ internal/
   model/                # OpenAI-compatible client + multimodal content parts
   session/              # registry, agent loop, effective model, multimodal, daemon
   tools/                # tool implementations + catalog (incl. computer_*, thrash)
-  peerhub/              # marble-peer WebSocket / pairing hub (ADR-0020)
+  peerhub/              # marble-peer WS / pairing hub (ADR-0020; peer binary separate)
   clerk/                # session attention dashboard (ADR-0023)
   cron/                 # durable scheduler (ADR-0015)
   mpub/                 # published pages + visibility
@@ -440,13 +466,15 @@ Notable ADRs:
 | 0018 | Selectable models (catalog, per-session, cron pin) |
 | 0019 | Multimodal attachments (images + basic documents) |
 | 0020 | Marble Peer — remote computer use (harness contract) |
-| 0021 | `marble-desktop-peer` implementation (separate repo) |
+| 0021 | [marble-desktop-peer](https://github.com/rendicott/marble-desktop-peer) implementation (separate repo) |
 | 0022 | Long-turn efficiency (anti-thrash, walls, auto-continue) |
 | 0023 | Clerk — session attention dashboard (+ snooze) |
 
 ## Releases
 
 GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.4.1](https://github.com/rendicott/marble/releases/tag/v0.4.1)**.
+
+Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.0](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.0)**).
 
 | Asset | Platform |
 |-------|----------|
