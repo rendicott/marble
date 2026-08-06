@@ -12,7 +12,8 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Harness-side pairing hub** (`internal/peerhub`) + SQLite **computers** registry and session bind (`computer_id`)
 - **Settings → Computers** — register/list peers, online status, session bind
 - **Agent tools** — `computer_list` / `computer_bind` / `computer_screenshot` / `computer_desktop_act` / `computer_browser_*` (`ensure`, `tabs`, `open`, `snapshot`, `act` with `wait` / `set_input_files` / `click_text` / …) / `computer_confirm` / `computer_stop`
-- Peer binary lives in a **separate repo** (`marble-desktop-peer` → `marble-peer`); wire notes in [`docs/peer-protocol.md`](docs/peer-protocol.md)
+- Peer binary lives in a **separate repo**: **[marble-desktop-peer](https://github.com/rendicott/marble-desktop-peer)** (binary **`marble-peer`**, latest **[v0.1.0](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.0)**)
+- Wire notes: [`docs/peer-protocol.md`](docs/peer-protocol.md)
 - Screenshots land as **chat attachments** for vision models (ADR-0019)
 
 ### Long-turn efficiency (ADR-0022)
