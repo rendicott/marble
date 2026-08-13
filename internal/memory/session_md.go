@@ -1,6 +1,7 @@
 package memory
 
 import (
+	stdb64 "encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -37,6 +38,9 @@ type TranscriptMessage struct {
 	UserEmail string `json:"user_email,omitempty"`
 	UserName  string `json:"user_name,omitempty"`
 	UserSub   string `json:"user_sub,omitempty"`
+	// PresentationJSON is compact ADR-0025 presentation when present (assistant only).
+	// Stored as HTML comment on encode; not re-injected into model history.
+	PresentationJSON string `json:"presentation_json,omitempty"`
 }
 
 // SessionDoc is the full on-disk session.
@@ -110,6 +114,10 @@ func EncodeSession(doc *SessionDoc) string {
 					fmt.Fprintf(&b, " user_sub: %s", m.UserSub)
 				}
 				b.WriteString(" -->\n")
+			}
+			// ADR-0025: durable presentation as base64 payload (avoids -- in HTML comments).
+			if m.PresentationJSON != "" {
+				fmt.Fprintf(&b, "<!-- presentation_b64: %s -->\n", encodePresentationB64(m.PresentationJSON))
 			}
 		}
 		writeMessageContent(&b, m.Content)
@@ -332,8 +340,29 @@ func applyHTMLMeta(cur *TranscriptMessage, trim string) {
 			cur.UserName = val
 		case "user_sub":
 			cur.UserSub = val
+		case "presentation_b64":
+			if decoded := decodePresentationB64(val); decoded != "" {
+				cur.PresentationJSON = decoded
+			}
 		}
 	}
+}
+
+// encodePresentationB64 stores presentation JSON in MD without HTML-comment hazards.
+func encodePresentationB64(jsonStr string) string {
+	return stdb64.StdEncoding.EncodeToString([]byte(jsonStr))
+}
+
+func decodePresentationB64(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	b, err := stdb64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // isMessageHeading reports whether line is a Marble message delimiter, not body markdown.

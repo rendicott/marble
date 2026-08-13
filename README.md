@@ -4,7 +4,29 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.1
+## What's new in v0.4.2
+
+Highlights since **[v0.4.1](https://github.com/rendicott/marble/releases/tag/v0.4.1)**:
+
+### Models & API keys
+- **`model_add` / `model_update` / `model_get`** agent tools — catalog writes store **env var names** only (`api_key_env`)
+- Live re-read of **`$MEMORY/env`** and **`~/.config/marble/env`** so new catalog keys work without restart
+- Settings chips: **key ok / key missing** for process + catalog models
+
+### Gemini / provider tooling
+- Preserve tool-call **`extra_content`** (e.g. Gemini `thought_signature`) across rounds
+- Sanitize tool history (orphan calls / empty function names) for stricter OpenAI-compatible providers
+
+### Wonderstand protocol (ADR-0024 / ADR-0025)
+- Optional **`client` advertise** on create/postMessage; sticky session client (in-memory)
+- Optional assistant **`presentation`** field (phases, `speech_text`, visuals); MD dual-write + fence extract + size caps
+- Wonderstand **prompt pack** when `client.name=wonderstand` && `protocol≥1`
+
+### Docs
+- ADR-0024 pointer, ADR-0025 protocol (accepted), ADR-0026 transcript density (proposed)
+- Payload sketch: [`docs/wonderstand-protocol-sketch.md`](docs/wonderstand-protocol-sketch.md)
+
+### Earlier — v0.4.1
 
 Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.4.0)** (schema **v5–v7**):
 
@@ -65,8 +87,8 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Process CLI model** — `--base-url`, `--model`, context flags, optional `--api-key-env` (always available as fallback)
 - **Catalog models (ADR-0018)** — additional endpoints/models from Settings; per-entry base URL and `api_key_env`; session picker + cron pin
 - **Local / open endpoints** — no API key by default (no `Authorization` header)
-- **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` (and catalog `api_key_env`) reads keys from the environment only; first non-empty env wins
-- **Health / Settings** show auth mode + env name + configured yes/no — never the secret
+- **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` (and catalog `api_key_env`) names only; first non-empty wins from **process env**, then **`$MEMORY/env`**, then **`~/.config/marble/env`** (files re-read so new catalog keys need no restart)
+- **Health / Settings** show auth mode, env name, **key ok / key missing** chips — never the secret
 - **Multimodal (ADR-0019)** — image (+ basic document) parts when catalog `cap_images` is set; process default stays text-only on the wire
 
 ### Auth & access (ADR-0017)
@@ -84,7 +106,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Background tasks** — `start_background_task` / `check_background_task` / `kill_background_task` for long-running shell jobs (use these for servers; prefer over `shell_execute … &`)
 - **Continuations** — one-shot delayed resume (`schedule_continuation`: delay and/or wait for BG task); harness **auto-continue** near hard iter caps
 - **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
-- **Models (ADR-0018)** — `model_list`, `session_set_model`
+- **Models (ADR-0018)** — `model_list` / `model_get` / **`model_add`** / **`model_update`** / `session_set_model` (catalog writes store env **names** only; agent can research base_url & limits via web tools)
 - **Computer use (ADR-0020)** — `computer_*` tools against a paired **[marble-peer](https://github.com/rendicott/marble-desktop-peer)** (browser CDP + desktop + confirm)
 - **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available
 - **External agents (ADR-0014)** — `call_agent_process` (`format=grok|claude`) with optional `workdir`, high timeouts, `background` mode
@@ -405,10 +427,21 @@ Wire contract: [`docs/peer-protocol.md`](docs/peer-protocol.md). Peer install, C
 └── agent_process.json     # optional call_agent_process drivers (ADR-0014)
 ```
 
-Operator secrets (API keys) live **outside** the repo, typically:
+Operator secrets (API keys) live **outside** the repo and **outside SQLite**. Catalog models store only the **env var name** (`api_key_env`).
 
 ```
-~/.config/marble/env       # systemd EnvironmentFile, mode 0600
+~/.config/marble/env       # systemd EnvironmentFile + re-read by harness (mode 0600)
+~/.marble/env              # optional $MEMORY/env — also re-read live (mode 0600)
+```
+
+Example after adding a Gemini catalog row with `api_key_env=GEMINI_API_KEY`:
+
+```bash
+umask 077
+printf 'GEMINI_API_KEY=…\n' >> ~/.config/marble/env
+# Catalog models pick this up within ~2s (no restart).
+# If the var is only injected by an old process env and not in a file, restart:
+#   systemctl --user restart marble-harness
 ```
 
 ## MVP limitations
@@ -472,7 +505,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.4.1](https://github.com/rendicott/marble/releases/tag/v0.4.1)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.4.2](https://github.com/rendicott/marble/releases/tag/v0.4.2)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.0](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.0)**).
 
@@ -499,14 +532,14 @@ chmod +x marble-harness-linux-amd64
 **Publish a release** (maintainers — **GitHub Actions only**; do not upload locally built binaries):
 
 ```bash
-git tag v0.4.1
-git push origin v0.4.1
+git tag v0.4.2
+git push origin v0.4.2
 # Workflow "Release" builds on ubuntu-latest, tests, and attaches assets
 ```
 
 If a tag already exists but the workflow failed (e.g. GitHub outage), re-run from the Actions tab:
 
-**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.1`).
+**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.2`).
 
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 

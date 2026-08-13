@@ -54,6 +54,65 @@ func TestNormalizeOutboundDemotesMidSystem(t *testing.T) {
 	}
 }
 
+func TestSanitizeOrphanToolResults(t *testing.T) {
+	// MD reload shape: tool row without a preceding assistant tool_calls block
+	in := []model.Message{
+		{Role: "user", Content: model.ContentFromText("ssh please")},
+		{Role: "tool", Content: model.ContentFromText("found host"), Name: "memory_search", ToolCallID: "c1"},
+		{Role: "user", Content: model.ContentFromText("try again")},
+	}
+	out := sanitizeToolCallHistory(in)
+	if len(out) != 3 {
+		t.Fatalf("len=%d roles=%v", len(out), roles(out))
+	}
+	if out[1].Role != "user" || !strings.Contains(out[1].Content.PlainText(), "memory_search") {
+		t.Fatalf("orphan tool not demoted: %+v", out[1])
+	}
+	if out[2].Role != "user" {
+		t.Fatalf("last user lost: %v", roles(out))
+	}
+}
+
+func TestSanitizeFillsToolName(t *testing.T) {
+	in := []model.Message{
+		{Role: "user", Content: model.ContentFromText("go")},
+		{Role: "assistant", ToolCalls: []model.ToolCall{
+			{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "memory_search", Arguments: `{"q":"x"}`},
+				ExtraContent: []byte(`{"google":{"thought_signature":"SIG"}}`)},
+		}},
+		{Role: "tool", Content: model.ContentFromText("ok"), ToolCallID: "c1"}, // name missing
+	}
+	out := sanitizeToolCallHistory(in)
+	if len(out) != 3 || out[2].Role != "tool" {
+		t.Fatalf("roles=%v", roles(out))
+	}
+	if out[2].Name != "memory_search" {
+		t.Fatalf("name not filled: %q", out[2].Name)
+	}
+}
+
+func TestSanitizeIncompleteToolRound(t *testing.T) {
+	in := []model.Message{
+		{Role: "user", Content: model.ContentFromText("go")},
+		{Role: "assistant", ToolCalls: []model.ToolCall{
+			{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "memory_search", Arguments: `{}`}},
+		}},
+		// no tool result — user continues
+		{Role: "user", Content: model.ContentFromText("try again")},
+	}
+	out := sanitizeToolCallHistory(in)
+	// assistant tool_calls should be collapsed so Gemini does not see dangling calls
+	if len(out) != 3 {
+		t.Fatalf("len=%d roles=%v", len(out), roles(out))
+	}
+	if len(out[1].ToolCalls) != 0 {
+		t.Fatalf("expected tool_calls cleared, got %d", len(out[1].ToolCalls))
+	}
+	if !strings.Contains(out[1].Content.PlainText(), "memory_search") {
+		t.Fatalf("want note about tools: %q", out[1].Content.PlainText())
+	}
+}
+
 func roles(msgs []model.Message) []string {
 	var r []string
 	for _, m := range msgs {

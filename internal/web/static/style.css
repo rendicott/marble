@@ -105,6 +105,48 @@ body {
   min-width: 0;
 }
 
+/*
+ * Desktop: 260px sidebar cannot fit wordmark + Clerk + icon strip in one row
+ * (mark/name/clerk get crushed; settings can sit off-edge). Stack brand and
+ * toolbar. Mobile (≤720px) keeps the compact single-row toolbar as-is.
+ */
+@media (min-width: 721px) {
+  #app {
+    grid-template-columns: 300px 1fr;
+  }
+  .sidebar-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
+    padding: 0.75rem 0.85rem 0.7rem;
+    overflow: visible;
+  }
+  .brand {
+    flex: 0 0 auto;
+    min-width: 0;
+    width: 100%;
+  }
+  .brand-name {
+    display: inline;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .brand .clerk-btn {
+    margin-left: auto; /* push Clerk to the right of the wordmark row */
+  }
+  .sidebar-actions {
+    flex: 0 0 auto;
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 0.35rem;
+  }
+  .auth-bar {
+    width: 100%;
+  }
+}
+
 .mark {
   width: 22px;
   height: 22px;
@@ -1266,6 +1308,89 @@ button.tip {
   }
 }
 
+.settings-chip.ok {
+  color: var(--ok, #4ade80);
+  border-color: color-mix(in srgb, var(--ok, #4ade80) 40%, var(--border));
+}
+.settings-chip.warn {
+  color: var(--warn, #fbbf24);
+  border-color: color-mix(in srgb, var(--warn, #fbbf24) 45%, var(--border));
+}
+.model-row-auth-hint {
+  font-size: 0.78rem;
+  margin-top: 0.35rem;
+  line-height: 1.35;
+  color: var(--warn, #fbbf24);
+}
+.model-test-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10060;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+.model-test-overlay[hidden] {
+  display: none !important;
+}
+.model-test-dialog {
+  width: min(560px, 100%);
+  max-height: min(80vh, 720px);
+  background: var(--panel, #151922);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.model-test-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+.model-test-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.model-test-title.ok {
+  color: var(--ok, #4ade80);
+}
+.model-test-title.fail {
+  color: var(--danger, #f87171);
+}
+.model-test-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+.model-test-body {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  flex: 1;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+  background: var(--panel-2, #1b2130);
+  color: var(--text);
+  border: none;
+  outline: none;
+  min-height: 8rem;
+}
+.model-test-foot {
+  padding: 0.45rem 0.85rem 0.65rem;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
 .settings-chip {
   font-size: 0.75rem;
   font-family: var(--mono);

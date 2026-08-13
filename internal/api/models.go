@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rendicott/marble/internal/auth"
+	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/session"
 )
@@ -65,7 +66,10 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"models": out})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"models":         out,
+		"env_file_paths": config.EnvFilePaths(),
+	})
 }
 
 func (s *Server) getModel(w http.ResponseWriter, r *http.Request, id string) {
@@ -114,6 +118,7 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 	if s.Registry != nil && s.Registry.Runner() != nil {
 		s.Registry.Runner().InvalidateClientCache()
 	}
+	config.InvalidateEnvOverlay()
 	auth.LogAction("model_create", "id="+row.ID, auth.UserFromContext(r.Context()))
 	writeJSON(w, http.StatusCreated, s.Registry.Runner().CatalogRowPublic(row))
 }
@@ -149,6 +154,7 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request, id string) 
 	if s.Registry != nil && s.Registry.Runner() != nil {
 		s.Registry.Runner().InvalidateClientCache()
 	}
+	config.InvalidateEnvOverlay()
 	auth.LogAction("model_update", "id="+id, auth.UserFromContext(r.Context()))
 	writeJSON(w, http.StatusOK, s.Registry.Runner().CatalogRowPublic(row))
 }
@@ -203,11 +209,14 @@ func (s *Server) healthModel(w http.ResponseWriter, r *http.Request, id string) 
 		msg = err.Error()
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":      ok,
-		"id":      id,
-		"model":   em.Model,
-		"base_url": em.BaseURL,
-		"error":   msg,
+		"ok":                 ok,
+		"id":                 id,
+		"model":              em.Model,
+		"base_url":           em.BaseURL,
+		"api_key_configured": em.APIKeyConfigured,
+		"api_key_env":        em.APIKeyEnv,
+		"api_key_mode":       em.APIKeyMode,
+		"error":              msg,
 	})
 }
 

@@ -269,6 +269,11 @@
     try {
       const res = await api("/api/models");
       const models = res.models || [];
+      const envPaths = Array.isArray(res.env_file_paths) ? res.env_file_paths : [];
+      const envPathsHint =
+        envPaths.length > 0
+          ? envPaths.map((p) => `<code class="mono">${escapeHtml(p)}</code>`).join(" or ")
+          : `<code class="mono">~/.config/marble/env</code>`;
       const rows = models
         .map((m) => {
           const id = m.id || "";
@@ -280,6 +285,20 @@
               ? "disabled"
               : "catalog";
           const budget = m.budget != null ? m.budget : "—";
+          const keyEnv = (m.api_key_env || "").trim();
+          const keyMode = m.api_key_mode || "";
+          let keyChip = "";
+          if (keyMode === "none" || keyMode === "none_forced" || (!keyEnv && keyMode !== "env")) {
+            if (keyMode === "none_forced") keyChip = `<span class="settings-chip">auth none</span>`;
+            else if (m.api_key_configured) keyChip = `<span class="settings-chip ok">key ok</span>`;
+            else if (keyMode === "inherit" || !keyEnv) keyChip = m.api_key_configured
+              ? `<span class="settings-chip ok">key inherit</span>`
+              : `<span class="settings-chip muted">key inherit (empty)</span>`;
+          } else if (m.api_key_configured) {
+            keyChip = `<span class="settings-chip ok" title="${escapeAttr(keyEnv)}">key ok</span>`;
+          } else {
+            keyChip = `<span class="settings-chip warn" title="${escapeAttr(m.auth_hint || keyEnv + " not loaded")}">key missing</span>`;
+          }
           const capBits = [
             caps.tools !== false ? "tools" : null,
             caps.reasoning ? "reasoning" : null,
@@ -288,11 +307,16 @@
           ]
             .filter(Boolean)
             .join(" · ");
+          const hintLine =
+            m.auth_hint && !m.api_key_configured
+              ? `<div class="model-row-auth-hint muted">${escapeHtml(m.auth_hint)}</div>`
+              : "";
           return `<div class="settings-group model-row" data-id="${escapeAttr(id)}">
             <div class="model-row-head">
               <div class="model-row-title">
                 <span class="model-row-name">${escapeHtml(m.display_name || id)}</span>
                 <span class="settings-chip">${escapeHtml(badge)}</span>
+                ${keyChip}
               </div>
               <div class="model-row-actions">
                 ${editable ? `<button type="button" class="icon-btn model-copy" data-id="${escapeAttr(id)}" title="Open Add model prefilled from this entry">Copy to new</button>` : ""}
@@ -306,14 +330,17 @@
               <span>${escapeHtml(m.model || "")}</span>
               <span>ctx ${escapeHtml(String(m.context_limit || "—"))}</span>
               <span>budget ${escapeHtml(String(budget))}</span>
+              ${keyEnv ? `<span>env ${escapeHtml(keyEnv)}</span>` : ""}
               ${capBits ? `<span>${escapeHtml(capBits)}</span>` : ""}
             </div>
+            ${hintLine}
           </div>`;
         })
         .join("");
       els.pane.innerHTML = `
         <h3>Models</h3>
         <p class="hint">Process default is always available (CLI — restart to change). Catalog entries are selectable per session and optional on cron. Cost fields are stored for a future spend ADR — Marble does not bill. Max 32 entries.</p>
+        <p class="hint">API keys never go in the catalog — only <strong>env var names</strong>. Put <code class="mono">NAME=secret</code> in ${envPathsHint}. Files are re-read automatically (no harness restart for catalog models). Process env (systemd) is checked first.</p>
         ${rows || "<p class='hint'>No catalog entries yet.</p>"}
         <div class="model-list-actions">
           ${editable ? `<button type="button" class="icon-btn" id="model-add">+ Add model</button>` : "<p class='hint'>Read-only (limp).</p>"}
@@ -428,12 +455,12 @@
           <div class="settings-field">
             <label for="me-base">Base URL</label>
             <input type="text" id="me-base" class="mono" value="${escapeAttr(baseVal)}" placeholder="(inherit process)" />
-            <p class="field-help">Empty inherits process --base-url. Absolute http(s) only.</p>
+            <p class="field-help">Empty inherits process --base-url. Must be an <strong>OpenAI-compatible</strong> root (Marble calls <code class="mono">/chat/completions</code> and <code class="mono">/models</code>). Gemini: <code class="mono">https://generativelanguage.googleapis.com/v1beta/openai</code> — not <code class="mono">/v1beta/interactions</code> (native Google API).</p>
           </div>
           <div class="settings-field">
             <label for="me-keyenv">API key env</label>
             <input type="text" id="me-keyenv" class="mono" value="${escapeAttr(row.api_key_env || "")}" placeholder="(inherit) | none | OPENAI_API_KEY" />
-            <p class="field-help">Empty = inherit process key. <code>none</code> = no Authorization. Otherwise env name(s), never the secret.</p>
+            <p class="field-help">Empty = inherit process key. <code>none</code> = no Authorization. Otherwise env var name(s) (comma-separated), <strong>never the secret</strong>. After Save, if the list shows <em>key missing</em>, append <code class="mono">NAME=…</code> to ${envPathsHint} — Marble re-reads those files (no restart). Systemd-only process env still needs <code class="mono">systemctl --user restart marble-harness</code> if the var is not in a re-read file.</p>
           </div>
 
           <h4>Context limits</h4>
@@ -533,15 +560,24 @@
           if (cin !== "") body.cost_input_per_1m = parseFloat(cin);
           if (cout !== "") body.cost_output_per_1m = parseFloat(cout);
           try {
+            let saved;
             if (isNew) {
-              await api("/api/models", { method: "POST", body: JSON.stringify(body) });
+              saved = await api("/api/models", { method: "POST", body: JSON.stringify(body) });
             } else {
-              await api("/api/models/" + encodeURIComponent(row.id), {
+              saved = await api("/api/models/" + encodeURIComponent(row.id), {
                 method: "PUT",
                 body: JSON.stringify(body),
               });
             }
-            renderModelsSection(editable);
+            await renderModelsSection(editable);
+            if (saved && saved.auth_hint && !saved.api_key_configured) {
+              const banner = document.createElement("p");
+              banner.className = "hint model-editor-err";
+              banner.style.marginTop = "0.75rem";
+              banner.textContent = "Saved, but key not loaded yet: " + saved.auth_hint;
+              const listActions = els.pane.querySelector(".model-list-actions");
+              if (listActions) listActions.before(banner);
+            }
           } catch (e) {
             if (errEl) {
               errEl.hidden = false;
@@ -581,20 +617,105 @@
       els.pane.querySelectorAll(".model-test").forEach((btn) => {
         btn.onclick = async () => {
           const id = btn.getAttribute("data-id");
+          btn.disabled = true;
           try {
             const h = await api("/api/models/" + encodeURIComponent(id) + "/health", {
               method: "POST",
               body: "{}",
             });
-            alert(h.ok ? "Health OK: " + (h.model || id) : "Health failed: " + (h.error || "unknown"));
+            showModelTestResult(h);
           } catch (e) {
-            alert(e.message || String(e));
+            showModelTestResult({ ok: false, id, error: e.message || String(e) });
+          } finally {
+            btn.disabled = false;
           }
         };
       });
     } catch (e) {
       els.pane.innerHTML = `<h3>Models</h3><p class="hint model-editor-err">${escapeHtml(e.message || String(e))}</p>`;
     }
+  }
+
+  /** Selectable / copyable health result (native alert() is not copy-friendly). */
+  function showModelTestResult(h) {
+    h = h || {};
+    const ok = !!h.ok;
+    const title = ok ? "Health OK" : "Health failed";
+    const lines = [
+      title,
+      "id: " + (h.id || "—"),
+      "model: " + (h.model || "—"),
+      "base_url: " + (h.base_url || "—"),
+      "api_key_env: " + (h.api_key_env || "—"),
+      "api_key_configured: " + String(h.api_key_configured),
+      "api_key_mode: " + (h.api_key_mode || "—"),
+      "",
+      ok ? "(provider /models responded OK)" : h.error || "unknown error",
+    ];
+    const text = lines.join("\n");
+    let overlay = document.getElementById("model-test-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "model-test-overlay";
+      overlay.className = "model-test-overlay";
+      overlay.innerHTML = `
+        <div class="model-test-dialog" role="dialog" aria-labelledby="model-test-title">
+          <div class="model-test-top">
+            <div class="model-test-title" id="model-test-title">Model test</div>
+            <div class="model-test-actions">
+              <button type="button" class="icon-btn" id="model-test-copy" title="Copy full text">Copy</button>
+              <button type="button" class="icon-btn" id="model-test-close" title="Close">×</button>
+            </div>
+          </div>
+          <pre class="model-test-body" id="model-test-body" tabindex="0"></pre>
+          <p class="hint model-test-foot muted">Select text or use Copy. Esc / backdrop closes.</p>
+        </div>`;
+      document.body.appendChild(overlay);
+      const close = () => {
+        overlay.hidden = true;
+      };
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) close();
+      });
+      overlay.querySelector("#model-test-close").onclick = close;
+      overlay.querySelector("#model-test-copy").onclick = async () => {
+        const body = overlay.querySelector("#model-test-body");
+        const t = body ? body.textContent : "";
+        try {
+          await navigator.clipboard.writeText(t);
+          const b = overlay.querySelector("#model-test-copy");
+          if (b) {
+            const prev = b.textContent;
+            b.textContent = "Copied";
+            setTimeout(() => {
+              b.textContent = prev;
+            }, 1200);
+          }
+        } catch {
+          // Fallback: select pre contents
+          const range = document.createRange();
+          range.selectNodeContents(body);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      };
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && overlay && !overlay.hidden) {
+          overlay.hidden = true;
+        }
+      });
+    }
+    const titleEl = overlay.querySelector("#model-test-title");
+    const bodyEl = overlay.querySelector("#model-test-body");
+    if (titleEl) {
+      titleEl.textContent = title + (h.id ? " · " + h.id : "");
+      titleEl.classList.toggle("ok", ok);
+      titleEl.classList.toggle("fail", !ok);
+    }
+    if (bodyEl) bodyEl.textContent = text;
+    overlay.hidden = false;
+    if (bodyEl) bodyEl.focus();
   }
 
   function tip(key) {

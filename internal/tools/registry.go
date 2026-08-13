@@ -15,6 +15,7 @@ import (
 	"github.com/rendicott/marble/internal/bgtask"
 	"github.com/rendicott/marble/internal/continuation"
 	"github.com/rendicott/marble/internal/cron"
+	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/mcp"
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/peerhub"
@@ -75,8 +76,14 @@ type Registry struct {
 	ShellMax     time.Duration
 
 	// Model catalog helpers (ADR-0018) — wired from main
-	ListModels     func() ([]map[string]interface{}, error)
+	ListModels      func() ([]map[string]interface{}, error)
+	GetModel        func(id string) (map[string]interface{}, error)
+	CreateModel     func(row db.ModelCatalogRow) (map[string]interface{}, error)
+	UpdateModel     func(row db.ModelCatalogRow) (map[string]interface{}, error)
 	SetSessionModel func(sessionID, modelID string) (map[string]interface{}, error)
+	// ProcessContextReserve for ValidateModelCatalog when context_reserve=0.
+	ProcessContextReserve int
+
 
 	// StageChatAttachment stores bytes and returns id,mime,kind (ADR-0019).
 	StageChatAttachment func(sessionID, name string, data []byte) (id, mime, kind string, err error)
@@ -181,6 +188,12 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.cronRun(argsJSON)
 	case "model_list":
 		out, err = r.modelList(argsJSON)
+	case "model_get":
+		out, err = r.modelGet(argsJSON)
+	case "model_add":
+		out, err = r.modelAdd(argsJSON)
+	case "model_update":
+		out, err = r.modelUpdate(argsJSON)
 	case "session_set_model":
 		out, err = r.sessionSetModel(argsJSON, tc)
 	case "get_context_usage":

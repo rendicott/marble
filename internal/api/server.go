@@ -212,10 +212,13 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": list})
 	case http.MethodPost:
 		var body struct {
-			Title string `json:"title"`
+			Title  string                   `json:"title"`
+			Client *session.ClientAdvertise `json:"client"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		sess := s.Registry.Create(body.Title)
+		// ADR-0025: body client is normative; header-only ⇒ name without protocol.
+		applyClientAdvertise(sess, body.Client, r.Header.Get("X-Marble-Client"))
 		sum := sess.Summary()
 		s.markCronSession(&sum)
 		writeJSON(w, http.StatusCreated, sum)
@@ -504,8 +507,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	var body struct {
-		Content       string   `json:"content"`
-		AttachmentIDs []string `json:"attachment_ids"`
+		Content       string                   `json:"content"`
+		AttachmentIDs []string                 `json:"attachment_ids"`
+		Client        *session.ClientAdvertise `json:"client"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -514,6 +518,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request, id strin
 	if strings.TrimSpace(body.Content) == "" && len(body.AttachmentIDs) == 0 {
 		http.Error(w, "content or attachment_ids required", http.StatusBadRequest)
 		return
+	}
+	// ADR-0025 Q7: last postMessage may override sticky client for this turn.
+	if sess, err := s.Registry.EnsureLoaded(id); err == nil && sess != nil {
+		applyClientAdvertise(sess, body.Client, r.Header.Get("X-Marble-Client"))
 	}
 	var actor *session.Actor
 	if u := auth.UserFromContext(r.Context()); u != nil {
@@ -528,6 +536,24 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// applyClientAdvertise sets sticky client from body (normative) or header-only name (Q8).
+// If body is nil and header is empty, sticky is left unchanged.
+func applyClientAdvertise(sess *session.Session, body *session.ClientAdvertise, headerName string) {
+	if sess == nil {
+		return
+	}
+	if body != nil {
+		sess.SetClientAdvertise(body)
+		return
+	}
+	headerName = strings.TrimSpace(headerName)
+	if headerName == "" {
+		return
+	}
+	// Header-only ⇒ name without protocol (no enrichment assumptions).
+	sess.SetClientAdvertise(&session.ClientAdvertise{Name: headerName, Protocol: 0})
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, sess *session.Session) {

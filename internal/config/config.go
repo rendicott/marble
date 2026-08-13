@@ -196,8 +196,8 @@ func ParseFlags(args []string) (Config, error) {
 	return cfg, nil
 }
 
-// resolveAPIKey reads --api-key-env names from the process environment (ADR-0016).
-// Never logs the secret. First non-empty env value wins.
+// resolveAPIKey reads --api-key-env names from the process environment and
+// optional env files (ADR-0016). Never logs the secret. First non-empty wins.
 func (c *Config) resolveAPIKey() {
 	c.APIKey = ""
 	c.APIKeyEnvUsed = ""
@@ -208,27 +208,7 @@ func (c *Config) resolveAPIKey() {
 	c.APIKeyEnvConfigured = configured
 }
 
-// ResolveAPIKeyEnv resolves a comma-separated list of env var names to a secret.
-// Never logs the secret. First non-empty env value wins. Empty list → no key.
-// Used by process CLI and per-catalog-entry api_key_env (ADR-0018).
-func ResolveAPIKeyEnv(apiKeyEnv string) (key, used string, configured bool) {
-	raw := strings.TrimSpace(apiKeyEnv)
-	if raw == "" {
-		return "", "", false
-	}
-	for _, name := range strings.Split(raw, ",") {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		val := strings.TrimSpace(os.Getenv(name))
-		if val == "" {
-			continue
-		}
-		return val, name, true
-	}
-	return "", "", false
-}
+// ResolveAPIKeyEnv is defined in env_file.go (process env + file overlay).
 
 // BudgetTokens returns max prompt tokens for limit/maxOut/reserve (shared by process + catalog).
 func BudgetTokens(contextLimit, maxOutput, contextReserve int) int {

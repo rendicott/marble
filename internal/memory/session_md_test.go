@@ -58,6 +58,34 @@ func TestNewSessionID(t *testing.T) {
 	}
 }
 
+func TestPresentationB64RoundTrip(t *testing.T) {
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	pres := `{"protocol_version":1,"phases":[{"id":"p1","speech_text":"yo"}]}`
+	doc := &SessionDoc{
+		SessionMeta: SessionMeta{
+			ID: "pres001abc", Title: "p", CreatedAt: now, UpdatedAt: now, Status: "active",
+		},
+		Messages: []TranscriptMessage{{
+			ID: "m1", Role: "assistant", Content: "hi", CreatedAt: now,
+			PresentationJSON: pres,
+		}},
+	}
+	raw := EncodeSession(doc)
+	if !strings.Contains(raw, "presentation_b64:") {
+		t.Fatalf("missing presentation_b64:\n%s", raw)
+	}
+	got, err := DecodeSession(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Messages[0].PresentationJSON == "" {
+		t.Fatal("presentation not decoded")
+	}
+	if !strings.Contains(got.Messages[0].PresentationJSON, "speech_text") {
+		t.Fatalf("got %q", got.Messages[0].PresentationJSON)
+	}
+}
+
 func TestEncodeDaily(t *testing.T) {
 	day := time.Date(2026, 7, 16, 12, 0, 0, 0, time.Local)
 	doc := &SessionDoc{

@@ -27,6 +27,11 @@ type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
+	// ExtraContent preserves provider extensions. Gemini OpenAI-compat attaches
+	// extra_content.google.thought_signature on tool_calls; that signature MUST be
+	// echoed on the next request after tool results or Gemini returns HTTP 400.
+	// See https://ai.google.dev/gemini-api/docs/thought-signatures
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 // FunctionCall holds the tool name and JSON arguments.
@@ -202,9 +207,38 @@ func (c *Client) Health(ctx context.Context) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("health HTTP %d: %s", resp.StatusCode, truncate(string(b), 400))
+		msg := fmt.Sprintf("health HTTP %d: %s", resp.StatusCode, truncate(string(b), 400))
+		if hint := healthAuthHint(c.BaseURL, resp.StatusCode, string(b)); hint != "" {
+			msg += "\n\n" + hint
+		}
+		return fmt.Errorf("%s", msg)
 	}
 	return nil
+}
+
+// healthAuthHint adds operator guidance for common misconfigured endpoints.
+func healthAuthHint(baseURL string, status int, body string) string {
+	lowBase := strings.ToLower(baseURL)
+	lowBody := strings.ToLower(body)
+	// Google Gemini OpenAI-compat path (works with Bearer + Marble).
+	const geminiOpenAI = "https://generativelanguage.googleapis.com/v1beta/openai"
+	if strings.Contains(lowBase, "generativelanguage.googleapis.com") {
+		if strings.Contains(lowBase, "/interactions") || !strings.Contains(lowBase, "/openai") {
+			return "Hint: this base URL is not Marble’s OpenAI-compatible path. " +
+				"Use " + geminiOpenAI + " (not /v1beta/interactions). " +
+				"Keep model id e.g. gemini-3.6-flash and api_key_env=GEMINI_API_KEY. " +
+				"Native Google Interactions API uses a different request shape and auth (x-goog-api-key)."
+		}
+		if status == 401 || strings.Contains(lowBody, "unauthenticated") || strings.Contains(lowBody, "oauth") {
+			return "Hint: key may be wrong/revoked, or base URL should be " + geminiOpenAI + ". " +
+				"Confirm GEMINI_API_KEY is a Google AI Studio API key (not an OAuth access token)."
+		}
+	}
+	if status == 401 || status == 403 {
+		return "Hint: api_key_env is set but the provider rejected credentials. " +
+			"Check the secret in ~/.config/marble/env or $MEMORY/env, and that base_url matches an OpenAI-compatible endpoint."
+	}
+	return ""
 }
 
 func normalizeMessage(m Message) Message {

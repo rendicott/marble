@@ -129,8 +129,20 @@ func (r *Runner) resolveEffective(s *Session, opts TurnOpts) EffectiveModel {
 
 func (r *Runner) processEffective() EffectiveModel {
 	mode := "none"
+	apiKey := r.Cfg.APIKey
+	apiKeyEnv := r.Cfg.APIKeyEnv
+	configured := r.Cfg.APIKeyEnvConfigured
+	// Re-resolve live so keys added to env files after launch work without restart.
 	if strings.TrimSpace(r.Cfg.APIKeyEnv) != "" {
 		mode = "env"
+		key, _, ok := config.ResolveAPIKeyEnv(r.Cfg.APIKeyEnv)
+		if ok {
+			apiKey = key
+			configured = true
+		} else {
+			// Keep launch-time key if file overlay empty but process still has it.
+			configured = strings.TrimSpace(apiKey) != ""
+		}
 	}
 	return EffectiveModel{
 		Source:           "process",
@@ -138,10 +150,10 @@ func (r *Runner) processEffective() EffectiveModel {
 		DisplayName:      "Process default (CLI)",
 		Model:            r.Cfg.Model,
 		BaseURL:          r.Cfg.BaseURL,
-		APIKey:           r.Cfg.APIKey,
-		APIKeyEnv:        r.Cfg.APIKeyEnv,
+		APIKey:           apiKey,
+		APIKeyEnv:        apiKeyEnv,
 		APIKeyMode:       mode,
-		APIKeyConfigured: r.Cfg.APIKeyEnvConfigured,
+		APIKeyConfigured: configured,
 		ContextLimit:     r.Cfg.ContextLimit,
 		MaxOutput:        r.Cfg.MaxOutput,
 		ContextReserve:   r.Cfg.ContextReserve,
@@ -212,10 +224,12 @@ func (r *Runner) effectiveFromRow(row *db.ModelCatalogRow, source string) Effect
 	envSpec := strings.TrimSpace(row.APIKeyEnv)
 	switch {
 	case envSpec == "":
-		em.APIKey = r.Cfg.APIKey
-		em.APIKeyEnv = r.Cfg.APIKeyEnv
+		// Inherit process key, re-resolved live from env / files.
+		pe := r.processEffective()
+		em.APIKey = pe.APIKey
+		em.APIKeyEnv = pe.APIKeyEnv
 		em.APIKeyMode = "inherit"
-		em.APIKeyConfigured = r.Cfg.APIKeyEnvConfigured
+		em.APIKeyConfigured = pe.APIKeyConfigured
 	case strings.EqualFold(envSpec, "none"):
 		em.APIKey = ""
 		em.APIKeyMode = "none_forced"
@@ -227,7 +241,8 @@ func (r *Runner) effectiveFromRow(row *db.ModelCatalogRow, source string) Effect
 		em.APIKeyMode = "env"
 		em.APIKeyConfigured = configured
 		if !configured {
-			em.Advisory = fmt.Sprintf("[harness] model %q api_key_env %q unset; calling without Authorization", row.ID, envSpec)
+			hint := config.AuthHintForAPIKeyEnv(envSpec)
+			em.Advisory = fmt.Sprintf("[harness] model %q api_key_env %q unset; calling without Authorization. %s", row.ID, envSpec, hint)
 		}
 		_ = used
 	}
@@ -322,6 +337,10 @@ func (r *Runner) CatalogRowPublic(row *db.ModelCatalogRow) map[string]interface{
 	m["cost_notes"] = row.CostNotes
 	m["base_url_configured"] = row.BaseURL
 	m["api_key_env"] = row.APIKeyEnv
+	if hint := config.AuthHintForAPIKeyEnv(row.APIKeyEnv); hint != "" {
+		m["auth_hint"] = hint
+	}
+	m["env_file_paths"] = config.EnvFilePaths()
 	m["context_reserve_configured"] = row.ContextReserve
 	m["read_only"] = false
 	return m

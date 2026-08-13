@@ -61,6 +61,9 @@ func main() {
 			cfg.Memory, cfg.Memory, cfg.Memory)
 	}
 
+	// Catalog api_key_env re-reads $MEMORY/env + ~/.config/marble/env without restart.
+	config.SetMemoryDirForEnv(cfg.Memory)
+
 	// Ensure knowledge/skills/mpub dirs exist
 	_ = os.MkdirAll(cfg.Memory+"/knowledge", 0o755)
 	_ = os.MkdirAll(cfg.Memory+"/skills", 0o755)
@@ -158,6 +161,7 @@ func main() {
 	}
 	reg := session.NewRegistry(runner, store, sqldb, cfg.Workspace, cfg.Model)
 	runner.Reg = reg
+	toolReg.ProcessContextReserve = cfg.ContextReserve
 	toolReg.ListModels = func() ([]map[string]interface{}, error) {
 		out := []map[string]interface{}{runner.ProcessPublic()}
 		if sqldb != nil && sqldb.Writable() {
@@ -173,6 +177,102 @@ func main() {
 			}
 		}
 		return out, nil
+	}
+	toolReg.GetModel = func(id string) (map[string]interface{}, error) {
+		id = strings.TrimSpace(id)
+		if id == "" || id == session.ProcessCatalogID {
+			return runner.ProcessPublic(), nil
+		}
+		if sqldb == nil || !sqldb.Writable() {
+			return nil, fmt.Errorf("database not writable")
+		}
+		row, err := sqldb.GetModelCatalog(id)
+		if err != nil {
+			return nil, err
+		}
+		return runner.CatalogRowPublic(row), nil
+	}
+	toolReg.CreateModel = func(row db.ModelCatalogRow) (map[string]interface{}, error) {
+		if sqldb == nil || !sqldb.Writable() {
+			return nil, fmt.Errorf("database not writable")
+		}
+		if err := db.ValidateModelCatalog(&row, cfg.ContextReserve); err != nil {
+			return nil, err
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		row.CreatedAt = now
+		row.UpdatedAt = now
+		if err := sqldb.InsertModelCatalog(row); err != nil {
+			return nil, err
+		}
+		runner.InvalidateClientCache()
+		config.InvalidateEnvOverlay()
+		return runner.CatalogRowPublic(&row), nil
+	}
+	toolReg.UpdateModel = func(row db.ModelCatalogRow) (map[string]interface{}, error) {
+		if sqldb == nil || !sqldb.Writable() {
+			return nil, fmt.Errorf("database not writable")
+		}
+		existing, err := sqldb.GetModelCatalog(row.ID)
+		if err != nil {
+			return nil, err
+		}
+		// Merge omitted fields from existing (partial agent updates).
+		if strings.TrimSpace(row.DisplayName) == "" {
+			row.DisplayName = existing.DisplayName
+		}
+		if strings.TrimSpace(row.Model) == "" {
+			row.Model = existing.Model
+		}
+		// Empty base_url / api_key_env mean inherit/none — apply as given.
+		if row.ContextLimit <= 0 {
+			row.ContextLimit = existing.ContextLimit
+		}
+		if row.MaxOutput <= 0 {
+			row.MaxOutput = existing.MaxOutput
+		}
+		// Preserve caps/enabled when agent only touched identity/endpoint fields:
+		// detect default-create cap pattern with no model/display change intent.
+		if row.CapTools && !row.CapReasoning && !row.CapImages && !row.CapVoice &&
+			(existing.CapReasoning || existing.CapImages || existing.CapVoice || !existing.CapTools) {
+			row.CapTools = existing.CapTools
+			row.CapReasoning = existing.CapReasoning
+			row.CapImages = existing.CapImages
+			row.CapVoice = existing.CapVoice
+		}
+		if row.Enabled && !existing.Enabled {
+			// keep disabled unless explicitly re-enabled via true when existing false —
+			// can't distinguish; leave agent-provided Enabled
+		}
+		if strings.TrimSpace(row.Notes) == "" {
+			row.Notes = existing.Notes
+		}
+		if strings.TrimSpace(row.CostNotes) == "" {
+			row.CostNotes = existing.CostNotes
+		}
+		if row.CostInputPer1M == nil {
+			row.CostInputPer1M = existing.CostInputPer1M
+		}
+		if row.CostOutputPer1M == nil {
+			row.CostOutputPer1M = existing.CostOutputPer1M
+		}
+		if row.SortOrder == 0 && existing.SortOrder != 0 {
+			row.SortOrder = existing.SortOrder
+		}
+		// context_reserve 0 inherits process — only keep prior non-zero if agent sent 0 and
+		// existing had non-zero and they didn't pass context_reserve in a full rewrite.
+		// Prefer agent 0 as inherit.
+		row.CreatedAt = existing.CreatedAt
+		row.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := db.ValidateModelCatalog(&row, cfg.ContextReserve); err != nil {
+			return nil, err
+		}
+		if err := sqldb.UpdateModelCatalog(row); err != nil {
+			return nil, err
+		}
+		runner.InvalidateClientCache()
+		config.InvalidateEnvOverlay()
+		return runner.CatalogRowPublic(&row), nil
 	}
 	toolReg.SetSessionModel = func(sessionID, modelID string) (map[string]interface{}, error) {
 		_, em, err := reg.SetSessionModel(sessionID, modelID) // allows busy → next turn

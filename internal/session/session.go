@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,8 @@ type Message struct {
 	UserSub   string `json:"user_sub,omitempty"`
 	// Attachments are durable chat chips (ADR-0019).
 	Attachments []UIAttachment `json:"attachments,omitempty"`
+	// Presentation is optional structured immersion (ADR-0025); assistant only in protocol 1.
+	Presentation *Presentation `json:"presentation,omitempty"`
 }
 
 // Actor is optional identity for a human-authored message.
@@ -116,6 +119,11 @@ type Session struct {
 	// ComputerID is bound desktop peer slug (ADR-0020); "" = unbound.
 	ComputerID string
 
+	// Client sticky advertise (ADR-0025). In-memory for M1; createSession sets default,
+	// each postMessage may override (last post wins for enrichment).
+	ClientName     string
+	ClientProtocol int
+
 	mu      sync.Mutex
 	history []model.Message // model-facing history
 	ui      []Message       // UI transcript
@@ -124,6 +132,28 @@ type Session struct {
 	subs    map[chan Event]struct{}
 	seq     int
 	turn    turnControl // ADR-0010 live / last-turn progress
+}
+
+// SetClientAdvertise updates sticky client fields (ADR-0025 Q7).
+// Pass nil to leave unchanged. Empty name clears enrichment expectations.
+func (s *Session) SetClientAdvertise(c *ClientAdvertise) {
+	if s == nil || c == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ClientName = strings.TrimSpace(c.Name)
+	s.ClientProtocol = c.Protocol
+}
+
+// ClientAdvertiseSnapshot returns sticky client under lock.
+func (s *Session) ClientAdvertiseSnapshot() (name string, protocol int) {
+	if s == nil {
+		return "", 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ClientName, s.ClientProtocol
 }
 
 func newSession(id, title string) *Session {
@@ -374,7 +404,7 @@ func (s *Session) SnapshotDoc(workspace, modelName string) *memory.SessionDoc {
 func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.SessionDoc {
 	msgs := make([]memory.TranscriptMessage, len(s.ui))
 	for i, m := range s.ui {
-		msgs[i] = memory.TranscriptMessage{
+		tm := memory.TranscriptMessage{
 			ID:         m.ID,
 			Role:       m.Role,
 			Content:    m.Content,
@@ -385,6 +415,10 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 			UserName:   m.UserName,
 			UserSub:    m.UserSub,
 		}
+		if m.Presentation != nil {
+			tm.PresentationJSON = MarshalPresentationCompact(m.Presentation)
+		}
+		msgs[i] = tm
 	}
 	st := s.Status
 	if st == "" {
@@ -456,7 +490,7 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	s.history = []model.Message{{Role: "system", Content: model.ContentFromText(defaultSystemPrompt)}}
 	s.seq = 0
 	for _, m := range doc.Messages {
-		s.ui = append(s.ui, Message{
+		um := Message{
 			ID:         m.ID,
 			Role:       m.Role,
 			Content:    m.Content,
@@ -466,7 +500,16 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 			UserEmail:  m.UserEmail,
 			UserName:   m.UserName,
 			UserSub:    m.UserSub,
-		})
+		}
+		if m.PresentationJSON != "" {
+			um.Presentation = UnmarshalPresentation(m.PresentationJSON)
+		} else if m.Role == "assistant" {
+			// Re-extract fence from content when structured field absent (debuggable path).
+			if p, found := ExtractPresentationFence(m.Content); found && p != nil {
+				um.Presentation = ClampPresentation(p)
+			}
+		}
+		s.ui = append(s.ui, um)
 		// Reload attachment markers into multimodal history when present (ADR-0019).
 		histContent := historyContentFromUIMessage(m)
 		switch m.Role {

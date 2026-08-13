@@ -11,6 +11,7 @@ import (
 // backends (vLLM etc.): "System message must be at the beginning."
 // - Merges all leading consecutive system messages into one
 // - Demotes any system that appears after user/assistant/tool to a user note
+// - Sanitizes tool-call / tool-result pairs (orphan tools, missing names)
 func normalizeOutboundChatMessages(msgs []model.Message) []model.Message {
 	if len(msgs) == 0 {
 		return msgs
@@ -41,6 +42,7 @@ func normalizeOutboundChatMessages(msgs []model.Message) []model.Message {
 		}
 		rest = append(rest, m)
 	}
+	rest = sanitizeToolCallHistory(rest)
 	out := make([]model.Message, 0, 1+len(rest))
 	if len(sysParts) > 0 {
 		out = append(out, model.Message{
@@ -49,6 +51,126 @@ func normalizeOutboundChatMessages(msgs []model.Message) []model.Message {
 		})
 	}
 	out = append(out, rest...)
+	return out
+}
+
+// sanitizeToolCallHistory repairs tool rounds for strict providers (Gemini OpenAI-compat):
+// - Fills missing tool message name from the matching assistant tool_call
+// - Demotes orphan tool results (no prior tool_call_id in history) to user notes
+// - Collapses incomplete tool rounds (assistant tool_calls without results, or
+//   tool_calls that lost provider extra_content after reload) into plain text so
+//   Gemini does not 400 on empty function_response.name / missing thought_signature
+func sanitizeToolCallHistory(msgs []model.Message) []model.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	type pendingCall struct {
+		name     string
+		hasExtra bool
+	}
+	out := make([]model.Message, 0, len(msgs))
+	// ids opened by the most recent assistant tool_calls block that is still open
+	open := map[string]pendingCall{}
+	var openOrder []string
+
+	flushIncomplete := func() {
+		if len(open) == 0 {
+			return
+		}
+		// Rewrite the last assistant message in out if it carried these tool_calls.
+		for i := len(out) - 1; i >= 0; i-- {
+			if out[i].Role != "assistant" || len(out[i].ToolCalls) == 0 {
+				continue
+			}
+			var names []string
+			for _, id := range openOrder {
+				if p, ok := open[id]; ok {
+					names = append(names, p.name)
+				}
+			}
+			note := "[prior tool calls not fully restored in history: " + strings.Join(names, ", ") + "]"
+			txt := strings.TrimSpace(out[i].Content.PlainText())
+			if txt != "" {
+				txt = txt + "\n" + note
+			} else {
+				txt = note
+			}
+			out[i].Content = model.ContentFromText(txt)
+			out[i].ToolCalls = nil
+			break
+		}
+		open = map[string]pendingCall{}
+		openOrder = nil
+	}
+
+	for _, m := range msgs {
+		switch m.Role {
+		case "assistant":
+			if len(m.ToolCalls) > 0 {
+				// New tool round supersedes any incomplete previous one
+				flushIncomplete()
+				open = map[string]pendingCall{}
+				openOrder = nil
+				for _, tc := range m.ToolCalls {
+					id := strings.TrimSpace(tc.ID)
+					if id == "" {
+						continue
+					}
+					open[id] = pendingCall{
+						name:     strings.TrimSpace(tc.Function.Name),
+						hasExtra: len(tc.ExtraContent) > 0,
+					}
+					openOrder = append(openOrder, id)
+				}
+				out = append(out, m)
+				continue
+			}
+			flushIncomplete()
+			out = append(out, m)
+		case "tool":
+			id := strings.TrimSpace(m.ToolCallID)
+			p, ok := open[id]
+			if !ok || id == "" {
+				// Orphan tool result (typical after MD reload: tool rows without assistant tool_calls)
+				name := strings.TrimSpace(m.Name)
+				if name == "" {
+					name = "tool"
+				}
+				txt := strings.TrimSpace(m.Content.PlainText())
+				out = append(out, model.Message{
+					Role:    "user",
+					Content: model.ContentFromText("[prior " + name + " result]\n" + txt),
+				})
+				continue
+			}
+			if strings.TrimSpace(m.Name) == "" {
+				m.Name = p.name
+			}
+			if strings.TrimSpace(m.Name) == "" {
+				// Still empty — demote rather than send invalid function_response
+				txt := strings.TrimSpace(m.Content.PlainText())
+				out = append(out, model.Message{
+					Role:    "user",
+					Content: model.ContentFromText("[prior tool result]\n" + txt),
+				})
+				delete(open, id)
+				continue
+			}
+			out = append(out, m)
+			delete(open, id)
+			// If all open calls resolved, clear order
+			if len(open) == 0 {
+				openOrder = nil
+			}
+		case "user":
+			flushIncomplete()
+			out = append(out, m)
+		default:
+			flushIncomplete()
+			out = append(out, m)
+		}
+	}
+	flushIncomplete()
 	return out
 }
 

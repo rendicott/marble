@@ -1,0 +1,72 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0025",
+  "title": "Wonderstand Protocol — Structured I/O",
+  "updated_at": "2026-08-08T16:07:31.856Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Ignore entire presentation block when protocol_version is newer than client; fall back to ArtifactParser (fail closed).",
+      "notes": "",
+      "question": "On protocol_version newer than client: ignore presentation entirely, or best-effort known fields?",
+      "rec": "Ignore entire presentation block when protocol_version is newer than client; fall back to ArtifactParser (fail closed)."
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "M2 prompt pack steers markdown quality; M3 prefer optional ```presentation fence in content (debuggable) parsed into presentation field, with heuristic enrich as backup. Do not require a new tool in p1.",
+      "notes": "",
+      "question": "How does presentation get produced in M2/M3?",
+      "rec": "M2 prompt pack steers markdown quality; M3 prefer optional ```presentation fence in content (debuggable) parsed into presentation field, with heuristic enrich as backup. Do not require a new tool in p1."
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Phase without visual holds the previous visual on screen (immersion-timeline spirit).",
+      "notes": "",
+      "question": "Phase without visual: hold previous, clear, or inherit hero?",
+      "rec": "Phase without visual holds the previous visual on screen (immersion-timeline spirit)."
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No user-message presentation in protocol 1; assistant only.",
+      "notes": "",
+      "question": "User messages carry presentation?",
+      "rec": "No user-message presentation in protocol 1; assistant only."
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Defer progressive mid-turn phases; attach presentation only on final assistant message in p1.",
+      "notes": "",
+      "question": "Progressive phases mid-turn via SSE?",
+      "rec": "Defer progressive mid-turn phases; attach presentation only on final assistant message in p1."
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Caps: 32 phases; 2 KiB speech_text/phase; 256 KiB svg/html/phase; 1 MiB total presentation_json. Clamp + log; do not fail the whole turn.",
+      "notes": "",
+      "question": "Size caps?",
+      "rec": "Caps: 32 phases; 2 KiB speech_text/phase; 256 KiB svg/html/phase; 1 MiB total presentation_json. Clamp + log; do not fail the whole turn."
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "createSession sets session default client; each postMessage may override for that turn (last post wins for enrichment).",
+      "notes": "",
+      "question": "Session sticky client: first advertise vs last postMessage?",
+      "rec": "createSession sets session default client; each postMessage may override for that turn (last post wins for enrichment)."
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Body client object is normative for protocol negotiation; X-Marble-Client header optional for metrics. Header-only ⇒ name without protocol (no enrichment assumptions).",
+      "notes": "",
+      "question": "X-Marble-Client header vs body client?",
+      "rec": "Body client object is normative for protocol negotiation; X-Marble-Client header optional for metrics. Header-only ⇒ name without protocol (no enrichment assumptions)."
+    }
+  }
+}

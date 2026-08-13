@@ -89,9 +89,10 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *
 	s.mu.Lock()
 	// Auto-title from latest user message unless operator pinned a custom name.
 	// System agents and cron-titled sessions never auto-title.
+	// Wonderstand: strip visual-mode envelope and keep "ws: " prefix (client branding).
 	titleUpdated := false
 	if !continuation && shouldAutoTitleLocked(s) && strings.TrimSpace(display) != "" {
-		nt := truncateTitle(display, 48)
+		nt := deriveAutoTitle(s.Title, display, s.ClientName)
 		if nt != "" && nt != s.Title {
 			s.Title = nt
 			titleUpdated = true
@@ -332,6 +333,8 @@ func (r *Runner) runTurn(s *Session) {
 		prompt := trimHistory(hist, budget, toolEst)
 		// ADR-0013: every-turn soul as second system message (user sessions only)
 		prompt = r.injectSoul(s, prompt)
+		// ADR-0025 M2: Wonderstand prompt pack when client advertises protocol≥1
+		prompt = r.injectWonderstandPromptPack(s, prompt)
 		var stripped bool
 		prompt, stripped = ApplyCapabilityFilter(prompt, em)
 		if stripped {
@@ -417,6 +420,7 @@ func (r *Runner) runTurn(s *Session) {
 				s.mu.Unlock()
 				prompt = trimHistory(hist, budget, toolEst)
 				prompt = r.injectSoul(s, prompt)
+				prompt = r.injectWonderstandPromptPack(s, prompt)
 				prompt, _ = ApplyCapabilityFilter(prompt, em)
 				estIn = estimateAll(prompt) + toolEst
 				s.setContextUsage(em.UsageRatio(estIn))
@@ -586,22 +590,26 @@ func (r *Runner) runTurn(s *Session) {
 		if content == "" {
 			content = "(empty model response)"
 		}
+		// ADR-0025: optional presentation on final assistant only (Q5); clamp never fails turn (Q6).
+		pres := enrichPresentationFromContent(content)
 		s.setPhase("finishing")
 		s.publishTurnProgress()
 
 		s.mu.Lock()
 		aid := s.nextID("m")
 		am := Message{
-			ID:        aid,
-			Role:      "assistant",
-			Content:   content,
-			CreatedAt: time.Now(),
+			ID:           aid,
+			Role:         "assistant",
+			Content:      content,
+			CreatedAt:    time.Now(),
+			Presentation: pres,
 		}
 		s.appendUI(am)
 		s.history = append(s.history, model.Message{Role: "assistant", Content: model.ContentFromText(content)})
 		s.mu.Unlock()
 		if r.Reg != nil {
-			r.Reg.logEvent(s, "assistant_message", "assistant", content, "", "", "", tin, tout, nil, intPtr(estOut), &lat, finish, "")
+			meta := PresentationMetaJSON(pres)
+			r.Reg.logEventMeta(s, "assistant_message", "assistant", content, "", "", "", tin, tout, nil, intPtr(estOut), &lat, finish, "", meta)
 			r.Reg.syncSessionRow(s)
 		}
 		s.publish(Event{Type: "message", Message: &am})
@@ -800,6 +808,42 @@ func (r *Runner) injectSoul(s *Session, prompt []model.Message) []model.Message 
 	return out
 }
 
+// injectWonderstandPromptPack appends the ADR-0025 M2 system snippet when the sticky
+// client is wonderstand with protocol ≥ 1. Skips system-agent sessions.
+func (r *Runner) injectWonderstandPromptPack(s *Session, prompt []model.Message) []model.Message {
+	if s == nil || s.Kind == "system" {
+		return prompt
+	}
+	name, proto := s.ClientAdvertiseSnapshot()
+	if !IsWonderstandProtocol(name, proto) {
+		return prompt
+	}
+	pack := model.Message{Role: "system", Content: model.ContentFromText(WonderstandPromptPack)}
+	// Insert after soul / leading system messages so pack is near the front but after harness system.
+	out := make([]model.Message, 0, len(prompt)+1)
+	inserted := false
+	for _, m := range prompt {
+		if !inserted && m.Role != "system" {
+			out = append(out, pack)
+			inserted = true
+		}
+		out = append(out, m)
+	}
+	if !inserted {
+		out = append(out, pack)
+	}
+	return out
+}
+
+// enrichPresentationFromContent parses optional ```presentation fence and clamps (W4).
+func enrichPresentationFromContent(content string) *Presentation {
+	p, found := ExtractPresentationFence(content)
+	if !found || p == nil {
+		return nil
+	}
+	return ClampPresentation(p)
+}
+
 // advisory emits UI harness chip + DB event; never writes to session MD transcript body intentionally.
 func (r *Runner) advisory(s *Session, note string) {
 	s.publish(Event{Type: "harness", Status: note})
@@ -969,7 +1013,65 @@ func truncateTitle(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	// rune-safe trim
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// stripWonderstandEnvelope removes the client PromptEnvelope preamble so auto-titles
+// use the real user ask, not "[Wonderstand visual mode] Prefer answering…".
+func stripWonderstandEnvelope(text string) string {
+	const marker = "[Wonderstand visual mode]"
+	t := strings.TrimSpace(text)
+	if !strings.Contains(t, marker) {
+		return t
+	}
+	// Envelope ends at a line that is only "---"
+	lines := strings.Split(t, "\n")
+	out := make([]string, 0, len(lines))
+	skipping := false
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		if strings.Contains(line, marker) {
+			skipping = true
+			continue
+		}
+		if skipping {
+			if trim == "---" {
+				skipping = false
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// deriveAutoTitle builds a list title from the latest user message.
+// Preserves leading "ws: " when the session already has it or client is wonderstand.
+func deriveAutoTitle(currentTitle, userDisplay, clientName string) string {
+	body := stripWonderstandEnvelope(userDisplay)
+	body = truncateTitle(body, 48)
+	if body == "" {
+		return ""
+	}
+	// Don't re-wrap if body already starts with ws:
+	lowerBody := strings.ToLower(body)
+	if strings.HasPrefix(lowerBody, "ws:") {
+		return body
+	}
+	cur := strings.TrimSpace(currentTitle)
+	wantWS := strings.HasPrefix(strings.ToLower(cur), "ws:") ||
+		strings.EqualFold(strings.TrimSpace(clientName), "wonderstand")
+	if wantWS {
+		// Keep room for prefix inside ~56 chars total
+		body = truncateTitle(body, 48)
+		return "ws: " + body
+	}
+	return body
 }
 
 // shouldAutoTitleLocked reports whether this session's title may be overwritten

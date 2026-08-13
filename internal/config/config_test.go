@@ -55,6 +55,45 @@ func TestResolveAPIKeyFlagButEmptyEnv(t *testing.T) {
 	}
 }
 
+func TestResolveAPIKeyFromMemoryEnvFile(t *testing.T) {
+	// Ensure process env does not supply the key
+	t.Setenv("MARBLE_FILE_ONLY_KEY", "")
+	dir := t.TempDir()
+	SetMemoryDirForEnv(dir)
+	t.Cleanup(func() { SetMemoryDirForEnv(""); InvalidateEnvOverlay() })
+	path := filepath.Join(dir, "env")
+	if err := os.WriteFile(path, []byte("# test\nMARBLE_FILE_ONLY_KEY=from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateEnvOverlay()
+	key, used, ok := ResolveAPIKeyEnv("MARBLE_FILE_ONLY_KEY")
+	if !ok || key != "from-file" || used != "MARBLE_FILE_ONLY_KEY" {
+		t.Fatalf("got key=%q used=%q ok=%v", key, used, ok)
+	}
+	if hint := AuthHintForAPIKeyEnv("MARBLE_FILE_ONLY_KEY"); hint != "" {
+		t.Fatalf("unexpected hint: %s", hint)
+	}
+	if hint := AuthHintForAPIKeyEnv("MARBLE_MISSING_KEY_XYZ"); hint == "" {
+		t.Fatal("expected missing hint")
+	}
+}
+
+func TestParseEnvFileQuotesAndExport(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "e")
+	body := "export A=plain\nB=\"quoted val\"\n#c\nD='x'\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseEnvFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m["A"] != "plain" || m["B"] != "quoted val" || m["D"] != "x" {
+		t.Fatalf("%+v", m)
+	}
+}
+
 func TestResolveMemoryDirCreatesMissing(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "nested", "marble-mem")
