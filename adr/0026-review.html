@@ -92,13 +92,14 @@
     <div class="brand">
       <span class="mark"></span>
       <span>Marble · ADR-0026</span>
-      <span class="status">PROPOSED · Q1–Q10 open</span>
+      <span class="status" style="background:#1a3a28;color:var(--ok);border-color:#2d6a4f">ACCEPTED · Q1–Q10 locked</span>
     </div>
     <nav class="toc">
+      <a href="0026-doc.html">Read ADR</a>
       <a href="#pain">Pain</a>
       <a href="#mock">Mock</a>
       <a href="#design">Design</a>
-      <a href="#questions">Questions</a>
+      <a href="#questions">Decisions</a>
       <a href="0026-transcript-density.md">Markdown</a>
       <a href="0010-agent-loop-transparency.md">0010</a>
     </nav>
@@ -108,25 +109,27 @@
     <section>
       <h1>Transcript density</h1>
       <p class="lede">
-        Compact tool result rows by default, show datestamps on user/assistant messages,
-        and surface lightweight “thinking / working” status during turns—without another
-        wall of permanent bubbles. Web UI first; no API break.
+        Compact tool rows by default, datestamps on user/assistant/tools, live thinking
+        status during turns, and <strong>persisted collapsed thinking</strong> in history
+        (same expand pattern as tools). Web UI first.
       </p>
       <div class="meta-row">
-        <div class="meta"><b>Status</b> Proposed · review</div>
-        <div class="meta"><b>Date</b> 2026-08-08</div>
+        <div class="meta"><b>Status</b> Accepted · ready to implement</div>
+        <div class="meta"><b>Accepted</b> 2026-08-13</div>
         <div class="meta"><b>Extends</b> 0010 · 0005 · 0001</div>
         <div class="meta"><b>Scope</b> web transcript mainly</div>
       </div>
       <div class="chips">
         <span class="chip"><strong>tools</strong> collapsed default</span>
-        <span class="chip"><strong>time</strong> created_at chrome</span>
-        <span class="chip"><strong>thinking</strong> live status line</span>
-        <span class="chip"><strong>API</strong> unchanged v1</span>
+        <span class="chip"><strong>time</strong> user+assistant+tool</span>
+        <span class="chip"><strong>thinking</strong> live + history</span>
+        <span class="chip"><strong>expand-all</strong> tools+thinking</span>
       </div>
       <div class="callout">
-        Canonical: <a href="0026-transcript-density.md">0026-transcript-density.md</a>.
-        Answer Q1–Q10 below, save <code>0026-answers.json</code>, tell the agent to collect answers.
+        All Q1–Q10 locked. Canonical answers: <code>adr/0026-answers.json</code>
+        (<code>2026-08-13T13:57:11.405Z</code>).
+        Spec: <a href="0026-transcript-density.md">0026-transcript-density.md</a>.
+        Ready for T1–T4.
       </div>
     </section>
 
@@ -142,17 +145,17 @@
         <tr>
           <td class="pain">No message times</td>
           <td><code>created_at</code> on wire, unused in bubble</td>
-          <td>Local time / date on user + assistant</td>
+          <td>Local time on user, assistant, tool headers</td>
         </tr>
         <tr>
           <td class="pain">Chat feels frozen mid-turn</td>
           <td>Pill + turn card only</td>
-          <td>Live “⋯ thinking / running tool” line</td>
+          <td>Live “⋯ thinking / running tool” + turn card</td>
         </tr>
         <tr>
-          <td class="pain">Hard to re-read multi-day threads</td>
-          <td>No visual chronology</td>
-          <td>Timestamps + quieter tool chrome</td>
+          <td class="pain">Thinking vanishes after turn</td>
+          <td>N/A</td>
+          <td>Collapsed thinking rows in history (Q8)</td>
         </tr>
       </table>
     </section>
@@ -162,9 +165,10 @@
       <pre class="mock">user                                          3:40 PM
 What's in the deploy dir?
 
-▸ file_read · README.md · 40 chars…
-▸ grep · "deploy" · 12 hits…
-▸ shell_execute · ls -la dist/ · exit 0…
+▸ thinking · calling model · 2.1s
+▸ file_read · 3:40 PM · README.md · 40 chars…
+▸ thinking · calling model · 1.0s
+▸ shell_execute · 3:40 PM · ls -la dist/ · exit 0…
   ⋯ thinking · calling model · i3 · 4s     ← live only while busy
 
 assistant                                     3:41 PM
@@ -172,95 +176,105 @@ assistant                                     3:41 PM
 
 Here's what I found…</pre>
       <div class="callout warn">
-        Wire still stores full tool messages (MD / GET hydrate). Compaction is presentation only.
-        ADR-0010 turn progress card stays for full detail + Stop.
+        Expand all expands tools <em>and</em> thinking. Single-row click expands only that row (Q8).
+        Wire still stores full tool messages. ADR-0010 turn card stays.
       </div>
     </section>
 
     <section id="design">
-      <h2>Three pillars</h2>
+      <h2>Three pillars (locked)</h2>
       <h3>A · Compact tools</h3>
       <p class="muted">
-        Collapsed header: tool name + one-line preview. Expand reveals full body.
-        Optional expand-all. Attachments/screenshots stay visible when collapsed (rec).
+        Collapsed header: tool name + time + one-line preview. Expand reveals full body.
+        Expand-all in session toolbar. Image chips always visible when collapsed.
       </p>
       <h3>B · Timestamps</h3>
       <p class="muted">
         From existing <code>created_at</code>. Same day → time only; else short date+time.
-        Full ISO in tooltip. No backend change for v1.
+        Full ISO in tooltip. Tools get subtle header time too.
       </p>
-      <h3>C · Thinking status</h3>
+      <h3>C · Thinking</h3>
       <p class="muted">
-        Single ephemeral line driven by <code>turn</code> / <code>status</code> SSE (calling model,
-        running tool name…). Not written into session MD. Gone when turn goes idle.
+        Live line while busy (above turn card). On phase change / idle, commit collapsed
+        history rows like tools. Not model-facing. Harness advisories stay full bubbles.
       </p>
       <table>
         <tr><th>PR</th><th>Scope</th></tr>
-        <tr><td>T1</td><td>Timestamps user/assistant</td></tr>
-        <tr><td>T2</td><td>Compact tools + expand/collapse</td></tr>
-        <tr><td>T3</td><td>Live thinking status line</td></tr>
-        <tr><td>T4</td><td>Prefs + attachment chips + polish</td></tr>
+        <tr><td>T1</td><td>Timestamps user/assistant/tool</td></tr>
+        <tr><td>T2</td><td>Compact tools + expand-all</td></tr>
+        <tr><td>T3</td><td>Live thinking + collapsed history rows</td></tr>
+        <tr><td>T4</td><td>localStorage pref + attachment chips</td></tr>
       </table>
     </section>
 
     <section id="questions">
-      <h2>Open questions</h2>
-      <p class="muted">Use rec / Custom / Defer via review-kit. Save <code>0026-answers.json</code> next to this file.</p>
+      <h2>Decisions locked (Q1–Q10)</h2>
+      <p class="muted">Source: <code>0026-answers.json</code> (<code>2026-08-13T13:57:11.405Z</code>).</p>
 
       <h3>Tool density</h3>
-      <div class="q" data-qid="Q1" data-status="open"
-           data-rec="Collapsed by default: one-line tool chip; click header to expand full body.">
+      <div class="q" data-qid="Q1" data-status="locked"
+           data-rec="Collapsed by default: one-line tool chip; click header to expand full body."
+           data-decision="Collapsed by default: one-line tool chip; click header to expand full body.">
         <strong>Q1</strong> Default tool density?
-        <div class="rec">Rec: collapsed one-line; click to expand.</div>
+        <div class="rec">Locked: collapsed one-line; click to expand.</div>
       </div>
-      <div class="q" data-qid="Q2" data-status="open"
-           data-rec="No turn-level tool accordion in v1; per-tool compact rows only. Revisit if still too tall.">
+      <div class="q" data-qid="Q2" data-status="locked"
+           data-rec="No turn-level tool accordion in v1; per-tool compact rows only. Revisit if still too tall."
+           data-decision="No turn-level tool accordion in v1; per-tool compact rows only. Revisit if still too tall.">
         <strong>Q2</strong> Group all tools since last user message into one “N tools” accordion?
-        <div class="rec">Rec: no in v1 — per-tool compact rows.</div>
+        <div class="rec">Locked: no in v1 — per-tool compact rows.</div>
       </div>
-      <div class="q" data-qid="Q3" data-status="open"
-           data-rec="Expand all / collapse all control in transcript toolbar near session actions.">
+      <div class="q" data-qid="Q3" data-status="locked"
+           data-rec="Expand all / collapse all control in transcript toolbar near session actions."
+           data-decision="Expand all / collapse all control in transcript toolbar near session actions.">
         <strong>Q3</strong> Expand-all control placement?
-        <div class="rec">Rec: transcript toolbar near session actions.</div>
+        <div class="rec">Locked: transcript toolbar near session actions.</div>
       </div>
-      <div class="q" data-qid="Q4" data-status="open"
-           data-rec="Remember expand-default in localStorage first; promote to Settings key only if needed.">
+      <div class="q" data-qid="Q4" data-status="locked"
+           data-rec="Remember expand-default in localStorage first; promote to Settings key only if needed."
+           data-decision="Remember expand-default in localStorage first; promote to Settings key only if needed.">
         <strong>Q4</strong> Persist “tools expanded by default”?
-        <div class="rec">Rec: localStorage first.</div>
+        <div class="rec">Locked: localStorage first.</div>
       </div>
 
       <h3>Timestamps</h3>
-      <div class="q" data-qid="Q5" data-status="open"
-           data-rec="Same calendar day: time only (locale). Else short date + time. Full ISO in title tooltip.">
+      <div class="q" data-qid="Q5" data-status="locked"
+           data-rec="Same calendar day: time only (locale). Else short date + time. Full ISO in title tooltip."
+           data-decision="Same calendar day: time only (locale). Else short date + time. Full ISO in title tooltip.">
         <strong>Q5</strong> Timestamp display format?
-        <div class="rec">Rec: time-only same day; else date+time; ISO tooltip.</div>
+        <div class="rec">Locked: time-only same day; else date+time; ISO tooltip.</div>
       </div>
-      <div class="q" data-qid="Q6" data-status="open"
-           data-rec="Yes — subtle timestamp on compact tool header as well as user/assistant.">
+      <div class="q" data-qid="Q6" data-status="locked"
+           data-rec="Yes — subtle timestamp on compact tool header as well as user/assistant."
+           data-decision="Yes — subtle timestamp on compact tool header as well as user/assistant.">
         <strong>Q6</strong> Show timestamps on tool rows too?
-        <div class="rec">Rec: yes, subtle on compact header.</div>
+        <div class="rec">Locked: yes, subtle on compact header.</div>
       </div>
 
       <h3>Thinking / status</h3>
-      <div class="q" data-qid="Q7" data-status="open"
-           data-rec="Both: keep ADR-0010 turn card; add one live “⋯ thinking / running tool” line above it while busy.">
+      <div class="q" data-qid="Q7" data-status="locked"
+           data-rec="Both: keep ADR-0010 turn card; add one live “⋯ thinking / running tool” line above it while busy."
+           data-decision="Both: keep ADR-0010 turn card; add one live “⋯ thinking / running tool” line above it while busy.">
         <strong>Q7</strong> Thinking status: in-transcript line vs only turn card?
-        <div class="rec">Rec: both — live one-liner + existing turn card.</div>
+        <div class="rec">Locked: both — live one-liner + existing turn card.</div>
       </div>
-      <div class="q" data-qid="Q8" data-status="open"
-           data-rec="Ephemeral only — remove thinking line when turn goes idle; do not persist to MD or message list.">
+      <div class="q" data-qid="Q8" data-status="locked"
+           data-rec="Ephemeral only — remove thinking line when turn goes idle; do not persist to MD or message list."
+           data-decision="Yes, persist thinking but collapse in history like tool calls, expand all button expands thinking too while clicking on a single thinking line only expands that line">
         <strong>Q8</strong> Persist thinking lines after the turn ends?
-        <div class="rec">Rec: no — ephemeral only.</div>
+        <div class="rec">Locked (custom): persist collapsed like tools; expand-all includes thinking; single click = one row.</div>
       </div>
-      <div class="q" data-qid="Q9" data-status="open"
-           data-rec="Keep harness advisory bubbles as today; only phase/tool noise uses the ephemeral status line.">
+      <div class="q" data-qid="Q9" data-status="locked"
+           data-rec="Keep harness advisory bubbles as today; only phase/tool noise uses the ephemeral status line."
+           data-decision="Keep harness advisory bubbles as today; only phase/tool noise uses the ephemeral status line.">
         <strong>Q9</strong> Demote harness advisories into the status strip?
-        <div class="rec">Rec: keep harness bubbles; ephemeral line is phase/tool only.</div>
+        <div class="rec">Locked: keep harness bubbles; phase/tool on thinking path.</div>
       </div>
-      <div class="q" data-qid="Q10" data-status="open"
-           data-rec="Always show attachment/image chips on tool rows even when body is collapsed.">
+      <div class="q" data-qid="Q10" data-status="locked"
+           data-rec="Always show attachment/image chips on tool rows even when body is collapsed."
+           data-decision="Always show attachment/image chips on tool rows even when body is collapsed.">
         <strong>Q10</strong> Screenshots on collapsed tool rows?
-        <div class="rec">Rec: always show image chips when collapsed.</div>
+        <div class="rec">Locked: always show image chips when collapsed.</div>
       </div>
     </section>
 
@@ -268,18 +282,18 @@ Here's what I found…</pre>
       <h2>Suggested PRs (post-accept)</h2>
       <table>
         <tr><th>PR</th><th>Scope</th></tr>
-        <tr><td>T1</td><td>Timestamps on user/assistant bubbles</td></tr>
+        <tr><td>T1</td><td>Timestamps on user/assistant/tool bubbles</td></tr>
         <tr><td>T2</td><td>Compact tools + expand/collapse + expand-all</td></tr>
-        <tr><td>T3</td><td>Live thinking status from turn/status SSE</td></tr>
+        <tr><td>T3</td><td>Live thinking + collapsed thinking history</td></tr>
         <tr><td>T4</td><td>localStorage pref + attachment chips + polish</td></tr>
       </table>
     </section>
   </main>
 
   <footer>
-    Marble · ADR-0026 · <strong>proposed</strong> ·
+    Marble · ADR-0026 · <strong>accepted</strong> ·
     <a href="0026-transcript-density.md">markdown</a> ·
-    open Q1–Q10
+    Q1–Q10 locked · ready for T1–T4
   </footer>
   <script src="review-kit.js"></script>
 </body>

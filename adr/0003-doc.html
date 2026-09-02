@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0003</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0003</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0003-sqlite-memory-db.md">Markdown</a>
+      <a href="0003-review.html">Review</a>
+      <a href="0002-doc.html">← 0002</a>
+      <a href="0004-doc.html">0004 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0003-sqlite-database-in-memory-directory">ADR-0003: SQLite Database in Memory Directory</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-17</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>database, sqlite, sessions, diagnostics, daemon, versioning, limp-mode</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0002 (file-based session/daily memory)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>ADR-0002 established a durable <strong>memory leaf</strong> (<code>--memory</code>) with Markdown transcripts (<code>session/*.md</code>) and daily digests (<code>daily/*.md</code>). Structured session state, diagnostics, and daemon health need a <strong>persistent, queryable store</strong> co-located with that leaf.</p>
+<p><strong>Files remain first-class.</strong> The database is <strong>supplemental</strong> dual-write.</p>
+<h2 id="decision-summary">Decision summary</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DB path</td>
+<td><code>$MEMORY/marble.db</code> — create if missing</td>
+</tr>
+<tr>
+<td>Dual-write</td>
+<td>MD primary for transcripts; DB index + diagnostics + bodies until purge</td>
+</tr>
+<tr>
+<td>Large payloads</td>
+<td>Truncate inline; spill to <code>$MEMORY/blobs/</code>; purge per settings</td>
+</tr>
+<tr>
+<td>Tokens</td>
+<td>Both <code>*_reported</code> and <code>*_est</code></td>
+</tr>
+<tr>
+<td>Schema mismatch</td>
+<td>Auto-migrate only with coded steps; else <strong>limp mode</strong></td>
+</tr>
+<tr>
+<td>Close</td>
+<td><code>status=closed</code>; keep DB rows until prune</td>
+</tr>
+<tr>
+<td>Prune closed</td>
+<td>Default <strong>4 days</strong> after <code>closed_at</code> (DB setting); <strong>keep</strong> <code>.md</code> files</td>
+</tr>
+<tr>
+<td>Blobs</td>
+<td>Default max age <strong>4 days</strong>; on session prune delete that session’s blobs immediately; otherwise ref-aware or age cleanup</td>
+</tr>
+<tr>
+<td>Lock</td>
+<td>One harness per memory/DB; fail if locked</td>
+</tr>
+<tr>
+<td>Config</td>
+<td>CLI for model/base-url; DB does not store base-url</td>
+</tr>
+<tr>
+<td>Timestamps</td>
+<td>UTC RFC3339 <code>Z</code> only in DB</td>
+</tr>
+<tr>
+<td>Inline spill threshold</td>
+<td>Default <strong>32 KiB</strong> (<code>db_inline_max_bytes</code>)</td>
+</tr>
+<tr>
+<td>Prune cadence</td>
+<td>Every daemon sweep</td>
+</tr>
+<tr>
+<td>UI closed sessions</td>
+<td>Hidden by default; “show closed” toggle</td>
+</tr>
+<tr>
+<td>Retention settings</td>
+<td>Seeded DB defaults for v1; API/UI later (no extra CLI flags)</td>
+</tr>
+<tr>
+<td>Limp</td>
+<td>Chat + tools + MD sessions + list from MD; <strong>no DB writes</strong>; keep MD flush daemon</td>
+</tr>
+</tbody>
+</table>
+<h2 id="layout">Layout</h2>
+<pre><code>$MEMORY/                          # --memory leaf
+├── marble.db                     # SQLite (create if missing)
+├── marble.lock                   # optional PID lock file (plus SQLite lock)
+├── session/&lt;id&gt;.md               # first-class human transcripts
+├── daily/YYYY-MM-DD.md
+└── blobs/                        # spilled large payloads
+    └── &lt;blob_id&gt;
+</code></pre>
+<h2 id="roles-files-vs-db">Roles: files vs DB</h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>First-class home</th>
+<th>DB role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Transcript text</td>
+<td><code>session/*.md</code></td>
+<td>Full message bodies in <code>session_events</code> until <strong>purge</strong></td>
+</tr>
+<tr>
+<td>Daily digests</td>
+<td><code>daily/*.md</code></td>
+<td>Not required in DB for v1</td>
+</tr>
+<tr>
+<td>Session list / status</td>
+<td>MD front matter fallback (limp)</td>
+<td><code>sessions</code> table</td>
+</tr>
+<tr>
+<td>Tool/debug stats</td>
+<td>—</td>
+<td><code>session_events</code></td>
+</tr>
+<tr>
+<td>Daemon health</td>
+<td>—</td>
+<td><code>daemon_state</code></td>
+</tr>
+<tr>
+<td>Tunables</td>
+<td>—</td>
+<td><code>settings</code></td>
+</tr>
+<tr>
+<td>Model base URL</td>
+<td><strong>CLI only</strong></td>
+<td><strong>Never</strong></td>
+</tr>
+<tr>
+<td>Model id</td>
+<td>CLI / runtime</td>
+<td>Optional on session/events for diagnostics</td>
+</tr>
+</tbody>
+</table>
+<p>If DB is unavailable or limp: Markdown persistence and chat continue.</p>
+<h2 id="payload-policy">Payload policy</h2>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inline cap</td>
+<td><code>settings.db_inline_max_bytes</code> default <strong>32768</strong> (32 KiB)</td>
+</tr>
+<tr>
+<td>Over cap</td>
+<td>Write full content to <code>$MEMORY/blobs/&lt;blob_id&gt;</code>; DB stores truncated preview + <code>blob_id</code>, <code>content_truncated=1</code></td>
+</tr>
+<tr>
+<td>Blob max age</td>
+<td><code>settings.blob_max_age_days</code> default <strong>4</strong></td>
+</tr>
+<tr>
+<td>Blob cleanup</td>
+<td>Prefer <strong>unreferenced</strong> blobs; also purge by age when unreferenced. Never delete a blob still referenced by a non-purged session’s events</td>
+</tr>
+<tr>
+<td>On session <strong>prune</strong></td>
+<td>Delete that session’s DB events <strong>and</strong> its blobs <strong>immediately</strong> (even if &lt; 4 days old)</td>
+</tr>
+<tr>
+<td>Markdown</td>
+<td>Unaffected by inline cap; ADR-0002 rules apply</td>
+</tr>
+</tbody>
+</table>
+<h2 id="token-accounting">Token accounting</h2>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tokens_in_reported</code></td>
+<td>Provider usage input (NULL if absent)</td>
+</tr>
+<tr>
+<td><code>tokens_out_reported</code></td>
+<td>Provider usage output (NULL if absent)</td>
+</tr>
+<tr>
+<td><code>tokens_in_est</code></td>
+<td>Harness estimate</td>
+</tr>
+<tr>
+<td><code>tokens_out_est</code></td>
+<td>Harness estimate</td>
+</tr>
+</tbody>
+</table>
+<h2 id="schema-v1">Schema (v1)</h2>
+<h3 id="schema_meta-singleton-id1"><code>schema_meta</code> (singleton <code>id=1</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>schema_version</code></td>
+<td>INTEGER</td>
+<td><code>1</code> at create</td>
+</tr>
+<tr>
+<td><code>created_at</code> / <code>updated_at</code></td>
+<td>TEXT</td>
+<td>UTC</td>
+</tr>
+<tr>
+<td><code>created_by_harness</code></td>
+<td>TEXT</td>
+<td>optional</td>
+</tr>
+</tbody>
+</table>
+<h3 id="settings"><code>settings</code></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>blob_max_age_days</code></td>
+<td><code>4</code></td>
+<td>Age-based blob eligibility for purge</td>
+</tr>
+<tr>
+<td><code>closed_session_max_age_days</code></td>
+<td><code>4</code></td>
+<td>Prune closed sessions after this many days</td>
+</tr>
+<tr>
+<td><code>db_inline_max_bytes</code></td>
+<td><code>32768</code></td>
+<td>Spill threshold</td>
+</tr>
+</tbody>
+</table>
+<p>Columns: <code>key</code> TEXT PK, <code>value</code> TEXT, <code>updated_at</code> TEXT UTC.</p>
+<h3 id="sessions"><code>sessions</code></h3>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>TEXT PK</td>
+<td>short id</td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>TEXT</td>
+<td></td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>TEXT</td>
+<td><code>active</code> / <code>closed</code></td>
+</tr>
+<tr>
+<td><code>created_at</code> / <code>updated_at</code></td>
+<td>TEXT</td>
+<td>UTC</td>
+</tr>
+<tr>
+<td><code>closed_at</code></td>
+<td>TEXT NULL</td>
+<td>UTC</td>
+</tr>
+<tr>
+<td><code>message_count</code></td>
+<td>INTEGER</td>
+<td></td>
+</tr>
+<tr>
+<td><code>dirty</code></td>
+<td>INTEGER</td>
+<td>MD flush dirty flag</td>
+</tr>
+<tr>
+<td><code>workspace</code></td>
+<td>TEXT</td>
+<td>path only</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>TEXT</td>
+<td>model <strong>id</strong> only, not base-url</td>
+</tr>
+<tr>
+<td><code>md_path</code></td>
+<td>TEXT</td>
+<td>e.g. <code>session/&lt;id&gt;.md</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="session_events"><code>session_events</code></h3>
+<p>Append-only until session prune.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>INTEGER PK AUTOINCREMENT</td>
+<td></td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td>TEXT</td>
+<td></td>
+</tr>
+<tr>
+<td><code>seq</code></td>
+<td>INTEGER</td>
+<td></td>
+</tr>
+<tr>
+<td><code>ts</code></td>
+<td>TEXT</td>
+<td>UTC</td>
+</tr>
+<tr>
+<td><code>kind</code></td>
+<td>TEXT</td>
+<td>message / tool / model_call / error / …</td>
+</tr>
+<tr>
+<td><code>role</code></td>
+<td>TEXT NULL</td>
+<td></td>
+</tr>
+<tr>
+<td><code>content</code></td>
+<td>TEXT NULL</td>
+<td>full if ≤ inline cap; else truncated</td>
+</tr>
+<tr>
+<td><code>content_truncated</code></td>
+<td>INTEGER</td>
+<td>0/1</td>
+</tr>
+<tr>
+<td><code>blob_id</code></td>
+<td>TEXT NULL</td>
+<td></td>
+</tr>
+<tr>
+<td><code>tool_name</code> / <code>tool_call_id</code> / <code>tool_args_json</code></td>
+<td></td>
+<td>args may truncate + blob</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>TEXT NULL</td>
+<td>id only</td>
+</tr>
+<tr>
+<td><code>tokens_in_reported</code> / <code>tokens_out_reported</code></td>
+<td>INTEGER NULL</td>
+<td></td>
+</tr>
+<tr>
+<td><code>tokens_in_est</code> / <code>tokens_out_est</code></td>
+<td>INTEGER NULL</td>
+<td></td>
+</tr>
+<tr>
+<td><code>latency_ms</code> / <code>finish_reason</code> / <code>error</code> / <code>meta_json</code></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>Indexes: <code>(session_id, seq)</code>, <code>(session_id, ts)</code>, <code>(kind)</code>, <code>(blob_id)</code>.</p>
+<h3 id="blobs"><code>blobs</code></h3>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>TEXT PK</td>
+<td></td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>TEXT</td>
+<td>relative under <code>blobs/</code></td>
+</tr>
+<tr>
+<td><code>byte_size</code></td>
+<td>INTEGER</td>
+<td></td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>TEXT</td>
+<td>UTC</td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td>TEXT NULL</td>
+<td></td>
+</tr>
+<tr>
+<td><code>content_sha256</code></td>
+<td>TEXT NULL</td>
+<td>optional</td>
+</tr>
+</tbody>
+</table>
+<h3 id="daemon_state-singleton"><code>daemon_state</code> (singleton)</h3>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>last_sweep_at</code> / <code>next_sweep_at</code></td>
+<td>UTC</td>
+</tr>
+<tr>
+<td><code>last_sweep_duration_ms</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>sessions_seen</code> / <code>dirty</code> / <code>flushed</code> / <code>failed</code></td>
+<td>last sweep</td>
+</tr>
+<tr>
+<td><code>blobs_purged</code> / <code>sessions_pruned</code></td>
+<td>last sweep</td>
+</tr>
+<tr>
+<td><code>last_error</code> / <code>last_daily_compact_at</code> / <code>updated_at</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="session-lifecycle">Session lifecycle</h2>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Create</strong></td>
+<td>Short id; write MD; upsert <code>sessions</code>; dual-write events as turns happen</td>
+</tr>
+<tr>
+<td><strong>Close</strong></td>
+<td>Flush MD; <code>status=closed</code>, <code>closed_at=now()</code>; <strong>retain</strong> all events/bodies in DB</td>
+</tr>
+<tr>
+<td><strong>Prune</strong></td>
+<td>Each daemon sweep: delete sessions with <code>status=closed</code> AND <code>closed_at</code> older than <code>closed_session_max_age_days</code>; delete events; delete session blobs; <strong>do not delete</strong> <code>session/&lt;id&gt;.md</code></td>
+</tr>
+<tr>
+<td><strong>UI</strong></td>
+<td>Active sessions by default; toggle <strong>Show closed</strong> for <code>status=closed</code> not yet pruned</td>
+</tr>
+</tbody>
+</table>
+<h2 id="versioning-limp-mode">Versioning &amp; limp mode</h2>
+<h3 id="version-policy">Version policy</h3>
+<ul>
+<li><code>CurrentSchemaVersion</code> in binary; <code>schema_meta.schema_version</code> in DB.</li>
+<li><strong>Auto-migrate only</strong> when an explicit step exists in the binary.</li>
+<li>Breaking changes later may require new memory dirs or a future migrator (deferred).</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No DB file</td>
+<td>Create v1 → <strong>normal</strong></td>
+</tr>
+<tr>
+<td>version == binary</td>
+<td><strong>normal</strong></td>
+</tr>
+<tr>
+<td>version &lt; binary, migration exists</td>
+<td>migrate → <strong>normal</strong></td>
+</tr>
+<tr>
+<td>version &lt; binary, no migration</td>
+<td><strong>limp</strong></td>
+</tr>
+<tr>
+<td>version &gt; binary</td>
+<td><strong>limp</strong> (do not open/write DB; ignore DB entirely)</td>
+</tr>
+<tr>
+<td>Lock held by another process</td>
+<td><strong>Fatal exit</strong> (not limp)</td>
+</tr>
+<tr>
+<td>DB corrupt</td>
+<td><strong>limp</strong> with reason (treat as unusable DB)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="limp-mode-locked">Limp mode (locked)</h3>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Limp</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UI banner + <code>health.mode=limp</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Chat with CLI model</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Workspace tools</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>New sessions → Markdown on disk</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>List history from <code>session/*.md</code> front matter</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>5m Markdown flush daemon</td>
+<td>Yes (MD only)</td>
+</tr>
+<tr>
+<td>DB open/write/dual-write events</td>
+<td><strong>No</strong> — ignore DB entirely when version &gt; binary or unusable; no writes when mismatch</td>
+</tr>
+<tr>
+<td>Coded migrations without steps</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<p>Recovery path: operator uses chat + docs to upgrade harness, restore backup, or start a fresh <code>--memory</code> dir.</p>
+<h2 id="single-process-lock">Single-process lock</h2>
+<ul>
+<li>Acquire exclusive use of memory dir / <code>marble.db</code> at start (lock file with PID <strong>and</strong> SQLite safety).</li>
+<li>If lock held by a <strong>live</strong> process → exit with clear error.</li>
+<li>Stale lock (dead PID) → take over after check.</li>
+</ul>
+<h2 id="timestamps">Timestamps</h2>
+<p>All DB times: <strong>UTC</strong>, RFC3339 with <code>Z</code>.<br />
+Daily MD filenames remain <strong>local calendar day</strong> (ADR-0002).</p>
+<h2 id="daemon-sweep-normal-mode">Daemon sweep (normal mode)</h2>
+<p>Interval: CLI <code>--persist-interval</code> (default 5m).</p>
+<ol>
+<li>Flush dirty sessions → Markdown.  </li>
+<li>Dual-write pending session/event updates.  </li>
+<li>Update <code>daemon_state</code>.  </li>
+<li>Prune closed sessions past retention; delete their blobs.  </li>
+<li>Blob cleanup: unreferenced (and age-eligible) orphans.  </li>
+<li>Daily MD compact if activity (ADR-0002).  </li>
+</ol>
+<p><strong>Limp:</strong> steps 1 and 6 only (plus any non-DB maintenance); skip 2–5 DB work.</p>
+<h2 id="implementation-order-post-accept">Implementation order (post-accept)</h2>
+<ol>
+<li><code>internal/db</code> — create/open, schema v1, settings seed, lock.  </li>
+<li>Mode detection → normal | limp; health + UI banner.  </li>
+<li>Dual-write from session loop (events, bodies, tokens both columns).  </li>
+<li>Blob spill at 32 KiB + <code>blobs</code> table.  </li>
+<li>Daemon: MD flush, prune closed+blobs, blob GC, <code>daemon_state</code>.  </li>
+<li>UI: show-closed toggle; limp banner.  </li>
+<li>Driver: pure-Go SQLite (<code>modernc.org/sqlite</code>) preferred.  </li>
+</ol>
+<h2 id="decisions-log-q1q10-r2">Decisions log (Q1–Q10 + R2)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q1</td>
+<td>Dual-write; files first-class</td>
+</tr>
+<tr>
+<td>Q2</td>
+<td>Truncate + <code>$MEMORY/blobs/</code>; blob max age 4d (setting)</td>
+</tr>
+<tr>
+<td>Q3</td>
+<td>Both reported + est token columns</td>
+</tr>
+<tr>
+<td>Q4</td>
+<td><code>marble.db</code></td>
+</tr>
+<tr>
+<td>Q5</td>
+<td>Migrate only with steps; else limp + UI warning</td>
+</tr>
+<tr>
+<td>Q6</td>
+<td>Closed persist; prune after 4d (setting)</td>
+</tr>
+<tr>
+<td>Q7</td>
+<td>Single harness lock</td>
+</tr>
+<tr>
+<td>Q8</td>
+<td>CLI only for base-url</td>
+</tr>
+<tr>
+<td>Q9</td>
+<td>UTC always in DB</td>
+</tr>
+<tr>
+<td>Q10</td>
+<td>Full bodies in DB until <strong>purge</strong> (not mere close)</td>
+</tr>
+<tr>
+<td>R2-1</td>
+<td>Limp: new sessions write Markdown</td>
+</tr>
+<tr>
+<td>R2-2</td>
+<td>Limp: workspace tools</td>
+</tr>
+<tr>
+<td>R2-3</td>
+<td>Limp: list from MD front matter</td>
+</tr>
+<tr>
+<td>R2-4</td>
+<td>Newer DB than binary: ignore DB entirely</td>
+</tr>
+<tr>
+<td>R2-5</td>
+<td>Inline cap</td>
+</tr>
+<tr>
+<td>R2-6</td>
+<td>Blob GC</td>
+</tr>
+<tr>
+<td>R2-7</td>
+<td>Prune DB ≠ delete MD</td>
+</tr>
+<tr>
+<td>R2-8</td>
+<td>Session prune deletes its blobs immediately</td>
+</tr>
+<tr>
+<td>R2-9</td>
+<td>Prune every daemon sweep</td>
+</tr>
+<tr>
+<td>R2-10</td>
+<td>Hide closed by default + toggle</td>
+</tr>
+<tr>
+<td>R2-11</td>
+<td>Retention via DB settings only for v1</td>
+</tr>
+<tr>
+<td>R2-12</td>
+<td>Limp keeps MD flush daemon</td>
+</tr>
+</tbody>
+</table>
+<h2 id="remaining-questions-optional-fine-defaults">Remaining questions (optional / fine defaults)</h2>
+<p>These do <strong>not</strong> block implementation if “defaults OK”:</p>
+<ol>
+<li>
+<p><strong>Blob id scheme:</strong> random UUID vs sha256 of content (dedup)?<br />
+<em>Default if unset: UUID v4 filename; store optional sha256 for later dedup.</em></p>
+</li>
+<li>
+<p><strong>Limp banner copy / severity:</strong> warning vs error styling only?<br />
+<em>Default: warning (amber), non-blocking.</em></p>
+</li>
+<li>
+<p><strong>Health field names</strong> for API stability (<code>mode</code>, <code>schema_version_db</code>, <code>schema_version_binary</code>, <code>limp_reason</code>)?<br />
+<em>Default: use those names.</em></p>
+</li>
+<li>
+<p><strong>Should active sessions older than N days ever auto-close?</strong><br />
+<em>Default: no — only explicit close.</em></p>
+</li>
+<li>
+<p><strong>Multi-memory-dir:</strong> same machine, two harnesses, different <code>--memory</code>?<em><em><br />
+</em>Default: allowed (lock is per memory dir).</em></p>
+</li>
+</ol>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Q1–Q10 decided  </li>
+<li>[x] Round-2 recommendations adopted  </li>
+<li>[x] Limp / lock / prune / blob rules specified  </li>
+<li>[ ] Final accept to implement (or answer optional Qs)  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-17</td>
+<td>Initial proposal</td>
+</tr>
+<tr>
+<td>2026-07-17</td>
+<td>Q1–Q10 decisions + limp + round-2 questions</td>
+</tr>
+<tr>
+<td>2026-07-17</td>
+<td>All R2 recs accepted; optional residual Qs only</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0002 Session management &amp; file memory  </li>
+<li>ADR-0001 Inner loop  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0003-sqlite-memory-db.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

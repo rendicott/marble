@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -97,21 +99,105 @@ func (r *Registry) peerCallID(tc *TurnContext, computerID, actionID, kind string
 	if conn == nil {
 		return peerhub.Envelope{}, fmt.Errorf("computer %q offline", cid)
 	}
-	if actionID != "" {
-		return conn.CallWithID(actionID, kind, payload, deadline)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if tc != nil && tc.Ctx != nil {
+			select {
+			case <-tc.Ctx.Done():
+				return peerhub.Envelope{}, tc.Ctx.Err()
+			default:
+			}
+		}
+		var res peerhub.Envelope
+		var callErr error
+		if actionID != "" {
+			res, callErr = conn.CallWithID(actionID, kind, payload, deadline)
+		} else {
+			res, callErr = conn.Call(kind, payload, deadline)
+		}
+		if callErr == nil {
+			return res, nil
+		}
+		lastErr = callErr
+		msg := callErr.Error()
+		if !strings.Contains(msg, "peer busy") && !strings.Contains(msg, "action queue") {
+			return peerhub.Envelope{}, callErr
+		}
+		time.Sleep(time.Duration(200+attempt*150) * time.Millisecond)
 	}
-	return conn.Call(kind, payload, deadline)
+	return peerhub.Envelope{}, lastErr
 }
 
 // desktopClickNeedsScreenshot is how fresh a computer_screenshot must be before
 // desktop_click is allowed (coords must come from vision, not guessing).
 const desktopClickNeedsScreenshot = 90 * time.Second
 
+// postClickScreenshotGrace: reject redundant computer_screenshot right after a post-click shot.
+const postClickScreenshotGrace = 8 * time.Second
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func (r *Registry) notePeerAction(tc *TurnContext, summary string) {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return
+	}
+	if len(summary) > 200 {
+		summary = summary[:200] + "…"
+	}
+	if tc != nil && tc.OnPeerAction != nil {
+		tc.OnPeerAction(summary)
+	}
+	if r.SetLastPeerAction != nil && tc != nil && tc.SessionID != "" {
+		r.SetLastPeerAction(tc.SessionID, summary)
+	}
+}
+
+// stagePeerScreenshot stores JPEG bytes as a chat attachment and updates TurnContext.
+func (r *Registry) stagePeerScreenshot(tc *TurnContext, raw []byte, name string) (attachmentID, mime, kind, hash string, err error) {
+	if r.StageChatAttachment == nil || tc == nil {
+		return "", "", "", "", fmt.Errorf("screenshot staging unavailable")
+	}
+	if name == "" {
+		name = "screenshot.jpg"
+	}
+	hash = sha256Hex(raw)
+	id, mime, kind, err := r.StageChatAttachment(tc.SessionID, name, raw)
+	if err != nil {
+		return "", "", "", hash, err
+	}
+	if tc.OnChatAttachment != nil {
+		tc.OnChatAttachment(Attachment{
+			Path: id, Name: name, Inline: true, Mime: mime, Size: int64(len(raw)),
+		})
+	}
+	tc.LastScreenshotAt = time.Now()
+	tc.LastScreenshotHash = hash
+	tc.LastScreenshotAttID = id
+	return id, mime, kind, hash, nil
+}
+
 func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string, error) {
 	var args struct {
 		ComputerID string `json:"computer_id"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &args)
+
+	// Suppress redundant shots right after an atomic post-click screenshot.
+	if tc != nil && !tc.PostClickShotAt.IsZero() && time.Since(tc.PostClickShotAt) < postClickScreenshotGrace && tc.LastScreenshotAttID != "" {
+		out := map[string]interface{}{
+			"ok":            true,
+			"skipped":       true,
+			"attachment_id": tc.LastScreenshotAttID,
+			"hint":          "Skipped redundant screenshot — a post-click image was just attached. LOOK at that attachment_id (do not re-screenshot). Next: click_button / different coords / computer_confirm.",
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	}
+
 	res, err := r.peerCall(tc, args.ComputerID, "screenshot", map[string]interface{}{}, 120*time.Second)
 	if err != nil {
 		return "", err
@@ -119,8 +205,7 @@ func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string,
 	out := map[string]interface{}{
 		"ok":   true,
 		"meta": res.Meta,
-		// Nudge models: after a shot, prefer desktop click coords or describe the UI.
-		"hint": "Screenshot image is attached for vision. LOOK at the image. If it is a lock/login screen, say DESKTOP LOCKED and stop clicking. If CDP was failing, use coords from the image with computer_desktop_act or describe the UI. OTP/SMS cannot be automated.",
+		"hint": "Screenshot image is attached for vision. Coords are in IMAGE pixel space (meta.w×meta.h); meta.scale maps to screen. LOOK at the image. If lock/login screen: DESKTOP LOCKED — stop. Prefer click_button/click_text for labeled buttons; desktop click only from visible pixels. OTP/SMS → computer_confirm.",
 	}
 	if res.Text != "" {
 		out["lock_warning"] = res.Text
@@ -130,39 +215,28 @@ func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string,
 			out["desktop_locked"] = true
 		}
 	}
-	if res.ScreenshotB64 != "" && r.StageChatAttachment != nil && tc != nil {
-		raw, err := base64.StdEncoding.DecodeString(res.ScreenshotB64)
-		if err == nil {
-			id, mime, kind, err := r.StageChatAttachment(tc.SessionID, "screenshot.jpg", raw)
-			if err == nil {
+	if res.ScreenshotB64 != "" {
+		raw, decErr := base64.StdEncoding.DecodeString(res.ScreenshotB64)
+		if decErr == nil && tc != nil {
+			id, mime, kind, hash, stErr := r.stagePeerScreenshot(tc, raw, "screenshot.jpg")
+			if stErr == nil {
 				out["attachment_id"] = id
 				out["mime"] = mime
 				out["kind"] = kind
-				if tc.OnChatAttachment != nil {
-					tc.OnChatAttachment(Attachment{
-						Path:   id,
-						Name:   "screenshot.jpg",
-						Inline: true,
-						Mime:   mime,
-						Size:   int64(len(raw)),
-					})
-				}
-				// don't dump full base64 into tool result
+				out["sha256"] = hash
 				out["note"] = "screenshot stored as chat attachment"
-				tc.LastScreenshotAt = time.Now()
+				r.notePeerAction(tc, "screenshot "+fmt.Sprintf("%vx%v", res.Meta["w"], res.Meta["h"]))
 				b, _ := json.Marshal(out)
 				return string(b), nil
 			}
 		}
-	}
-	// fallback include truncated note
-	if res.ScreenshotB64 != "" {
 		out["screenshot_b64_len"] = len(res.ScreenshotB64)
 		out["note"] = "screenshot captured (base64 length only; staging unavailable)"
 		if tc != nil {
 			tc.LastScreenshotAt = time.Now()
 		}
 	}
+	r.notePeerAction(tc, "screenshot")
 	b, _ := json.Marshal(out)
 	return string(b), nil
 }
@@ -185,11 +259,9 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 	var payload map[string]interface{}
 	switch action {
 	case "click":
-		// Require a recent screenshot so x,y are chosen from vision, not blind guesses.
 		if tc == nil || tc.LastScreenshotAt.IsZero() || time.Since(tc.LastScreenshotAt) > desktopClickNeedsScreenshot {
-			return "", fmt.Errorf("desktop click requires a recent computer_screenshot (within %s). Call computer_screenshot, LOOK at the image, pick x,y, then computer_desktop_act action=click", desktopClickNeedsScreenshot)
+			return "", fmt.Errorf("desktop click requires a recent computer_screenshot (within %s). Call computer_screenshot, LOOK at the image (meta.w×meta.h image space), pick x,y, then computer_desktop_act action=click", desktopClickNeedsScreenshot)
 		}
-		// Default left button — empty string causes xdotool BadValue on XWayland.
 		btn := strings.TrimSpace(args.Button)
 		if btn == "" || btn == "0" {
 			btn = "1"
@@ -203,7 +275,11 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 		kind = "desktop_key"
 		payload = map[string]interface{}{"key": args.Key}
 	default:
-		return "", fmt.Errorf("unknown action %q (click|type|key). For Gmail use computer_browser_act action=open_gmail instead", args.Action)
+		return "", fmt.Errorf("unknown action %q (click|type|key). For labeled UI use computer_browser_act action=click_button", args.Action)
+	}
+	preHash := ""
+	if tc != nil {
+		preHash = tc.LastScreenshotHash
 	}
 	res, err := r.peerCall(tc, args.ComputerID, kind, payload, 120*time.Second)
 	if err != nil {
@@ -213,18 +289,69 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 	if res.Text != "" {
 		out["text"] = res.Text
 	}
+	if res.Meta != nil {
+		out["meta"] = res.Meta
+	}
 	if !res.OK && res.Error != "" {
 		return "", fmt.Errorf("%s", res.Error)
 	}
-	// After click: auto-screenshot so the model sees the post-click UI without an extra round-trip.
+
 	if action == "click" {
-		shotArgs, _ := json.Marshal(map[string]string{"computer_id": args.ComputerID})
-		if shot, shotErr := r.computerScreenshot(string(shotArgs), tc); shotErr == nil {
-			out["post_click_screenshot"] = json.RawMessage(shot)
-			out["hint"] = "post-click screenshot attached — look at the image before the next click"
-		} else {
-			out["post_click_screenshot_error"] = shotErr.Error()
+		if tc != nil {
+			tc.LastClickX, tc.LastClickY, tc.LastClickSet = args.X, args.Y, true
 		}
+		r.notePeerAction(tc, fmt.Sprintf("desktop_click (%d,%d)", args.X, args.Y))
+
+		var raw []byte
+		if res.ScreenshotB64 != "" {
+			raw, _ = base64.StdEncoding.DecodeString(res.ScreenshotB64)
+		}
+		// Fallback nested shot if peer did not return one (older peers).
+		if len(raw) == 0 {
+			shotArgs, _ := json.Marshal(map[string]string{"computer_id": args.ComputerID})
+			// Temporarily clear PostClickShotAt so nested call is not skipped.
+			if tc != nil {
+				tc.PostClickShotAt = time.Time{}
+			}
+			if shot, shotErr := r.computerScreenshot(string(shotArgs), tc); shotErr == nil {
+				out["post_click_screenshot"] = json.RawMessage(shot)
+				out["hint"] = "post-click screenshot attached — look at the image before the next click (do not re-screenshot)"
+				if tc != nil {
+					tc.PostClickShotAt = time.Now()
+				}
+				if preHash != "" && tc != nil && tc.LastScreenshotHash == preHash {
+					out["ui_unchanged"] = true
+					out["ok"] = false
+					out["hint"] = "ui_unchanged: pixels identical after click — STOP repeating these coords. NEXT: computer_browser_act action=click_button text=\"…\", open a direct URL, or computer_confirm for a human click."
+				}
+				b, _ := json.Marshal(out)
+				return string(b), nil
+			} else {
+				out["post_click_screenshot_error"] = shotErr.Error()
+			}
+		} else if tc != nil {
+			id, mime, kindName, hash, stErr := r.stagePeerScreenshot(tc, raw, "post-click.jpg")
+			if stErr == nil {
+				tc.PostClickShotAt = time.Now()
+				out["attachment_id"] = id // top-level for multimodal extract
+				out["mime"] = mime
+				out["kind"] = kindName
+				out["sha256"] = hash
+				out["hint"] = "post-click screenshot attached — look at the image before the next click (do not call computer_screenshot again)"
+				out["post_click_screenshot"] = map[string]interface{}{
+					"attachment_id": id, "mime": mime, "kind": kindName, "meta": res.Meta,
+				}
+				if preHash != "" && hash == preHash {
+					out["ui_unchanged"] = true
+					out["ok"] = false
+					out["hint"] = "ui_unchanged: pixels identical after click — STOP repeating these coords. NEXT: computer_browser_act action=click_button text=\"…\", open a direct URL, or computer_confirm for a human click."
+				}
+			} else {
+				out["post_click_screenshot_error"] = stErr.Error()
+			}
+		}
+	} else {
+		r.notePeerAction(tc, "desktop_"+action)
 	}
 	b, _ := json.Marshal(out)
 	return string(b), nil
@@ -243,14 +370,21 @@ func (r *Registry) computerBrowser(argsJSON string, tc *TurnContext, kind string
 		msg := err.Error()
 		// Steer agent off CDP retry loops into visual desktop path.
 		if strings.Contains(msg, "cdp timeout") || strings.Contains(msg, "not_found") ||
-			strings.Contains(msg, "bot_wall") || strings.Contains(msg, "snapshot error") {
-			msg += " — NEXT: computer_screenshot (do not keep retrying CDP); then computer_desktop_act with x,y from the image, or computer_confirm if a human/OTP step is needed"
-			// One free screenshot so the model is not blind after CDP failure.
+			strings.Contains(msg, "bot_wall") || strings.Contains(msg, "snapshot error") ||
+			strings.Contains(msg, "ambiguous") {
+			msg += " — NEXT: computer_screenshot (do not keep retrying CDP); then click_button / desktop coords from the image, or computer_confirm if a human/OTP step is needed"
 			if shot, shotErr := r.computerScreenshot(mustJSON(map[string]string{"computer_id": cid}), tc); shotErr == nil {
 				msg += "\n// auto-screenshot after CDP fail:\n" + shot
 			}
 		}
+		r.notePeerAction(tc, kind+" err")
 		return "", fmt.Errorf("%s", msg)
+	}
+	act, _ := args["action"].(string)
+	if act != "" {
+		r.notePeerAction(tc, "browser_"+strings.ToLower(act))
+	} else {
+		r.notePeerAction(tc, kind)
 	}
 	if res.Text != "" {
 		text := res.Text
@@ -316,6 +450,12 @@ func (r *Registry) computerConfirm(argsJSON string, tc *TurnContext) (string, er
 		sessionID = tc.SessionID
 	}
 	expires := time.Now().Add(120 * time.Second)
+	harnessURL := ""
+	if r.PublicBaseURL != nil {
+		if base := strings.TrimRight(strings.TrimSpace(r.PublicBaseURL()), "/"); base != "" {
+			harnessURL = base + "/confirm/" + confirmID
+		}
+	}
 	if r.PeerHub != nil {
 		r.PeerHub.PutConfirm(peerhub.PendingConfirm{
 			ID:         confirmID,
@@ -323,10 +463,11 @@ func (r *Registry) computerConfirm(argsJSON string, tc *TurnContext) (string, er
 			ComputerID: cid,
 			Prompt:     args.Prompt,
 			Risk:       args.Risk,
+			URL:        harnessURL,
 			CreatedAt:  time.Now(),
 			ExpiresAt:  expires,
 		})
-		defer r.PeerHub.DeleteConfirm(confirmID)
+		// Do NOT defer DeleteConfirm — keep until resolve/expiry so UI can still dismiss stale cards.
 	}
 	// Notify Marble UI (SSE) so operator can Accept without peer access.
 	if tc != nil && tc.OnPeerConfirm != nil {
@@ -336,30 +477,43 @@ func (r *Registry) computerConfirm(argsJSON string, tc *TurnContext) (string, er
 			"computer_id": cid,
 			"prompt":      args.Prompt,
 			"risk":        args.Risk,
+			"url":         harnessURL,
 			"expires_at":  expires.UTC().Format(time.RFC3339),
 			"source":      "computer_confirm",
 		})
 	}
 
-	res, err := r.peerCallID(tc, cid, confirmID, "confirm", map[string]interface{}{
+	payload := map[string]interface{}{
 		"prompt": args.Prompt,
 		"risk":   args.Risk,
-	}, 125*time.Second)
+	}
+	if harnessURL != "" {
+		// Peer notification should open the Tailscale-reachable harness page, not loopback mini-UI.
+		payload["harness_url"] = harnessURL
+	}
+	res, err := r.peerCallID(tc, cid, confirmID, "confirm", payload, 125*time.Second)
 	if err != nil {
+		// Leave pending confirm for harness dismiss (stale/deny).
 		return "", err
 	}
 	accepted := res.OK
+	if r.PeerHub != nil && accepted {
+		r.PeerHub.DeleteConfirm(confirmID)
+	}
 	out := map[string]interface{}{
 		"accepted":    accepted,
 		"ok":          accepted,
 		"confirm_id":  confirmID,
 		"computer_id": cid,
 	}
+	if harnessURL != "" {
+		out["url"] = harnessURL
+	}
 	if res.Text != "" {
 		out["detail"] = res.Text
 	}
 	if !accepted {
-		out["hint"] = "Denied or timed out (120s default deny). Accept from Marble UI (confirm card), peer tray, peer mini-UI, or desktop notification."
+		out["hint"] = "Denied or timed out (120s default deny). Use the Marble confirm card or open the harness /confirm/{id} link (Tailscale-reachable). Deny/Dismiss clears stale cards."
 	}
 	b, _ := json.Marshal(out)
 	return string(b), nil

@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0008</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0008</span>
+      <span class="status accepted">Accepted (ready to implement)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0008-session-info.md">Markdown</a>
+      <a href="0008-review.html">Review</a>
+      <a href="0008-answers.json">Answers</a>
+      <a href="0007-doc.html">← 0007</a>
+      <a href="0009-doc.html">0009 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0008-session-info-feature">ADR-0008: Session Info Feature</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-18</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>ui, sessions, diagnostics, observability</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0002 (session lifecycle), ADR-0003 (session_events / tokens), ADR-0005 (loop stats)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0008-answers.json</code> (<code>2026-07-18T07:26:53.188Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Operators currently see a <strong>session list</strong> (title, id, message count, closed/dirty flags) and a <strong>chat transcript</strong>. They cannot easily answer:</p>
+<ul>
+<li>When was this session created / last active / closed?  </li>
+<li>Which <strong>model</strong> and <strong>workspace</strong> was it using?  </li>
+<li>How many <strong>tokens</strong> (reported + estimated) were spent?  </li>
+<li>What <strong>tools</strong> ran, how often, and did any fail?  </li>
+<li>Where is the on-disk <strong>Markdown</strong> path?  </li>
+<li>Is the session <strong>busy</strong>, dirty, or system-owned?  </li>
+</ul>
+<p>ADR-0003 already dual-writes rich <code>session_events</code> (kinds, tokens, latency, tool names). That data is underused in the UI. A <strong>Session info</strong> surface should expose it without opening SQLite or log files.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li>Let the operator open <strong>structured info</strong> for the <strong>active</strong> (or selected) session.  </li>
+<li>Surface <strong>metadata</strong>, <strong>usage aggregates</strong>, and a <strong>compact activity timeline</strong> from DB events when available.  </li>
+<li>Degrade gracefully in <strong>limp mode</strong> / no DB: show summary from live memory + Markdown front matter.  </li>
+<li>Provide <strong>copy actions</strong> (session id, md path, absolute paths) for ops workflows.  </li>
+<li>Stay lightweight — not a full analytics product.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>Cross-session analytics dashboards  </li>
+<li>Editing session history / rewriting events  </li>
+<li>Billing / cost tables (token pricing deferred — <strong>Q8</strong>)  </li>
+<li>Real-time flame graphs or per-token streaming debug  </li>
+<li>Rename title from info panel (<strong>Q11</strong>)  </li>
+<li>JSON export download of info payload (<strong>Q12</strong>)  </li>
+</ul>
+<h2 id="decision">Decision</h2>
+<ol>
+<li><strong>Entry:</strong> header <strong>ⓘ</strong> for the active session <strong>and</strong> session list context menu “Session info” (<strong>Q1</strong>).  </li>
+<li><strong>Surface:</strong> <strong>modal</strong> (consistent with Settings / Explorer) (<strong>Q2</strong>).  </li>
+<li><strong>Open:</strong> <strong>explicit only</strong> — never auto-open on select (<strong>Q3</strong>).  </li>
+<li>Backend: <code>GET /api/sessions/{id}/info</code> returning metadata + aggregates + recent events (+ tool histogram, blob count).  </li>
+<li>Prefer <strong>SQLite aggregates</strong> from <code>sessions</code> + <code>session_events</code> when DB is writable; else fall back to live registry + MD front matter.  </li>
+<li><strong>Recent events:</strong> default <strong>N=30</strong> (<strong>Q4</strong>); error strings included, truncated to <strong>500</strong> chars (<strong>Q5</strong>).  </li>
+<li><strong>Blob spill count:</strong> include when cheap (<code>COUNT</code> where <code>blob_id</code> set) (<strong>Q6</strong>).  </li>
+<li><strong>System-agent sessions</strong> use the same panel (<strong>Q7</strong>).  </li>
+<li><strong>Limp / no DB:</strong> metadata only; <code>partial: true</code>; no fake token sums or fabricated timeline (<strong>Q9</strong>).  </li>
+<li><strong>Close session</strong> action in panel with existing list confirm (<strong>Q10</strong>).  </li>
+<li><strong>Defer:</strong> token cost/pricing, rename-from-info, JSON export (<strong>Q8</strong>, <strong>Q11</strong>, <strong>Q12</strong>).  </li>
+<li>UI updates live while the session is busy (SSE-triggered refresh + slow poll backup).  </li>
+<li>No new DB tables required for v1 (query existing schema).</li>
+</ol>
+<h2 id="decisions-locked-q1q12">Decisions locked (Q1–Q12)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Header ⓘ for active session + list context menu “Session info”</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Modal (Settings / Explorer consistency)</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Explicit open only — never auto-open</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>30 recent events</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Error strings yes, truncate to 500 chars</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Blob spill COUNT when cheap</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Same panel for system-agent sessions</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Defer token cost / pricing</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Limp: metadata only, <code>partial: true</code>, no fake tokens</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Close session from panel with existing confirm</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>Defer rename-from-info</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Defer JSON export of info</td>
+</tr>
+</tbody>
+</table>
+<h2 id="entry-points">Entry points</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Placement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ⓘ</strong> button</td>
+<td>Main chat header next to session title / status pill</td>
+</tr>
+<tr>
+<td>Context menu</td>
+<td>Session list row → “Session info”</td>
+</tr>
+</tbody>
+</table>
+<h2 id="ui-sketch">UI sketch</h2>
+<pre><code>┌ Session info ──────────────────────────── [↻] [×] ┐
+│ Title: nginx renew certs                            │
+│ Id:    k7m2q9a3f2          [Copy]                   │
+│ Status: active · busy                               │
+│ Created:  2026-07-18T01:10:00Z                      │
+│ Updated:  2026-07-18T02:22:11Z                      │
+│ Closed:   —                                         │
+│ Model:    Qwen/Qwen3.5-122B-A10B-FP8                │
+│ Workspace:/home/…/marble                            │
+│ Markdown: session/k7m2q9a3f2.md   [Copy abs]        │
+│                                                     │
+│ ── Usage ─────────────────────────────────────────  │
+│ Messages (UI): 24                                   │
+│ Events (DB):   61                                   │
+│ Tokens in  reported / est:  18240 / 19102           │
+│ Tokens out reported / est:   4102 /  4300           │
+│ Tool calls: 12  · errors: 1                         │
+│ Blob spills: 2                                      │
+│ Avg model latency: 820 ms                           │
+│                                                     │
+│ ── Recent activity ───────────────────────────────  │
+│ 02:22 model_call     410ms  in=200 out=40           │
+│ 02:22 tool_call      shell_execute                  │
+│ 02:22 tool_result    shell_execute  ok              │
+│ 02:21 user_message                                  │
+│ …                                                   │
+│              [Close session]                        │
+└─────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="data-model-api">Data model (API)</h2>
+<h3 id="get-apisessionsidinfo"><code>GET /api/sessions/{id}/info</code></h3>
+<pre><code class="language-json">{
+  &quot;session&quot;: {
+    &quot;id&quot;: &quot;…&quot;,
+    &quot;title&quot;: &quot;…&quot;,
+    &quot;status&quot;: &quot;active|closed&quot;,
+    &quot;busy&quot;: false,
+    &quot;dirty&quot;: false,
+    &quot;loaded&quot;: true,
+    &quot;created_at&quot;: &quot;…Z&quot;,
+    &quot;updated_at&quot;: &quot;…Z&quot;,
+    &quot;closed_at&quot;: null,
+    &quot;model&quot;: &quot;…&quot;,
+    &quot;workspace&quot;: &quot;…&quot;,
+    &quot;md_path&quot;: &quot;session/….md&quot;,
+    &quot;md_path_abs&quot;: &quot;/home/…/.marble/session/….md&quot;,
+    &quot;message_count&quot;: 24,
+    &quot;system&quot;: false
+  },
+  &quot;usage&quot;: {
+    &quot;event_count&quot;: 61,
+    &quot;user_messages&quot;: 10,
+    &quot;assistant_messages&quot;: 10,
+    &quot;model_calls&quot;: 12,
+    &quot;tool_calls&quot;: 12,
+    &quot;tool_results&quot;: 12,
+    &quot;errors&quot;: 1,
+    &quot;blob_count&quot;: 2,
+    &quot;tokens_in_reported&quot;: 18240,
+    &quot;tokens_out_reported&quot;: 4102,
+    &quot;tokens_in_est&quot;: 19102,
+    &quot;tokens_out_est&quot;: 4300,
+    &quot;latency_ms_sum&quot;: 9840,
+    &quot;latency_ms_avg&quot;: 820,
+    &quot;latency_ms_max&quot;: 2100
+  },
+  &quot;tools&quot;: [
+    { &quot;name&quot;: &quot;shell_execute&quot;, &quot;calls&quot;: 5, &quot;errors&quot;: 0 },
+    { &quot;name&quot;: &quot;file_read&quot;, &quot;calls&quot;: 4, &quot;errors&quot;: 0 }
+  ],
+  &quot;recent_events&quot;: [
+    {
+      &quot;seq&quot;: 61,
+      &quot;ts&quot;: &quot;…Z&quot;,
+      &quot;kind&quot;: &quot;model_call&quot;,
+      &quot;tool_name&quot;: null,
+      &quot;tokens_in_reported&quot;: 200,
+      &quot;tokens_out_reported&quot;: 40,
+      &quot;latency_ms&quot;: 410,
+      &quot;error&quot;: null
+    }
+  ],
+  &quot;source&quot;: &quot;db|memory|markdown&quot;,
+  &quot;partial&quot;: false
+}
+</code></pre>
+<h3 id="aggregation-rules">Aggregation rules</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Identity / status / times</td>
+<td><code>sessions</code> row or live <code>Summary</code> + MD front matter</td>
+</tr>
+<tr>
+<td>Token sums</td>
+<td><code>SUM</code> of <code>session_events</code> token columns</td>
+</tr>
+<tr>
+<td>Tool histogram</td>
+<td><code>kind IN (tool_call,tool_result)</code> group by <code>tool_name</code></td>
+</tr>
+<tr>
+<td>Errors</td>
+<td><code>kind = 'error'</code> or non-null <code>error</code></td>
+</tr>
+<tr>
+<td>Latency</td>
+<td>from <code>model_call</code> rows with <code>latency_ms</code></td>
+</tr>
+<tr>
+<td>Blob spills</td>
+<td><code>COUNT</code> where <code>blob_id IS NOT NULL</code> (<strong>Q6</strong>)</td>
+</tr>
+<tr>
+<td>Recent events</td>
+<td>last <strong>30</strong> events by <code>seq</code> DESC (<strong>Q4</strong>); errors truncated to 500 chars (<strong>Q5</strong>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Do not</strong> return full message/tool bodies in v1 info payload (keep panel light). Full content stays in chat UI / MD / event detail later.</p>
+<h3 id="fallback-when-db-limp-missing-q9">Fallback when DB limp / missing (<strong>Q9</strong>)</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Fallback</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Metadata</td>
+<td>Live session + MD front matter</td>
+</tr>
+<tr>
+<td>Usage tokens</td>
+<td>Empty / zero with <code>partial: true</code></td>
+</tr>
+<tr>
+<td>Timeline</td>
+<td>Empty — no reconstruction from UI transcript</td>
+</tr>
+</tbody>
+</table>
+<h2 id="live-updates">Live updates</h2>
+<p>While info panel is open and session is <code>busy</code>:</p>
+<ul>
+<li>On SSE <code>status</code> / <code>message</code> / <code>tool</code> events for that session, refresh info  </li>
+<li>Slow poll <code>GET …/info</code> every <strong>5s</strong> as backup  </li>
+</ul>
+<h2 id="actions-in-panel">Actions in panel</h2>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Copy session id</td>
+<td>Clipboard</td>
+</tr>
+<tr>
+<td>Copy relative / absolute MD path</td>
+<td>Clipboard</td>
+</tr>
+<tr>
+<td>Refresh</td>
+<td>Force reload</td>
+</tr>
+<tr>
+<td><strong>Close session</strong></td>
+<td>Existing confirm flow, then close API (<strong>Q10</strong>)</td>
+</tr>
+<tr>
+<td>Open in explorer</td>
+<td>Jump explorer to MD file if under workspace — <strong>only if</strong> memory is inside workspace (often <strong>not</strong>); else disabled with tooltip</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security">Security</h2>
+<ul>
+<li>Same trust model as rest of UI (local/Tailscale).  </li>
+<li>Info endpoint must not leak other sessions’ data (id scoped).  </li>
+<li>Paths returned are already known to the operator’s machine.  </li>
+</ul>
+<h2 id="implementation-sketch">Implementation sketch</h2>
+<ol>
+<li><code>db.SessionInfo(id)</code> — SQL aggregates + recent events + blob count.  </li>
+<li><code>session.Registry.Info(id)</code> — merge live busy/dirty + DB + MD.  </li>
+<li><code>GET /api/sessions/{id}/info</code>.  </li>
+<li>UI: header ⓘ + modal; render sections; list context menu.  </li>
+<li>Wire SSE/poll refresh; Close session with confirm.  </li>
+<li>Tests: aggregates with fixture events; limp fallback.</li>
+</ol>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Operators diagnose stuck/expensive sessions quickly.  </li>
+<li>Leverages existing dual-write telemetry.  </li>
+<li>Improves trust in token and tool accounting.  </li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Aggregates only as good as event logging coverage.  </li>
+<li>Another modal (accepted for consistency).  </li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Heavy SQL on large sessions</td>
+<td>Indexes already on <code>(session_id, seq)</code>; limit recent events to 30</td>
+</tr>
+<tr>
+<td>Stale busy flag</td>
+<td>Prefer live registry for <code>busy</code></td>
+</tr>
+<tr>
+<td>Info spam in UI</td>
+<td>Explicit open only</td>
+</tr>
+</tbody>
+</table>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Entry + surface agreed (header ⓘ + list menu; modal)  </li>
+<li>[x] API shape agreed  </li>
+<li>[x] Fallback behavior agreed (metadata only when limp)  </li>
+<li>[x] Open questions answered (<code>0008-answers.json</code>)  </li>
+<li>[x] Implemented (<code>GET /api/sessions/{id}/info</code>, modal UI, tests)  </li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0003 <code>sessions</code> / <code>session_events</code> schema  </li>
+<li>ADR-0002 session Markdown front matter  </li>
+<li>Current UI session list + SSE event stream  </li>
+<li><code>adr/0008-answers.json</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0008-session-info.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

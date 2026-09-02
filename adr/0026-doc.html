@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0026</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0026</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0026-transcript-density.md">Markdown</a>
+      <a href="0026-review.html">Review</a>
+      <a href="0026-answers.json">Answers</a>
+      <a href="0025-doc.html">← 0025</a>
+      <a href="0027-doc.html">0027 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0026-transcript-density-compact-tools-message-timestamps-thinking-status">ADR-0026: Transcript density — compact tools, message timestamps, thinking status</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-08-08</td>
+</tr>
+<tr>
+<td><strong>Accepted</strong></td>
+<td>2026-08-13</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>ui, transcript, tools, timestamps, progress, density, web</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0010 (turn progress / step log), ADR-0005 (agent loop), ADR-0001 (inner loop)</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0026-review.html">0026-review.html</a></td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><a href="0026-answers.json">0026-answers.json</a> (<code>2026-08-13T13:57:11.405Z</code>) — all Q1–Q10 locked</td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p>Make long multi-tool sessions readable in the web transcript:</p>
+<ol>
+<li><strong>Compact tool result rows by default</strong> (one-line chips; expand on demand).  </li>
+<li><strong>Visible timestamps</strong> on user, assistant, and tool headers.  </li>
+<li><strong>Live “thinking / working” status</strong> during a turn <strong>plus</strong> <strong>persisted, collapsed thinking rows</strong> in history (same expand pattern as tools).</li>
+</ol>
+<p>Wire/API stays additive where possible. Primary work is <strong>web UI</strong> (<code>internal/web/static/</code>); harness already has <code>created_at</code>, tool messages, turn progress SSE, and harness advisories. Persisted thinking may need a small durable channel (see Design C).</p>
+<h2 id="context-pain">Context &amp; pain</h2>
+<p>Today (<code>bubbleEl</code> in <code>app.js</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>User / assistant</strong></td>
+<td>Full bubbles; <strong>no timestamp</strong> despite <code>Message.created_at</code> on the wire</td>
+</tr>
+<tr>
+<td><strong>Tool</strong></td>
+<td>Full-width mono bubble with role = tool name and <strong>full compacted result body</strong> always open</td>
+</tr>
+<tr>
+<td><strong>Turn progress</strong></td>
+<td>Footer card (ADR-0010) with phase / iter / current tool — good mid-flight, collapses at end</td>
+</tr>
+<tr>
+<td><strong>Harness</strong></td>
+<td>Ephemeral-looking advisory chips in-transcript (<code>role: harness</code>)</td>
+</tr>
+<tr>
+<td><strong>Order</strong></td>
+<td>user → many tool bubbles → (live turn card) → assistant</td>
+</tr>
+</tbody>
+</table>
+<p>After a 15–40 tool turn the transcript is <strong>mostly green tool boxes</strong>. The human conversation (user + final assistant) is hard to scan. Operators also cannot tell <em>when</em> a reply was written without Session Info / MD.</p>
+<h3 id="observed-pain">Observed pain</h3>
+<table>
+<thead>
+<tr>
+<th>Pain</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tool results dominate height</td>
+<td>Every <code>tool_name → result…</code> is a full bubble; long shell/grep tails are worst</td>
+</tr>
+<tr>
+<td>No datestamps</td>
+<td>“Was this today or last week?” requires digging; multi-day sessions feel timeless</td>
+</tr>
+<tr>
+<td>Quiet gaps mid-turn</td>
+<td>Between model call and tools, only header pill / turn card updates; chat scroll area looks frozen</td>
+</tr>
+<tr>
+<td>Progress card vs tools</td>
+<td>Live card is good; permanent tool clutter after turn is the leftover mess</td>
+</tr>
+<tr>
+<td>Expand-everything default</td>
+<td>Power users want detail; default density should favor narrative</td>
+</tr>
+</tbody>
+</table>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Default-compact tools</strong> in the web transcript: one line summary; click/tap to expand full body.  </li>
+<li><strong>Timestamps</strong> on user, assistant, and tool compact headers (readable, locale-friendly).  </li>
+<li><strong>Thinking / working statuses</strong> live during a busy turn <strong>and</strong> retained in history as collapsed rows (like tools).  </li>
+<li><strong>Expand all / collapse all</strong> for tools <strong>and</strong> thinking rows; single-row click expands only that row.  </li>
+<li><strong>Remember expand preference</strong> in localStorage first.  </li>
+<li><strong>Keep diagnostics</strong>: Session Info, expand-all, and copy remain possible.  </li>
+<li><strong>No breaking GET/SSE</strong> for older clients; additive fields only if thinking is dual-written.</li>
+</ol>
+<h2 id="non-goals">Non-goals</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Remove tool messages from MD / SQLite</td>
+<td>Audit trail stays; tool compaction is presentation</td>
+</tr>
+<tr>
+<td>Token streaming of assistant drafts</td>
+<td>Separate concern</td>
+</tr>
+<tr>
+<td>Wonderstand immersion chrome</td>
+<td>Android has its own surfaces</td>
+</tr>
+<tr>
+<td>Hiding tools from the model history</td>
+<td>Transcript UI only</td>
+</tr>
+<tr>
+<td>Full activity dashboard across sessions</td>
+<td>Out of scope</td>
+</tr>
+<tr>
+<td>Replacing ADR-0010 turn card</td>
+<td>Card stays; density work is complementary</td>
+</tr>
+<tr>
+<td>Turn-level “N tools” mega-accordion in v1</td>
+<td>Per-tool compact rows only (<strong>Q2</strong>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="design">Design</h2>
+<h3 id="a-compact-tool-rows-default-q1-locked">A. Compact tool rows (default) — <strong>Q1 locked</strong></h3>
+<p><strong>Collapsed (default):</strong></p>
+<pre><code class="language-text">┌─────────────────────────────────────────────────────────┐
+│ ▸ shell_execute · 3:40 PM · “ls -la …”            [expand]│
+└─────────────────────────────────────────────────────────┘
+</code></pre>
+<p><strong>Expanded:</strong></p>
+<pre><code class="language-text">┌─────────────────────────────────────────────────────────┐
+│ ▾ shell_execute · 3:40 PM                       [collapse]
+│ shell_execute → total 12 … (full body as today)         │
+└─────────────────────────────────────────────────────────┘
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tool name</td>
+<td><code>message.tool_name</code> or leading token of content</td>
+</tr>
+<tr>
+<td>One-line preview</td>
+<td>First ~120 chars of content, single-line</td>
+</tr>
+<tr>
+<td>Timestamp</td>
+<td><code>created_at</code> subtle on header (<strong>Q6</strong>)</td>
+</tr>
+<tr>
+<td>Expand</td>
+<td>Click header row or chevron; body toggles</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Grouping:</strong> <strong>No</strong> turn-level accordion in v1 (<strong>Q2</strong>).</p>
+<p><strong>Controls (</strong>Q3<strong>):</strong> Expand all / Collapse all in transcript toolbar near session actions. Expands/collapses <strong>tools and thinking</strong> rows.</p>
+<p><strong>Settings (</strong>Q4<strong>):</strong> Default collapsed; remember expand-default in <strong>localStorage</strong> first.</p>
+<p><strong>Attachments (</strong>Q10<strong>):</strong> image chips <strong>always visible</strong> on the header even when body collapsed.</p>
+<h3 id="b-message-timestamps-q5-q6-locked">B. Message timestamps — <strong>Q5 / Q6 locked</strong></h3>
+<p>Wire already has <code>created_at</code> (RFC3339) on UI messages.</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Show time?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>user</td>
+<td><strong>Yes</strong></td>
+</tr>
+<tr>
+<td>assistant</td>
+<td><strong>Yes</strong></td>
+</tr>
+<tr>
+<td>tool</td>
+<td><strong>Yes</strong>, subtle on compact header</td>
+</tr>
+<tr>
+<td>thinking (history)</td>
+<td><strong>Yes</strong>, subtle on compact header</td>
+</tr>
+<tr>
+<td>harness / error</td>
+<td>optional / omit</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Format (</strong>Q5<strong>):</strong></p>
+<ul>
+<li>Same calendar day as “now”: <strong>time only</strong> (locale)  </li>
+<li>Else: <strong>short date + time</strong>  </li>
+<li>Full ISO on <code>title</code> tooltip  </li>
+</ul>
+<p>Use browser locale via <code>Intl.DateTimeFormat</code>. No backend change for timestamps.</p>
+<h3 id="c-thinking-working-status-q7-q8-locked">C. Thinking / working status — <strong>Q7 / Q8 locked</strong></h3>
+<h4 id="live-while-busy-q7">Live (while busy) — <strong>Q7</strong></h4>
+<p>Keep ADR-0010 <strong>turn progress card</strong>.<br />
+<strong>Plus</strong> one live “⋯ thinking / running tool” line <strong>above</strong> the turn card, driven by <code>turn</code> / <code>status</code> SSE (update in place).</p>
+<pre><code class="language-text">… tool chip …
+  ⋯ thinking · calling model · i7 · 12s     ← live, updates in place
+[ turn progress card ]
+</code></pre>
+<p>Harness advisories stay as <strong>full bubbles</strong> today (<strong>Q9</strong>); only phase/tool noise uses the live line.</p>
+<h4 id="history-after-turn-q8-custom-locked">History after turn — <strong>Q8 (custom, locked)</strong></h4>
+<p><strong>Persist</strong> thinking segments in the transcript, <strong>collapsed by default</strong> like tool rows:</p>
+<ul>
+<li><strong>Expand all</strong> expands tools <strong>and</strong> thinking rows.  </li>
+<li><strong>Click one thinking row</strong> expands only that row.  </li>
+<li>Collapsed header: short summary (e.g. <code>thinking · calling model · 4s</code> or last phase text).  </li>
+<li>Expanded body: fuller phase/detail text for that segment (not the entire step log dump).</li>
+</ul>
+<pre><code class="language-text">user ………………… 3:40 PM
+  ▸ thinking · calling model · 3.2s
+  ▸ file_read · 3:40 PM · …
+  ▸ thinking · calling model · 1.1s
+  ▸ shell_execute · 3:40 PM · …
+assistant …………… 3:41 PM
+</code></pre>
+<p><strong>Persistence approach (implementation choice, prefer additive):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A (preferred for v1 UI-only)</strong></td>
+<td>Client materializes thinking rows from live SSE into <strong>session-scoped local state</strong>, then on idle <strong>appends collapsed history chips</strong> that rehydrate only while tab is open — <strong>lost on full page reload</strong> unless B</td>
+</tr>
+<tr>
+<td><strong>B (durable)</strong></td>
+<td>Dual-write lightweight rows: UI-only <code>role: thinking</code> (or harness subtype) <strong>not</strong> injected into model history; MD HTML comment or skip MD body; SQLite event optional</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Recommendation for implement:</strong> start with <strong>client-side history chips from the live stream</strong> so tools stay zero-backend; if reload loss is unacceptable in QA, add <strong>B</strong> (UI message with <code>role: thinking</code> excluded from model prompt rebuild). Do <strong>not</strong> put thinking text into model-facing history.</p>
+<p><strong>Cadence while live:</strong> still <strong>one</strong> updating live line (not a bubble per second). On meaningful phase transitions (e.g. calling_model → running_tool → calling_model), <strong>commit</strong> the previous live segment as a collapsed history row, then continue the live line for the new phase. On turn idle, commit final segment and clear the live line.</p>
+<h3 id="d-visual-hierarchy-target">D. Visual hierarchy (target)</h3>
+<pre><code>user ………………… 3:40 PM
+  ▸ thinking · calling model · 2s
+  ▸ file_read · 3:40 PM · …
+  ▸ thinking · calling model · 1s
+  ▸ shell_execute · 3:40 PM · …
+  ⋯ thinking · calling model · i3 · 4s   ← live only while busy
+assistant …………… 3:41 PM
+  (answer markdown)
+</code></pre>
+<h2 id="implementation-sketch">Implementation sketch</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CSS</strong></td>
+<td><code>.bubble.tool.collapsed</code>, <code>.bubble.thinking</code>, <code>.msg-time</code>, <code>.thinking-live</code></td>
+</tr>
+<tr>
+<td><strong>app.js <code>bubbleEl</code></strong></td>
+<td>Timestamps; tool header + expand; thinking row same pattern</td>
+</tr>
+<tr>
+<td><strong>app.js SSE</strong></td>
+<td>Live thinking line from <code>turn</code>/<code>status</code>; on phase change / idle commit collapsed thinking rows</td>
+</tr>
+<tr>
+<td><strong>Expand all</strong></td>
+<td>Toolbar control; toggles all <code>.tool</code> + <code>.thinking</code> collapsibles</td>
+</tr>
+<tr>
+<td><strong>localStorage</strong></td>
+<td><code>marble.toolsExpandedDefault</code> (or similar)</td>
+</tr>
+<tr>
+<td><strong>Harness</strong></td>
+<td>Optional later for durable thinking rows; not required if client-only history is accepted</td>
+</tr>
+</tbody>
+</table>
+<h3 id="suggested-pr-slice">Suggested PR slice</h3>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>T1</strong></td>
+<td>Timestamps on user/assistant (+ tool headers)</td>
+</tr>
+<tr>
+<td><strong>T2</strong></td>
+<td>Compact tools + expand/collapse + expand-all/collapse-all</td>
+</tr>
+<tr>
+<td><strong>T3</strong></td>
+<td>Live thinking line + commit collapsed thinking history on phase/idle</td>
+</tr>
+<tr>
+<td><strong>T4</strong></td>
+<td>localStorage pref + attachment chips on collapsed tools</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisions-locked-q1q10">Decisions locked (Q1–Q10)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+<th>Locked</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Default tool density</td>
+<td><strong>Collapsed</strong> one-line chip; click header to expand body</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Group tools into one accordion?</td>
+<td><strong>No in v1</strong> — per-tool compact rows only</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Expand-all placement</td>
+<td>Transcript toolbar near session actions</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Remember expand-default</td>
+<td><strong>localStorage</strong> first; Settings only if needed</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Timestamp format</td>
+<td>Same day: time only (locale); else short date+time; ISO in <code>title</code></td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Tool row timestamps?</td>
+<td><strong>Yes</strong>, subtle on compact header</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Thinking live surface</td>
+<td><strong>Both</strong> — ADR-0010 turn card + live “⋯ thinking / running tool” line above it</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Persist thinking after turn?</td>
+<td><strong>Yes</strong> — collapsed in history like tools; expand-all includes thinking; single click expands one row only</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Harness advisories</td>
+<td><strong>Keep bubbles</strong> as today; phase/tool noise only on status/thinking path</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Screenshots when tool collapsed</td>
+<td><strong>Always show</strong> attachment/image chips on header</td>
+</tr>
+</tbody>
+</table>
+<p><em>Source: <a href="0026-answers.json">0026-answers.json</a> (<code>2026-08-13T13:57:11.405Z</code>).</em></p>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Why not default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hide tools entirely unless Session Info</td>
+<td>Loses mid-turn narrative and post-hoc debug</td>
+</tr>
+<tr>
+<td>Only turn-card steps (no tool bubbles)</td>
+<td>Breaks “what did it just run?” after collapse; MD still has tools</td>
+</tr>
+<tr>
+<td>Server-side omit tool content from GET</td>
+<td>Breaks other clients / rehydrate fidelity</td>
+</tr>
+<tr>
+<td>Ephemeral-only thinking (old rec)</td>
+<td>Rejected by <strong>Q8</strong> — operators want collapsed history</td>
+</tr>
+<tr>
+<td>Relative-only times (“2m ago”)</td>
+<td>Harder for multi-day sessions; absolute preferred</td>
+</tr>
+<tr>
+<td>Turn-level tool accordion</td>
+<td>Deferred; per-tool compact first (<strong>Q2</strong>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="risks">Risks</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Operators miss a failed tool</td>
+<td>Expanded state on error / non-zero exit if detectable; else expand-all</td>
+</tr>
+<tr>
+<td>Click fatigue</td>
+<td>Expand-all; optional default-expand setting</td>
+</tr>
+<tr>
+<td>Timezone confusion</td>
+<td>Browser local zone + ISO tooltip</td>
+</tr>
+<tr>
+<td>Status line + turn card redundancy</td>
+<td>Live line = one glanceable sentence; card = full detail</td>
+</tr>
+<tr>
+<td>Thinking history noise</td>
+<td>Collapse by default; commit on phase boundaries only, not every SSE tick</td>
+</tr>
+<tr>
+<td>Reload loses client-only thinking</td>
+<td>Optional durable role later if needed</td>
+</tr>
+</tbody>
+</table>
+<h2 id="success-metrics">Success metrics</h2>
+<ul>
+<li>Multi-tool turn (20+ tools) keeps user+assistant messages on screen without endless scroll through green boxes.  </li>
+<li>User, assistant, and tool headers show clear local timestamps.  </li>
+<li>During a live turn, an operator sees updating “thinking / running X” without opening Session Info.  </li>
+<li>After the turn, collapsed thinking rows remain inspectable via expand-all or single expand.  </li>
+<li>Full tool body still one click away; Session Info / model history unchanged.</li>
+</ul>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="0010-doc.html">ADR-0010 Agent loop transparency</a>  </li>
+<li><a href="0005-doc.html">ADR-0005 Tools and agent loop</a>  </li>
+<li>Web: <code>internal/web/static/app.js</code> (<code>bubbleEl</code>, turn card), <code>style.css</code> (<code>.bubble.tool</code>)</li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-08-08</td>
+<td><strong>Proposed</strong> — transcript density: compact tools, timestamps, thinking status; Q1–Q10 open</td>
+</tr>
+<tr>
+<td>2026-08-13</td>
+<td><strong>Accepted</strong> — locked Q1–Q10 (<code>2026-08-13T13:57:11.405Z</code>); Q8 = persist collapsed thinking like tools</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0026-transcript-density.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

@@ -22,6 +22,8 @@ type SessionMeta struct {
 	Workspace    string     `json:"workspace,omitempty"`
 	Model        string     `json:"model,omitempty"`
 	ModelID      string     `json:"model_id,omitempty"` // catalog slug (ADR-0018)
+	// ReasoningEffort is none|low|medium|high (thinking models); empty = provider default.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// TitleCustom is true when the operator set an explicit name (do not auto-title from messages).
 	TitleCustom bool `json:"title_custom,omitempty"`
 }
@@ -81,6 +83,9 @@ func EncodeSession(doc *SessionDoc) string {
 	fmt.Fprintf(&b, "model: %q\n", doc.Model)
 	if doc.ModelID != "" {
 		fmt.Fprintf(&b, "model_id: %q\n", doc.ModelID)
+	}
+	if doc.ReasoningEffort != "" {
+		fmt.Fprintf(&b, "reasoning_effort: %s\n", doc.ReasoningEffort)
 	}
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "# Session %s — %s\n\n", doc.ID, doc.Title)
@@ -219,6 +224,8 @@ func parseFrontMatter(fm string) (SessionMeta, error) {
 			m.Model = val
 		case "model_id":
 			m.ModelID = val
+		case "reasoning_effort":
+			m.ReasoningEffort = val
 		}
 	}
 	if m.ID == "" {

@@ -81,15 +81,17 @@ Upgrades to WebSocket. First message may be `hello`; harness replies `hello_ack`
 
 | kind | payload | result |
 |------|---------|--------|
-| `screenshot` | `{}` | screenshot_b64 (JPEG), meta {w,h,scale} |
-| `desktop_click` | `{x,y,button?}` | ok |
+| `screenshot` | `{}` | screenshot_b64 (JPEG max edge 1280), meta `{w,h,scale,screen_w,screen_h,locked?}` — `w/h` are **image** pixels (click space); `scale = screen_w/w` |
+| `desktop_click` | `{x,y,button?}` — **image-space** coords | ok + screenshot_b64 + meta (atomic post-click shot in same queue slot); `last_click` in meta |
 | `desktop_type` | `{text}` | ok |
 | `desktop_key` | `{key, mods?}` | ok |
 | `browser_ensure` | `{force?}` | text JSON ensure result; attaches or launches user Chrome with CDP |
 | `browser_tabs` | `{}` | text JSON list |
 | `browser_open` | `{url, new_tab?}` | ok |
 | `browser_snapshot` | `{}` | text |
-| `browser_act` | `{action, target?, text?, x?, y?}` — actions include open, click, click_text, type, press, eval, wait (x=timeout_ms), set_input_files (text=paths) | ok/text |
+| `browser_act` | `{action, target?, text?, x?, y?}` — actions include open, click, click_text, **click_button**, type, press, eval, wait (x=timeout_ms), set_input_files (text=paths). No jQuery `:contains` selectors. | ok/text |
 | `confirm` | `{prompt, risk}` | confirm_result ok |
+
+Busy: concurrent actions while queue depth 1 → error `peer busy (action queue depth 1)` (harness retries briefly).
 
 Deadlines: default 120s, max 300s (peer clamp).

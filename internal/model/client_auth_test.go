@@ -5,10 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestSetAuthOmitsWhenEmpty(t *testing.T) {
-	c := New("http://example/v1", "m", 100, "")
+	c := New("http://example/v1", "m", 100, "", 0)
 	req, _ := http.NewRequest(http.MethodGet, "http://example/v1/models", nil)
 	c.setAuth(req)
 	if req.Header.Get("Authorization") != "" {
@@ -17,7 +18,7 @@ func TestSetAuthOmitsWhenEmpty(t *testing.T) {
 }
 
 func TestSetAuthBearerWhenSet(t *testing.T) {
-	c := New("http://example/v1", "m", 100, "sk-test")
+	c := New("http://example/v1", "m", 100, "sk-test", 0)
 	req, _ := http.NewRequest(http.MethodGet, "http://example/v1/models", nil)
 	c.setAuth(req)
 	if got := req.Header.Get("Authorization"); got != "Bearer sk-test" {
@@ -34,7 +35,7 @@ func TestHealthAuthHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL+"/v1", "m", 100, "sk-live")
+	c := New(srv.URL+"/v1", "m", 100, "sk-live", 0)
 	if err := c.Health(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +44,22 @@ func TestHealthAuthHeader(t *testing.T) {
 	}
 
 	sawAuth = "unset"
-	c2 := New(srv.URL+"/v1", "m", 100, "")
+	c2 := New(srv.URL+"/v1", "m", 100, "", 0)
 	if err := c2.Health(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if sawAuth != "" {
 		t.Fatalf("expected empty auth, got %q", sawAuth)
+	}
+}
+
+func TestDefaultHTTPTimeout(t *testing.T) {
+	c := New("http://example/v1", "m", 100, "", 0)
+	if c.HTTPTimeout() != DefaultHTTPTimeout {
+		t.Fatalf("got %v want %v", c.HTTPTimeout(), DefaultHTTPTimeout)
+	}
+	c2 := New("http://example/v1", "m", 100, "", 45*time.Minute)
+	if c2.HTTPTimeout() != 45*time.Minute {
+		t.Fatalf("got %v", c2.HTTPTimeout())
 	}
 }

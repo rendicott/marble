@@ -28,6 +28,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.mcpGet(w, r)
 	case path == "mcp" && r.Method == http.MethodPut:
 		s.mcpPut(w, r)
+	case path == "env":
+		// Secrets / env file manager — never routed through the agent loop.
+		s.handleSettingsEnv(w, r)
+	case path == "tts":
+		s.handleTTSSettings(w, r)
 	default:
 		http.NotFound(w, r)
 	}

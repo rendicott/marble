@@ -50,11 +50,13 @@ type ToolInfo struct {
 // Message is a transcript entry shown in the UI / stored in history.
 type Message struct {
 	ID         string    `json:"id"`
-	Role       string    `json:"role"` // user | assistant | tool | system | attachment
+	Role       string    `json:"role"` // user | assistant | tool | system | attachment | thinking
 	Content    string    `json:"content"`
 	ToolName   string    `json:"tool_name,omitempty"`
 	ToolCallID string    `json:"tool_call_id,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+	// Summary is a short label for collapsible rows (thinking/tool chrome).
+	Summary string `json:"summary,omitempty"`
 	// Actor identity for human user messages (ADR-0017); never injected into model history.
 	UserEmail string `json:"user_email,omitempty"`
 	UserName  string `json:"user_name,omitempty"`
@@ -96,6 +98,11 @@ type Summary struct {
 	Model   string `json:"model,omitempty"` // last effective provider string
 	// Computer bind (ADR-0020)
 	ComputerID string `json:"computer_id,omitempty"`
+	// LastPeerAction is a short blurb from the latest computer_* tool (session info).
+	LastPeerAction   string     `json:"last_peer_action,omitempty"`
+	LastPeerActionAt *time.Time `json:"last_peer_action_at,omitempty"`
+	// Reasoning effort preference (none|low|medium|high)
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // Session is one independent conversation.
@@ -118,6 +125,9 @@ type Session struct {
 	ProviderModel string
 	// ComputerID is bound desktop peer slug (ADR-0020); "" = unbound.
 	ComputerID string
+	// ReasoningEffort is none|low|medium|high (operator preference for thinking models).
+	// Empty = omit provider fields (server/provider default).
+	ReasoningEffort string
 
 	// Client sticky advertise (ADR-0025). In-memory for M1; createSession sets default,
 	// each postMessage may override (last post wins for enrichment).
@@ -132,6 +142,27 @@ type Session struct {
 	subs    map[chan Event]struct{}
 	seq     int
 	turn    turnControl // ADR-0010 live / last-turn progress
+
+	lastPeerAction   string
+	lastPeerActionAt time.Time
+}
+
+// SetLastPeerAction records a short computer_* blurb for session info (in-memory).
+func (s *Session) SetLastPeerAction(summary string) {
+	if s == nil {
+		return
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return
+	}
+	if len(summary) > 200 {
+		summary = summary[:200] + "…"
+	}
+	s.mu.Lock()
+	s.lastPeerAction = summary
+	s.lastPeerActionAt = time.Now()
+	s.mu.Unlock()
 }
 
 // SetClientAdvertise updates sticky client fields (ADR-0025 Q7).
@@ -184,7 +215,9 @@ func SystemPrompt() string {
 const defaultSystemPrompt = `You are Marble, a general-purpose agent harness for sysadmin tasks, personal automation, and learning over time.
 You work inside a single workspace directory (tool jail). Memory is separate.
 
-Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), surgical edits (edit_file requires prior file_read in the same turn; apply_patch is atomic), shell_execute (policy-limited; prefer start_background_task for jobs >60s), background tasks, schedule_continuation, get_context_usage, session_compact when context is high, memory_* and skill_* for long-term knowledge, attach_file for UI-only file chips, web_fetch for HTTP(S) page retrieval.
+Desktop / Marble Peer (also called Pier): computer_list/bind/screenshot/desktop_act/browser_* drive a remote peer. Prefer computer_browser_act action=click_button for labeled buttons; desktop clicks use IMAGE pixel coords (meta.w×meta.h). If a click returns ui_unchanged or near-duplicate thrash, stop guessing pixels — computer_confirm or a different strategy. Do not re-screenshot immediately after a post-click attachment. computer_confirm surfaces an Accept/Deny card in the Marble harness UI and a Tailscale-reachable /confirm/{id} link — never rewrite peer loopback (127.0.0.1) URLs to Tailscale; tell the user to use the harness card or /confirm/{id}. Pending confirms block other computer_* until Accept or Deny/Dismiss.
+
+Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), surgical edits (edit_file requires prior file_read in the same turn; apply_patch is atomic), shell_execute (policy-limited; prefer start_background_task for jobs >60s), background tasks, schedule_continuation, get_context_usage, session_compact when context is high, memory_* and skill_* for long-term knowledge, message_attach for durable chat chips the operator can download (png/jpeg/webp/gif, txt/md/csv/json/html/svg; no audio/PDF), attach_file only for ephemeral workspace preview (vanishes when the turn ends), web_fetch for HTTP(S) page retrieval.
 Cron: use cron_list/get/create/update/delete/run for durable recurring schedules (SQLite, survive restarts). schedule_continuation is one-shot delay or wait-for-background-task only. Prefer interval ≥ 60s; target a session_id for a known thread, or omit session_id so the first fire creates a session. Keep cron prompts short.
 mpub_publish / mpub_list / mpub_get / mpub_unpublish / mpub_set_visibility: publish human-facing pages under $MEMORY/mpub, served at /mpub/{slug}. Default visibility is private (allowlisted admins only when OAuth is on). Set visibility=public only when the user explicitly asks to share openly. Use mpub_set_visibility to promote/demote without rewriting the body. Primary content_type text/html; markdown also supported. Use for research notes and shareable results — not for project source files (use workspace tools) and not for agent memory_write knowledge.
 MCP tools (if configured in mcp.json) appear as mcp_<server>_<tool> plus resource/prompt helpers — use them for web search (e.g. Tavily MCP) and other integrations.
@@ -193,7 +226,7 @@ Web research: use web search if available (e.g. mcp_tavily_tavily_search) to dis
 
 Memory: when unsure about prior decisions, operator preferences, project facts, or “have we done this before?”, check durable memory before guessing or re-deriving from scratch. Use memory_search (keywords/time/tags; scope session|daily|knowledge|all) then memory_fetch for full text. Prefer knowledge/ for intentional long-term facts; use skill_search/skill_load for procedural playbooks. After learning something durable the operator would want next time, memory_write it under knowledge/. Do not invent past work that is not in memory or the current transcript.
 
-External agents: use call_agent_process(format=grok|claude, prompt=…) for large multi-file coding better suited to Grok Build or Claude Code. For multi-minute jobs set background=true (or poll via task_id) so the Marble turn is not blocked — do not wait synchronously on long agent runs. Use workdir for a dedicated subfolder under the workspace. Child auto-approve is on; scope the prompt and workdir carefully. Prefer Marble tools for simple reads/edits/shell. Summarize the external result for the user.
+External agents: use call_agent_process(format=grok|claude, prompt=…) for large multi-file coding better suited to Grok Build or Claude Code. Prefer background=true + poll task_id for multi-minute jobs. Judge progress by progress.cwd_mtime_changed / stuck_hint (not identical poll JSON). Do not kill under ~5–8m unless stuck_hint. Keep prompts short and implement-focused; use extra_args for --effort/--max-turns when needed. Defaults live in $MEMORY/agent_process.json (medium effort, --no-plan, turn caps). Prefer Marble tools for simple reads/edits/shell. Summarize the external result for the user.
 
 Prefer edit_file/apply_patch over full file_write for existing files. Read before edit. Be concise in final answers.`
 
@@ -212,7 +245,7 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 	if kind == "" {
 		kind = "user"
 	}
-	return Summary{
+	sum := Summary{
 		ID:           s.ID,
 		Title:        s.Title,
 		TitleCustom:  s.TitleCustom,
@@ -226,10 +259,17 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 		Busy:         s.busy,
 		Loaded:       loaded,
 		Dirty:        s.dirty,
-		ModelID:      s.ModelID,
-		Model:        s.ProviderModel,
-		ComputerID:   s.ComputerID,
+		ModelID:         s.ModelID,
+		Model:           s.ProviderModel,
+		ComputerID:      s.ComputerID,
+		ReasoningEffort: s.ReasoningEffort,
+		LastPeerAction:  s.lastPeerAction,
 	}
+	if !s.lastPeerActionAt.IsZero() {
+		t := s.lastPeerActionAt
+		sum.LastPeerActionAt = &t
+	}
+	return sum
 }
 
 func (s *Session) UIMessages() []Message {
@@ -445,8 +485,9 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 			Status:       st,
 			MessageCount: len(msgs),
 			Workspace:    workspace,
-			Model:        model,
-			ModelID:      s.ModelID,
+			Model:           model,
+			ModelID:         s.ModelID,
+			ReasoningEffort: s.ReasoningEffort,
 		},
 		Messages: msgs,
 	}
@@ -486,6 +527,7 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	}
 	s.ModelID = doc.ModelID
 	s.ProviderModel = doc.Model
+	s.ReasoningEffort = model.NormalizeReasoningEffort(doc.ReasoningEffort)
 	s.ui = make([]Message, 0, len(doc.Messages))
 	s.history = []model.Message{{Role: "system", Content: model.ContentFromText(defaultSystemPrompt)}}
 	s.seq = 0

@@ -40,9 +40,13 @@ type Task struct {
 	Result    *Result    `json:"result,omitempty"`
 	Error     string     `json:"error,omitempty"`
 	Command   []string   `json:"command,omitempty"`
+	// Progress is filled on Get/List while running (or at finish).
+	Progress *Progress `json:"progress,omitempty"`
 
-	cmd    *exec.Cmd
-	cancel context.CancelFunc
+	cmd        *exec.Cmd
+	cancel     context.CancelFunc
+	stdoutSnap *bytes.Buffer // live capture for write-signal heuristics
+	stderrSnap *bytes.Buffer
 }
 
 // Manager runs and tracks call_agent_process invocations (ADR-0014).
@@ -220,16 +224,18 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 
 	id := memory.NewSessionID()
 	t := &Task{
-		ID:        id,
-		SessionID: sessionID,
-		Format:    req.Format,
-		Prompt:    req.Prompt,
-		CWD:       cwd,
-		Status:    StatusRunning,
-		StartedAt: time.Now(),
-		Command:   argv,
-		cmd:       cmd,
-		cancel:    cancel,
+		ID:         id,
+		SessionID:  sessionID,
+		Format:     req.Format,
+		Prompt:     req.Prompt,
+		CWD:        cwd,
+		Status:     StatusRunning,
+		StartedAt:  time.Now(),
+		Command:    argv,
+		cmd:        cmd,
+		cancel:     cancel,
+		stdoutSnap: &stdout,
+		stderrSnap: &stderr,
 	}
 
 	m.mu.Lock()
@@ -297,38 +303,85 @@ func killProcessGroup(cmd *exec.Cmd) {
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
-// Get returns a task snapshot.
+// Get returns a task snapshot (with progress / stuck_hint for running tasks).
 func (m *Manager) Get(id string) (*Task, bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
+	m.mu.Unlock()
 	if !ok {
 		return nil, false
 	}
-	cp := *t
-	if t.Result != nil {
-		r := *t.Result
-		cp.Result = &r
+	m.refreshProgress(t)
+	// Optional auto-kill when stuck
+	if t.Status == StatusRunning && t.Progress != nil && t.Progress.StuckHint && m.Config().StuckKill {
+		_ = m.Kill(id, true)
+		m.mu.Lock()
+		if t.Status == StatusRunning {
+			// Kill is async; mark advisory error if still running
+			t.Error = "stuck_kill: " + t.Progress.StuckReason
+		}
+		m.mu.Unlock()
+		m.refreshProgress(t)
 	}
-	return &cp, true
+	return m.snapshotTask(t), true
 }
 
 // List session agent tasks.
 func (m *Manager) List(sessionID string) []*Task {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []*Task
+	ids := make([]string, 0, len(m.bySess[sessionID]))
 	for id := range m.bySess[sessionID] {
-		if t, ok := m.tasks[id]; ok {
-			cp := *t
-			if t.Result != nil {
-				r := *t.Result
-				cp.Result = &r
-			}
-			out = append(out, &cp)
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
+	var out []*Task
+	for _, id := range ids {
+		if t, ok := m.Get(id); ok {
+			out = append(out, t)
 		}
 	}
 	return out
+}
+
+func (m *Manager) snapshotTask(t *Task) *Task {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *t
+	if t.Result != nil {
+		r := *t.Result
+		cp.Result = &r
+	}
+	if t.Progress != nil {
+		p := *t.Progress
+		cp.Progress = &p
+	}
+	// Don't expose buffer pointers
+	cp.stdoutSnap = nil
+	cp.stderrSnap = nil
+	cp.cmd = nil
+	cp.cancel = nil
+	return &cp
+}
+
+func (m *Manager) refreshProgress(t *Task) {
+	if t == nil {
+		return
+	}
+	stuckAfter := m.Config().StuckAfter()
+	var outS, errS string
+	m.mu.Lock()
+	if t.stdoutSnap != nil {
+		outS = t.stdoutSnap.String()
+	}
+	if t.stderrSnap != nil {
+		errS = t.stderrSnap.String()
+	}
+	m.mu.Unlock()
+	// mtime walk outside lock
+	prog := buildProgress(t, stuckAfter, outS, errS)
+	m.mu.Lock()
+	t.Progress = &prog
+	m.mu.Unlock()
 }
 
 // Kill terminates a background agent task.
@@ -370,6 +423,37 @@ func (m *Manager) KillSession(sessionID string) {
 			_ = m.Kill(t.ID, true)
 		}
 	}
+}
+
+// KillAllRunning signals every running agent process group (non-blocking).
+// SIGTERM then async SIGKILL escalate — does not wait for children to exit.
+// Used on harness shutdown so call_agent_process children are not left orphaned.
+func (m *Manager) KillAllRunning() int {
+	m.mu.Lock()
+	var running []*Task
+	for _, t := range m.tasks {
+		if t.Status == StatusRunning && t.cmd != nil && t.cmd.Process != nil {
+			running = append(running, t)
+		}
+	}
+	m.mu.Unlock()
+	for _, t := range running {
+		if t.cancel != nil {
+			t.cancel()
+		}
+		pgid := t.cmd.Process.Pid
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		go func(pid int, task *Task) {
+			time.Sleep(2 * time.Second)
+			m.mu.Lock()
+			still := task.Status == StatusRunning
+			m.mu.Unlock()
+			if still {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}(pgid, t)
+	}
+	return len(running)
 }
 
 func (m *Manager) prepare(req Request) (argv []string, cwd string, dcfg DriverConfig, err error) {

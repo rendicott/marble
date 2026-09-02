@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0007</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0007</span>
+      <span class="status accepted">Accepted (ready to implement)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0007-settings-ui.md">Markdown</a>
+      <a href="0007-review.html">Review</a>
+      <a href="0007-answers.json">Answers</a>
+      <a href="0006-doc.html">← 0006</a>
+      <a href="0008-doc.html">0008 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0007-settings-ui">ADR-0007: Settings UI</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-17</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>ui, settings, config, database, cli, mcp</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0003 (DB <code>settings</code>), ADR-0005 (shell/loop), ADR-0006 (MCP)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0007-answers.json</code> (<code>2026-07-18T02:29:38.026Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Marble is configured from three places:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CLI flags</strong></td>
+<td><code>--base-url</code>, <code>--model</code>, <code>--workspace</code>, <code>--memory</code>, <code>--persist-interval</code>, tool/shell timeouts, <code>--disable-shell</code></td>
+</tr>
+<tr>
+<td><strong>SQLite <code>settings</code></strong></td>
+<td>Retention, <code>db_inline_max_bytes</code>, shell policy keys</td>
+</tr>
+<tr>
+<td><strong>Browser local state</strong></td>
+<td>Explorer last path, show closed, show dotfiles</td>
+</tr>
+<tr>
+<td><strong>MCP config</strong></td>
+<td><code>$MEMORY/mcp.json</code> (ADR-0006)</td>
+</tr>
+</tbody>
+</table>
+<p>Operators need a first-class UI to inspect effective config and edit durable tunables (and MCP servers) without SQL or hand-editing JSON alone.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Inspect</strong> launch-time / effective harness configuration (read-only where CLI-owned).  </li>
+<li><strong>Edit</strong> durable DB <code>settings</code> keys (retention, shell policy).  </li>
+<li><strong>Manage MCP</strong> servers in Settings v1 (align with ADR-0006; not “later only”).  </li>
+<li><strong>See system health</strong> (mode, schema, paths, model ok, MCP chip).  </li>
+<li>Honor prior constraints: base URL not in DB; limp disables DB writes; CLI shell kill-switch wins.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>Hot-reload of CLI flags without restart  </li>
+<li>Secrets vault / OAuth  </li>
+<li>Settings export/import file format (copy DB is enough)  </li>
+<li>Changing model/base URL from UI  </li>
+</ul>
+<h2 id="decision">Decision</h2>
+<ol>
+<li><strong>⚙ gear</strong> in sidebar head: <code>Sessions · 📁 · ⚙ · +</code> (<strong>Q1</strong>).  </li>
+<li><strong>Modal</strong> settings UI, same pattern as workspace explorer (<strong>Q2</strong>).  </li>
+<li><strong>Left nav</strong> on desktop; <strong>top tabs</strong> on narrow screens (<strong>Q3</strong>).  </li>
+<li>Backend: <code>GET/PUT /api/settings</code> for DB keys; MCP via existing/extension of ADR-0006 config APIs or settings subsection that reads/writes <code>mcp.json</code> safely.  </li>
+<li><strong>Tiers:</strong>
+   - <strong>Runtime (read-only):</strong> CLI/process — model, base URL, workspace, memory, addr, budgets, limp/schema; label <em>from launch flags — restart to change</em> (<strong>Q4</strong>, <strong>Q5</strong>).<br />
+   - <strong>Persistent (editable):</strong> SQLite <code>settings</code>.<br />
+   - <strong>MCP (editable file/API):</strong> servers from <code>mcp.json</code> (<strong>Q14</strong>).<br />
+   - <strong>UI prefs:</strong> browser defaults; explorer/session toggles remain (<strong>Q15</strong>).  </li>
+<li><strong>Agent</strong> section: loop thresholds <strong>read-only</strong> from CLI/code if cheap (<strong>Q6</strong>).  </li>
+<li>Shell lists: multi-line text → JSON arrays server-side (<strong>Q7</strong>).  </li>
+<li>Confirm Save when any <code>shell_*</code> key changes (<strong>Q8</strong>).  </li>
+<li>Effective shell chip (<strong>Q9</strong>).  </li>
+<li>PUT rejects unknown keys with <strong>400</strong> (<strong>Q10</strong>).  </li>
+<li><strong>Reset section to defaults</strong> for Memory &amp; Shell (<strong>Q11</strong>).  </li>
+<li>No export/import UI (<strong>Q12</strong>).  </li>
+<li>Shell/tool paths <strong>read DB live</strong> (or short TTL) after Save (<strong>Q13</strong>).  </li>
+<li>Limp: runtime + about visible; persistent Save disabled.</li>
+</ol>
+<h2 id="decisions-locked-q1q15">Decisions locked (Q1–Q15)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Sidebar head gear next to folder (<code>Sessions · folder · gear · +</code>)</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Modal v1</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Left nav desktop; top tabs mobile</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Model + base_url CLI-only, read-only in UI</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Label runtime fields “from launch flags — restart to change”</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Agent loop thresholds CLI/code; read-only display if cheap</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Multi-line patterns → server JSON array</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Confirm Save if any <code>shell_*</code> key changes</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Effective shell status chip</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Reject unknown PUT keys (400 + list)</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>Reset defaults for Memory &amp; Shell sections</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Defer export/import</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>Live-apply shell settings (read DB per call / short TTL)</td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td><strong>Include MCP in Settings v1</strong> (not deferred)</td>
+</tr>
+<tr>
+<td><strong>Q15</strong></td>
+<td>Settings UI prefs set defaults; existing toggles remain</td>
+</tr>
+</tbody>
+</table>
+<h2 id="ui-sections">UI sections</h2>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Runtime</strong></td>
+<td>Read-only CLI fields + labels</td>
+</tr>
+<tr>
+<td><strong>Memory &amp; DB</strong></td>
+<td>Editable retention / inline max; Reset defaults</td>
+</tr>
+<tr>
+<td><strong>Shell</strong></td>
+<td>Editable policy + confirm on Save; status chip; Reset defaults</td>
+</tr>
+<tr>
+<td><strong>Agent</strong></td>
+<td>Read-only loop thresholds if available</td>
+</tr>
+<tr>
+<td><strong>MCP / Integrations</strong></td>
+<td>List/enable servers from <code>mcp.json</code>; add/edit/remove or open/edit flow; health per server (<strong>Q14</strong>)</td>
+</tr>
+<tr>
+<td><strong>UI</strong></td>
+<td>Defaults for show closed, explorer dotfiles, etc.</td>
+</tr>
+<tr>
+<td><strong>About</strong></td>
+<td>Health, paths, schema, MCP summary chip</td>
+</tr>
+</tbody>
+</table>
+<h2 id="api-sketch">API sketch</h2>
+<h3 id="get-apisettings"><code>GET /api/settings</code></h3>
+<p>Returns <code>mode</code>, <code>editable</code>, <code>runtime</code>, <code>persistent</code>, <code>shell_effective</code>, and <strong><code>mcp</code></strong> summary (servers count, enabled, errors) for the modal.</p>
+<h3 id="put-apisettings"><code>PUT /api/settings</code></h3>
+<p>Partial update of <strong>known</strong> persistent keys only; 400 on unknowns; 503 if limp.</p>
+<h3 id="mcp">MCP</h3>
+<p>Prefer:</p>
+<ul>
+<li><code>GET/PUT</code> helpers that load/save <code>$MEMORY/mcp.json</code> with validation (Cursor-compatible shape from ADR-0006), <strong>or</strong>  </li>
+<li>Dedicated <code>/api/mcp/...</code> routes already/soon present, <strong>embedded</strong> in the Settings MCP section.</li>
+</ul>
+<p>UI must not store MCP secrets in SQLite; keep env var references as today.</p>
+<h2 id="precedence">Precedence</h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Winner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model / base URL / workspace / memory / addr</td>
+<td>CLI</td>
+</tr>
+<tr>
+<td><code>--disable-shell</code></td>
+<td>CLI over DB <code>shell_enabled</code></td>
+</tr>
+<tr>
+<td>Retention, shell lists, timeouts</td>
+<td>DB settings (UI)</td>
+</tr>
+<tr>
+<td>MCP server definitions</td>
+<td><code>mcp.json</code> (UI)</td>
+</tr>
+<tr>
+<td>UI chrome defaults</td>
+<td>Browser / Settings UI prefs</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security">Security</h2>
+<ul>
+<li>Unauthenticated local UI trust model unchanged.  </li>
+<li>Shell Save confirmation required.  </li>
+<li>MCP config edits are high impact (subprocess spawn); confirm on destructive remove / enabling servers.  </li>
+<li>No arbitrary SQL; no writing <code>schema_meta</code> from UI.</li>
+</ul>
+<h2 id="implementation-order">Implementation order</h2>
+<ol>
+<li><code>db</code> list/set + validation registry for known keys.  </li>
+<li><code>GET/PUT /api/settings</code> (+ shell_effective).  </li>
+<li>MCP config read/write surface for UI (if not already).  </li>
+<li>Settings modal + gear; sections including MCP.  </li>
+<li>Confirm flows; limp disable Save.  </li>
+<li>UI prefs defaults wiring.  </li>
+<li>Tests: unknown keys, limp 503, shell confirm path, mcp.json round-trip.</li>
+</ol>
+<h2 id="open-questions">Open questions</h2>
+<p>None blocking. Optional later: deep-link <code>/settings</code>, export JSON.</p>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Q1–Q15 answered (Q14 = include MCP)  </li>
+<li>[x] Runtime vs persistent vs MCP split defined  </li>
+<li>[x] Ready to implement  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-17</td>
+<td>Initial proposal</td>
+</tr>
+<tr>
+<td>2026-07-18</td>
+<td>Locked Q1–Q15 from <code>0007-answers.json</code>; MCP in v1</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li><code>adr/0007-answers.json</code>  </li>
+<li>ADR-0003, ADR-0005, ADR-0006  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0007-settings-ui.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

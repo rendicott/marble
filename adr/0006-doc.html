@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0006</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0006</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0006-mcp-client.md">Markdown</a>
+      <a href="0006-review.html">Review</a>
+      <a href="0006-answers.json">Answers</a>
+      <a href="0005-doc.html">← 0005</a>
+      <a href="0007-doc.html">0007 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0006-mcp-client-model-context-protocol">ADR-0006: MCP Client (Model Context Protocol)</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-17</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>mcp, tools, web-search, plugins, tavily, extensibility</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (tools + loop), ADR-0005 (tool suite + loop policy)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<h3 id="what-harnesses-do-for-web-search">What harnesses do for web search</h3>
+<p>In 2025–2026 the ecosystem converged on a few patterns:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>How it works</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Native tool → search API</strong></td>
+<td>First-class <code>web_search</code> tool in the harness; backend is Tavily / Brave / SerpAPI / etc.</td>
+<td>Many coding agents; Hermes “native web” backend</td>
+</tr>
+<tr>
+<td><strong>MCP client → search MCP server</strong></td>
+<td>Harness speaks MCP; external process (often <code>npx tavily-mcp</code>) exposes <code>tavily_search</code>, extract, etc.</td>
+<td>Goose + Tavily MCP; OpenCode + Tavily or SearXNG MCP</td>
+</tr>
+<tr>
+<td><strong>Skills / CLI bundle</strong></td>
+<td>Skill packs that document or wrap search CLI; planner discovers via skill load</td>
+<td>Tavily Agent Skills + CLI</td>
+</tr>
+<tr>
+<td><strong>Self-hosted meta-search</strong></td>
+<td>MCP or tool to SearXNG / similar; no SaaS key</td>
+<td>Privacy-first OpenCode setups</td>
+</tr>
+<tr>
+<td><strong>Browser automation</strong></td>
+<td>Playwright/Puppeteer tools (heavier; not “search”)</td>
+<td>Browser-use stacks</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tavily + MCP is the common easy path</strong> for production agent web search: API key + official MCP server + host registration. Some harnesses also ship a <strong>native</strong> <code>web_search</code> that calls Tavily (or similar) without MCP for a tighter loop.</p>
+<p>Marble today has a rich <strong>built-in</strong> tool suite (ADR-0005) but <strong>no</strong> web search and <strong>no</strong> plugin surface. Hardcoding Tavily as a first-class tool would solve search once; adopting <strong>MCP as a client</strong> solves search <em>and</em> the long tail (GitHub, docs, calendars, internal APIs) without growing <code>internal/tools</code> forever.</p>
+<p>ADR-0001 already parked “MCP / plugin system” and “web search” as later ADRs. This ADR takes both by making Marble an <strong>MCP host/client</strong>.</p>
+<h3 id="why-not-only-a-native-web_search">Why not only a native <code>web_search</code>?</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Native Tavily tool only</td>
+<td>Simple, one API, low latency</td>
+<td>Couples Marble to one vendor; every new integration is code</td>
+</tr>
+<tr>
+<td>MCP only</td>
+<td>Ecosystem leverage; swap Tavily ↔ SearXNG ↔ others via config</td>
+<td>Process/lifecycle complexity; schema tax; protocol edge cases</td>
+</tr>
+<tr>
+<td><strong>MCP first + optional native later</strong></td>
+<td>Extensibility now; can still add a thin native wrapper if needed</td>
+<td>Two paths if we overbuild both</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Decision direction:</strong> MCP client first. Document <strong>Tavily MCP</strong> as the recommended web-search server for operators. Do <strong>not</strong> bake Tavily API calls into Marble core in this ADR (optional future convenience ADR).</p>
+<h2 id="decision">Decision</h2>
+<ol>
+<li>Implement Marble as an <strong>MCP client (host)</strong> that connects to zero or more MCP servers.</li>
+<li><strong>Discover tools, resources, and prompts</strong> from connected servers (<strong>Q11</strong>).</li>
+<li><strong>Merge</strong> MCP tools into the same agent tool registry as built-ins for the model loop (OpenAI function-calling wire), with <strong>namespacing</strong> (<code>mcp_&lt;server&gt;_&lt;tool&gt;</code>).</li>
+<li>Configure servers via <strong><code>$MEMORY/mcp.json</code></strong> (primary) + <strong><code>--mcp-config</code></strong> override; Cursor-compatible <code>mcpServers</code> map; secrets via env.</li>
+<li><strong>v1 transports: both stdio and HTTP/SSE</strong> (<strong>Q4</strong> — not stdio-only).</li>
+<li>Treat MCP tool results like built-in tool results (truncation, DB event dual-write, loop caps).</li>
+<li><strong>Web search</strong> via MCP recipe (Tavily/SearXNG); <strong>no</strong> native <code>web_search</code> in this ADR.</li>
+<li>Process-global connections; limp-safe; degrade on server failure; soft cap <strong>64</strong> MCP tools; <strong>60s</strong> call timeout.</li>
+<li>Keep all built-ins; health JSON + UI chip; prefer small maintained Go client.</li>
+</ol>
+<h2 id="decisions-locked-q1q15">Decisions locked (Q1–Q15)</h2>
+<p>Source: <code>adr/0006-answers.json</code> (<code>2026-07-18T01:34:43.803Z</code>).</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td><code>$MEMORY/mcp.json</code> primary; <code>--mcp-config</code> override</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Cursor-compatible <code>mcpServers</code> map</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td><code>mcp_&lt;server&gt;_&lt;tool&gt;</code> sanitized names</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td><strong>stdio and HTTP/SSE both in v1</strong> (not stdio deferred)</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>No native <code>web_search</code> in this ADR; MCP recipe for Tavily/SearXNG</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>MCP works in limp mode (independent of SQLite)</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Process-global MCP connections; tools for all sessions</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Per-server <code>enabled</code> flag; no remote config download</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Soft cap <strong>64</strong> MCP tools total</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td><strong>60s</strong> default MCP tool call timeout</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>v1 includes <strong>tools, resources, and prompts</strong> (not tools-only)</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Health JSON + small UI chip <code>MCP: n servers</code>; settings UI later</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>Prefer small maintained Go client; else minimal JSON-RPC subset in-tree</td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td>Do not fail harness start if MCP fails; degrade + health</td>
+</tr>
+<tr>
+<td><strong>Q15</strong></td>
+<td>Keep all built-ins; namespace prevents collision</td>
+</tr>
+</tbody>
+</table>
+<h2 id="architecture">Architecture</h2>
+<pre><code>                    ┌──────────────────────────┐
+                    │     Agent loop (0005)    │
+                    │  Specs() = builtins+MCP  │
+                    └────────────┬─────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+       ┌────────────┐    ┌────────────┐    ┌────────────────┐
+       │ Built-ins  │    │ MCP bridge │    │ (future native │
+       │ tools/*    │    │  namespace  │    │  web_search)   │
+       └────────────┘    └──────┬─────┘    └────────────────┘
+                                │
+              ┌─────────────────┼─────────────────┐
+              ▼                 ▼                 ▼
+       stdio: tavily-mcp   stdio: other      HTTP/SSE MCP
+       (npx / binary)      (git, docs, …)    (url + headers)
+</code></pre>
+<h3 id="package-sketch">Package sketch</h3>
+<pre><code>internal/
+  mcp/
+    client.go            # session manager: start/stop servers (stdio + HTTP/SSE)
+    transport_stdio.go
+    transport_http.go    # Streamable HTTP / SSE (v1, Q4)
+    catalog.go           # tools + resources + prompts catalog
+    call.go              # tools/call, resources/read, prompts/get
+    config.go            # parse mcp.json / servers block
+  tools/
+    registry.go          # Specs() merges builtins + mcp tools
+</code></pre>
+<h3 id="tool-naming-q3-locked">Tool naming — <strong>Q3 locked</strong></h3>
+<table>
+<thead>
+<tr>
+<th>Scheme</th>
+<th>Example</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mcp_&lt;server&gt;_&lt;tool&gt;</code></td>
+<td><code>mcp_tavily_tavily_search</code></td>
+<td><strong>Locked</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Sanitize: <code>[a-zA-Z0-9_]{1,64}</code> after mapping. Built-ins unchanged (<strong>Q15</strong>).</p>
+<h3 id="config-surface-q1q2q8-locked">Config surface — <strong>Q1/Q2/Q8 locked</strong></h3>
+<p><strong>File:</strong> <code>$MEMORY/mcp.json</code> primary; <code>--mcp-config path</code> override; <code>--mcp-disable</code> kill switch.</p>
+<pre><code class="language-json">{
+  &quot;mcpServers&quot;: {
+    &quot;tavily&quot;: {
+      &quot;command&quot;: &quot;npx&quot;,
+      &quot;args&quot;: [&quot;-y&quot;, &quot;tavily-mcp@latest&quot;],
+      &quot;env&quot;: {
+        &quot;TAVILY_API_KEY&quot;: &quot;${TAVILY_API_KEY}&quot;
+      },
+      &quot;enabled&quot;: true
+    },
+    &quot;remote_example&quot;: {
+      &quot;url&quot;: &quot;https://example.invalid/mcp&quot;,
+      &quot;transport&quot;: &quot;http&quot;,
+      &quot;headers&quot;: {
+        &quot;Authorization&quot;: &quot;Bearer ${MCP_TOKEN}&quot;
+      },
+      &quot;enabled&quot;: false
+    }
+  }
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Config location</td>
+<td><code>$MEMORY/mcp.json</code>; <code>--mcp-config</code> override</td>
+</tr>
+<tr>
+<td>Shape</td>
+<td>Cursor-compatible <code>mcpServers</code> map</td>
+</tr>
+<tr>
+<td>Env interpolation</td>
+<td><code>${VAR}</code> from process environment only (no shell)</td>
+</tr>
+<tr>
+<td>Enable</td>
+<td>Per-server <code>enabled</code>; no remote config download</td>
+</tr>
+<tr>
+<td>Secrets</td>
+<td>Env only for v1 (not SQLite plaintext)</td>
+</tr>
+<tr>
+<td>Transports</td>
+<td><strong>stdio</strong> (<code>command</code>/<code>args</code>) and <strong>HTTP/SSE</strong> (<code>url</code> + optional headers)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="lifecycle">Lifecycle</h3>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Harness start</td>
+<td>Parse config; connect enabled servers (spawn stdio / open HTTP); list tools, resources, prompts</td>
+</tr>
+<tr>
+<td>Failure to start</td>
+<td>Log + health field; continue without that server (<strong>Q14</strong> non-fatal)</td>
+</tr>
+<tr>
+<td>Tool call</td>
+<td><code>tools/call</code> with timeout <strong>60s</strong> default (<strong>Q10</strong>)</td>
+</tr>
+<tr>
+<td>Resource</td>
+<td><code>resources/list</code> / <code>resources/read</code> exposed to agent (via MCP-backed tools or bridge helpers)</td>
+</tr>
+<tr>
+<td>Prompt</td>
+<td><code>prompts/list</code> / <code>prompts/get</code> available to harness (inject or tool-wrap as needed)</td>
+</tr>
+<tr>
+<td>Harness shutdown</td>
+<td>SIGTERM stdio children; close HTTP sessions</td>
+</tr>
+<tr>
+<td>Reload</td>
+<td>v1: restart harness; later: SIGHUP / API reload</td>
+</tr>
+</tbody>
+</table>
+<h3 id="agent-loop-integration-adr-0005">Agent loop integration (ADR-0005)</h3>
+<ul>
+<li>Process-global MCP manager (<strong>Q7</strong>); same catalog for all sessions.</li>
+<li>Works in limp mode (<strong>Q6</strong>).</li>
+<li><code>Registry.Specs()</code> = builtin specs + MCP tools (cap <strong>64</strong> MCP tools, <strong>Q9</strong>).</li>
+<li><code>Execute</code>: names starting with <code>mcp_</code> → MCP bridge; else built-in.</li>
+<li>MCP tools count toward tool rounds, soft wall, result truncation.</li>
+<li>Resources/prompts: surface as additional namespaced tools (e.g. <code>mcp_&lt;server&gt;_resource_read</code>) and/or harness-side prompt templates — implementer chooses minimal agent-visible surface that covers list+read/get.</li>
+</ul>
+<h3 id="security">Security</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Untrusted MCP server</td>
+<td>Operator-configured only; <code>enabled</code> flag</td>
+</tr>
+<tr>
+<td>Env secret leakage to child</td>
+<td>Pass only listed <code>env</code> keys</td>
+</tr>
+<tr>
+<td>Tool name collision</td>
+<td>Namespacing</td>
+</tr>
+<tr>
+<td>Remote HTTP MCP</td>
+<td>TLS URL + header secrets from env; same local-operator trust model</td>
+</tr>
+<tr>
+<td>Prompt injection via search results</td>
+<td>Tool-result truncation</td>
+</tr>
+</tbody>
+</table>
+<p>MCP is <strong>not</strong> a sandbox. Stdio servers run as the harness user; HTTP servers are network trust.</p>
+<h3 id="web-search-recipe-docs-not-core-code-q5">Web search recipe (docs, not core code) — <strong>Q5</strong></h3>
+<pre><code class="language-json">&quot;tavily&quot;: {
+  &quot;command&quot;: &quot;npx&quot;,
+  &quot;args&quot;: [&quot;-y&quot;, &quot;tavily-mcp@latest&quot;],
+  &quot;env&quot;: { &quot;TAVILY_API_KEY&quot;: &quot;${TAVILY_API_KEY}&quot; }
+}
+</code></pre>
+<p>Alternatives: SearXNG MCP, Brave Search MCP. Native <code>web_search</code> deferred.</p>
+<h3 id="resources-prompts-mcp-q11-locked">Resources &amp; prompts (MCP) — <strong>Q11 locked</strong></h3>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>v1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tools/list</code> + <code>tools/call</code></td>
+<td><strong>Yes</strong></td>
+</tr>
+<tr>
+<td>Resources (<code>resources/list</code>, <code>resources/read</code>)</td>
+<td><strong>Yes</strong></td>
+</tr>
+<tr>
+<td>Prompts (<code>prompts/list</code>, <code>prompts/get</code>)</td>
+<td><strong>Yes</strong></td>
+</tr>
+<tr>
+<td>Sampling (server → host LLM)</td>
+<td><strong>No</strong> (still out of scope)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Web search and dozens of integrations without core churn.  </li>
+<li>Ecosystem configs (Tavily MCP, etc.) copy-pasteable.  </li>
+<li>Aligns Marble with modern harness expectations (Goose, Cursor, OpenCode-class).  </li>
+<li>Built-ins stay ownable and fast; MCP is the extension plane.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Node/<code>npx</code> dependency for many popular servers (document; allow bare binaries).  </li>
+<li>Extra processes and cold-start latency.  </li>
+<li>Larger tool schema for the model (context tax).  </li>
+<li>Protocol surface area (JSON-RPC, notifications, partial failures).</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MCP protocol drift</td>
+<td>Pin client library / implement narrow subset tests</td>
+</tr>
+<tr>
+<td>Tool dump blows context</td>
+<td>Cap tools per server; truncate descriptions</td>
+</tr>
+<tr>
+<td>Zombie MCP children</td>
+<td>Process group + shutdown hooks (same as BG tasks)</td>
+</tr>
+<tr>
+<td>Operator confusion (which tool?)</td>
+<td>Namespacing + health lists connected servers</td>
+</tr>
+</tbody>
+</table>
+<h2 id="out-of-scope">Out of scope</h2>
+<ul>
+<li>Marble as an MCP <strong>server</strong> (exporting Marble tools to other hosts)  </li>
+<li>OAuth / remote multi-user MCP auth  </li>
+<li>Marketplace UI for browsing servers  </li>
+<li>Native hardcoded Tavily client (future optional ADR)  </li>
+<li>Browser/CDP automation  </li>
+<li>Sampling (server-initiated LLM calls through host)  </li>
+</ul>
+<h2 id="implementation-order-after-accept">Implementation order (after accept)</h2>
+<ol>
+<li><code>internal/mcp</code> config parse + <code>${ENV}</code> expand (<code>mcpServers</code>, stdio + url entries).  </li>
+<li>Stdio transport: spawn, JSON-RPC initialize, list tools/resources/prompts.  </li>
+<li>HTTP/SSE transport: connect, same capability discovery.  </li>
+<li>Catalog → namespaced <code>model.ToolSpec</code> (+ resource/prompt agent surface).  </li>
+<li>tools/call + resources/read + prompts/get with 60s timeout.  </li>
+<li>Merge into <code>tools.Registry.Specs</code> / <code>Execute</code> (64-tool soft cap).  </li>
+<li>Health JSON + UI chip; degrade on failure.  </li>
+<li>Shutdown cleanup (stdio process groups + HTTP close).  </li>
+<li>Docs: Tavily recipe, sample <code>mcp.json</code>, HTTP example, security notes.  </li>
+<li>Tests: mock stdio server; HTTP mock; name collision; env expand.</li>
+</ol>
+<h2 id="open-questions">Open questions</h2>
+<p><strong>None blocking.</strong> All Q1–Q15 locked — see <strong>Decisions locked</strong>.</p>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Industry context (native vs MCP vs skills) accepted  </li>
+<li>[x] MCP client scope accepted (<strong>tools + resources + prompts</strong>; <strong>stdio + HTTP/SSE</strong>)  </li>
+<li>[x] Config shape + Tavily recipe accepted  </li>
+<li>[x] Naming + security model accepted  </li>
+<li>[x] Q1–Q15 locked  </li>
+<li>[x] Ready to implement  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-17</td>
+<td>Initial proposal</td>
+</tr>
+<tr>
+<td>2026-07-18</td>
+<td>Q1–Q15 locked; status → <strong>Accepted</strong>; v1 = stdio+HTTP/SSE; tools+resources+prompts</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li>Model Context Protocol specification (tools, stdio, streamable HTTP)  </li>
+<li>Tavily MCP / agent search ecosystem (Goose, OpenCode, Hermes patterns)  </li>
+<li>ADR-0001 out-of-scope: MCP / web search  </li>
+<li>ADR-0005 expanded tool suite + loop  </li>
+<li>Marble tools registry: <code>internal/tools</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0006-mcp-client.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

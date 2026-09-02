@@ -10,7 +10,7 @@ Highlights since **[v0.4.1](https://github.com/rendicott/marble/releases/tag/v0.
 
 ### Models & API keys
 - **`model_add` / `model_update` / `model_get`** agent tools — catalog writes store **env var names** only (`api_key_env`)
-- Live re-read of **`$MEMORY/env`** and **`~/.config/marble/env`** so new catalog keys work without restart
+- Live re-read of **`$MEMORY/env`** so new catalog keys work without restart (Settings → Secrets)
 - Settings chips: **key ok / key missing** for process + catalog models
 
 ### Gemini / provider tooling
@@ -87,7 +87,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Process CLI model** — `--base-url`, `--model`, context flags, optional `--api-key-env` (always available as fallback)
 - **Catalog models (ADR-0018)** — additional endpoints/models from Settings; per-entry base URL and `api_key_env`; session picker + cron pin
 - **Local / open endpoints** — no API key by default (no `Authorization` header)
-- **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` (and catalog `api_key_env`) names only; first non-empty wins from **process env**, then **`$MEMORY/env`**, then **`~/.config/marble/env`** (files re-read so new catalog keys need no restart)
+- **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` (and catalog `api_key_env`) names only; first non-empty wins from **process env**, then **`$MEMORY/env`** (file re-read so new catalog keys need no restart; Settings → Secrets)
 - **Health / Settings** show auth mode, env name, **key ok / key missing** chips — never the secret
 - **Multimodal (ADR-0019)** — image (+ basic document) parts when catalog `cap_images` is set; process default stays text-only on the wire
 
@@ -114,6 +114,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Context** — `get_context_usage`, `session_compact`
 - **Attachments** — `message_attach` (durable chat chips + model-visible images when `cap_images`); `attach_file` (workspace path / UI-oriented)
 - **MCP** — optional stdio/HTTP servers from `$MEMORY/mcp.json` (e.g. Tavily web search)
+- **Server-side TTS (ADR-0027)** — optional `$MEMORY/tts.json` + `ELEVENLABS_API_KEY`; `GET /api/tts/status`, `POST /api/sessions/{id}/tts`; audio as session attachments (inline GET). Off by default.
 - **mpub** — publish HTML/markdown at `/mpub/{slug}`; tools: `mpub_publish` / `list` / `get` / `unpublish` / `mpub_set_visibility`
 
 ### Sessions & memory
@@ -272,8 +273,9 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h
-# Optional secrets (mode 0600). Example line: OPENAI_API_KEY=sk-...
-EnvironmentFile=-%h/.config/marble/env
+# Optional: inject secrets into process env at start (same file Secrets UI edits).
+# Catalog keys also re-read this path live without restart.
+EnvironmentFile=-%h/.marble/env
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/src/marble/bin/marble-harness \
   --workspace %h \
@@ -293,10 +295,10 @@ WantedBy=default.target
 ```
 
 ```bash
-# If using a cloud key:
+# If using a cloud key (or use Settings → Secrets in the UI):
 umask 077
-printf 'OPENAI_API_KEY=sk-...\n' > ~/.config/marble/env
-chmod 600 ~/.config/marble/env
+printf 'OPENAI_API_KEY=sk-...\n' > ~/.marble/env
+chmod 600 ~/.marble/env
 ```
 
 ```bash
@@ -313,7 +315,7 @@ go build -o bin/marble-harness ./cmd/marble-harness
 systemctl --user restart marble-harness
 ```
 
-Put secrets (e.g. `TAVILY_API_KEY`, `GROK_API_KEY`) in `~/.config/marble/env` or the process environment — **not** in the unit `ExecStart` line, and **never** in git.
+Put secrets (e.g. `TAVILY_API_KEY`, `GROK_API_KEY`) in **`$MEMORY/env`** (Settings → Secrets) or the process environment — **not** in the unit `ExecStart` line, and **never** in git.
 
 ### 5. Google OAuth + multi-user (ADR-0017)
 
@@ -424,23 +426,27 @@ Wire contract: [`docs/peer-protocol.md`](docs/peer-protocol.md). Peer install, C
 ├── mpub/<slug>/           # published pages
 ├── soul.md                # optional every-turn context (ADR-0013)
 ├── mcp.json               # optional MCP servers
+├── tts.json               # optional server-side TTS (ADR-0027); see adr/tts.json.example
+├── tts-cache/             # optional cross-session TTS audio cache
 └── agent_process.json     # optional call_agent_process drivers (ADR-0014)
 ```
 
 Operator secrets (API keys) live **outside** the repo and **outside SQLite**. Catalog models store only the **env var name** (`api_key_env`).
 
 ```
-~/.config/marble/env       # systemd EnvironmentFile + re-read by harness (mode 0600)
-~/.marble/env              # optional $MEMORY/env — also re-read live (mode 0600)
+~/.marble/env              # $MEMORY/env — Settings → Secrets + live re-read (mode 0600)
 ```
+
+Resolve order: **process env** (wins), then **`$MEMORY/env`**.
 
 Example after adding a Gemini catalog row with `api_key_env=GEMINI_API_KEY`:
 
 ```bash
 umask 077
-printf 'GEMINI_API_KEY=…\n' >> ~/.config/marble/env
+printf 'GEMINI_API_KEY=…\n' >> ~/.marble/env
+# Or use Settings → Secrets in the UI.
 # Catalog models pick this up within ~2s (no restart).
-# If the var is only injected by an old process env and not in a file, restart:
+# If the var is only set in process env from an old EnvironmentFile, restart:
 #   systemctl --user restart marble-harness
 ```
 

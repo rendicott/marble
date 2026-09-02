@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0016</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0016</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0016-model-api-key-auth.md">Markdown</a>
+      <a href="0016-review.html">Review</a>
+      <a href="0016-answers.json">Answers</a>
+      <a href="0015-doc.html">← 0015</a>
+      <a href="0017-doc.html">0017 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0016-optional-model-provider-api-key-auth">ADR-0016: Optional Model Provider API Key Auth</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-20</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>model, auth, api-key, config, cli, openai</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (model client / OpenAI wire), ADR-0007 (Settings runtime RO)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0016-answers.json</code> (<code>2026-07-20T00:42:21.580Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Marble’s model client talks <strong>OpenAI-compatible</strong> Chat Completions (<code>--base-url</code> + <code>--model</code>). Historically it always sent a dummy header:</p>
+<pre><code class="language-http">Authorization: Bearer marble
+</code></pre>
+<p>That works for <strong>local / open</strong> endpoints that ignore auth. It does <strong>not</strong> work for hosted providers that require a real API key.</p>
+<p>Operators need optional keyed auth without putting secrets on the CLI or in Settings DB, while keeping the <strong>default keyless</strong> local workflow.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li>Optional API key from an <strong>environment variable named at launch</strong> (<strong>Q1</strong>, <strong>Q2</strong>).  </li>
+<li>If configuration is absent or empty → <strong>no Authorization header</strong> (<strong>Q4</strong>).  </li>
+<li>Same credential on <strong>Chat</strong> and <strong>Health</strong> (<strong>Q6</strong>).  </li>
+<li>Never expose the key in logs, health, or Settings — only mode + env name + set/unset (<strong>Q5</strong>, <strong>Q7</strong>).  </li>
+<li>Document systemd <code>EnvironmentFile</code> + <code>0600</code> (<strong>Q9</strong>).</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>OAuth / device flow  </li>
+<li>Multi-provider key map (<strong>Q8</strong> deferred)  </li>
+<li>Storing keys in SQLite or Settings UI  </li>
+<li>Literal <code>--api-key=sk-…</code> (<strong>Q10</strong>)  </li>
+<li>Custom header names e.g. <code>x-api-key</code> (<strong>Q12</strong> deferred)  </li>
+</ul>
+<h2 id="decision">Decision</h2>
+<h3 id="1-launch-surface-q1-q2-q10-q11">1. Launch surface (<strong>Q1</strong>, <strong>Q2</strong>, <strong>Q10</strong>, <strong>Q11</strong>)</h3>
+<pre><code class="language-text">--api-key-env=OPENAI_API_KEY
+--api-key-env=OPENAI_API_KEY,OPENROUTER_API_KEY
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Flag <strong>omitted</strong></td>
+<td>Unauthenticated (local default)</td>
+</tr>
+<tr>
+<td>Flag set, env <strong>empty/unset</strong></td>
+<td>Unauthenticated + single <strong>WARNING</strong> at startup (<strong>Q11</strong>)</td>
+</tr>
+<tr>
+<td>Flag set, env <strong>non-empty</strong></td>
+<td>Use first non-empty env value as key</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Value is the <strong>env var name(s)</strong>, never the secret.  </li>
+<li>Comma-separated list; <strong>first non-empty</strong> wins (<strong>Q2</strong>).  </li>
+<li><strong>No</strong> literal <code>--api-key</code> in v1 (<strong>Q10</strong>).</li>
+</ul>
+<h3 id="2-http-auth-q3-q4-q6">2. HTTP auth (<strong>Q3</strong>, <strong>Q4</strong>, <strong>Q6</strong>)</h3>
+<p>When a key is resolved:</p>
+<pre><code class="language-http">Authorization: Bearer &lt;key&gt;
+</code></pre>
+<p>When no key:</p>
+<ul>
+<li><strong>Omit</strong> <code>Authorization</code> entirely (drop dummy <code>Bearer marble</code>).</li>
+</ul>
+<p>Apply to <code>POST …/chat/completions</code> and <code>GET …/models</code> (and any future model HTTP calls) via one client helper.</p>
+<h3 id="3-config-client">3. Config + client</h3>
+<pre><code class="language-go">// config
+APIKeyEnv string // flag value, e.g. &quot;OPENAI_API_KEY&quot; or &quot;A,B&quot;
+
+// resolved once at launch (not logged)
+// APIKey string  — empty means no auth
+
+// model.Client
+APIKey string // empty → no Authorization header
+</code></pre>
+<p>Resolve only at process start (restart to change — same as other CLI flags).</p>
+<h3 id="4-observability-q5-q7">4. Observability (<strong>Q5</strong>, <strong>Q7</strong>)</h3>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Startup</td>
+<td><code>model auth: none</code> <strong>or</strong> <code>model auth: bearer from env OPENAI_API_KEY (set)</code> / <code>(unset)</code> — <strong>never</strong> the key</td>
+</tr>
+<tr>
+<td><code>/api/health</code></td>
+<td><code>model_auth</code>, <code>model_auth_env</code> (name only), <code>model_auth_configured</code> (bool)</td>
+</tr>
+<tr>
+<td>Settings → Runtime</td>
+<td>Same read-only fields</td>
+</tr>
+<tr>
+<td>Logs</td>
+<td>Never print key or Authorization header</td>
+</tr>
+</tbody>
+</table>
+<h3 id="5-systemd-q9">5. Systemd (<strong>Q9</strong>)</h3>
+<pre><code class="language-ini">[Service]
+EnvironmentFile=-%h/.config/marble/model.env
+# model.env mode 0600 contains: OPENAI_API_KEY=sk-...
+ExecStart=... --api-key-env=OPENAI_API_KEY ...
+</code></pre>
+<p>Document in README.</p>
+<h3 id="6-settings">6. Settings</h3>
+<p>Model / base URL / auth remain <strong>CLI-only</strong> (ADR-0007). Runtime section shows auth mode only — no secret input field.</p>
+<h2 id="decisions-locked-q1q12">Decisions locked (Q1–Q12)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Flag: <strong><code>--api-key-env</code></strong> (env var name, not the key)</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td><strong>Comma-separated</strong> list; first non-empty env wins</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td><strong><code>Authorization: Bearer &lt;key&gt;</code></strong> only in v1</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td><strong>Omit</strong> Authorization when no key (drop dummy <code>Bearer marble</code>)</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Health + Settings: mode + env name + set/unset; <strong>never</strong> the secret</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Chat and Health share the same auth</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Startup one-liner; never print key; redact Authorization</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Defer multi-key map; one process = one base URL = one key</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Document systemd EnvironmentFile + 0600 in README</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>No literal <code>--api-key</code> in v1</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>WARNING if flag set but env empty</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Defer custom header names</td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-sketch">Implementation sketch</h2>
+<ol>
+<li><code>config</code>: <code>--api-key-env</code>; resolve first non-empty env.  </li>
+<li><code>model.Client</code>: optional <code>APIKey</code>; <code>setAuth(req)</code> on Chat + Health.  </li>
+<li>Empty key → no Authorization header.  </li>
+<li>Health JSON + Settings Runtime fields.  </li>
+<li>README: local vs cloud + systemd example.  </li>
+<li>Tests: no header when empty; Bearer when set; multi-env first-wins; health omits secret.</li>
+</ol>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Hosted OpenAI-compatible providers without redesigning the wire path.  </li>
+<li>Local default stays keyless.  </li>
+<li>Secrets stay in the environment, not argv / git / Settings DB.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Restart to change key or env binding.  </li>
+<li>Bearer-only may miss exotic gateways (deferred).  </li>
+<li>Dropping dummy <code>Bearer marble</code> is a small behavior change (local stacks that ignore auth unaffected).</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Key in logs</td>
+<td>Never log Authorization; truncate error bodies</td>
+</tr>
+<tr>
+<td>World-readable env file</td>
+<td>Document 0600</td>
+</tr>
+<tr>
+<td>Empty env + cloud base URL</td>
+<td>Startup WARNING + clear 401</td>
+</tr>
+</tbody>
+</table>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Open questions answered (<code>0016-answers.json</code>)  </li>
+<li>[x] ADR locked + review HTML updated  </li>
+<li>[x] <code>--api-key-env</code> + Bearer when set; omit auth when not  </li>
+<li>[x] Health / Settings never expose secret  </li>
+<li>[x] Tests + README examples  </li>
+</ul>
+<h2 id="implementation-order">Implementation order</h2>
+<ol>
+<li>Config flag + env resolve  </li>
+<li>Model client auth helper  </li>
+<li>Health + Settings Runtime  </li>
+<li>README / unit examples  </li>
+<li>Tests  </li>
+</ol>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-20</td>
+<td>Proposed</td>
+</tr>
+<tr>
+<td>2026-07-20</td>
+<td>Locked Q1–Q12 from <code>0016-answers.json</code></td>
+</tr>
+<tr>
+<td>2026-07-20</td>
+<td>Implemented: <code>--api-key-env</code>, model client auth, health/Settings, README</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li><code>adr/0016-answers.json</code>  </li>
+<li>ADR-0001 model client  </li>
+<li>ADR-0007 Settings Runtime  </li>
+<li><code>internal/model/client.go</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0016-model-api-key-auth.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

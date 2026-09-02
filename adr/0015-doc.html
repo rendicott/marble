@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0015</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0015</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0015-cron-jobs.md">Markdown</a>
+      <a href="0015-review.html">Review</a>
+      <a href="0015-answers.json">Answers</a>
+      <a href="0014-doc.html">← 0014</a>
+      <a href="0016-doc.html">0016 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0015-cron-jobs-durable-schedules-ui-modal-agent-crud">ADR-0015: Cron Jobs — Durable Schedules, UI Modal, Agent CRUD</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-19</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>cron, scheduler, ui, tools, daemon, sqlite</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0002/0003 (memory/DB daemon), ADR-0005 (<code>schedule_continuation</code> / BG), ADR-0007 (Settings modal chrome), ADR-0010 (turn busy / stop)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0015-answers.json</code> (<code>2026-07-20T00:06:38.005Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Marble already has <strong>one-shot delayed resume</strong> via <code>schedule_continuation</code> (in-memory timers; max ~24h; cancel on session close). That is the right primitive for “finish this after the build ends” or “nudge me in 10 minutes.”</p>
+<p>Operators also want <strong>durable, recurring, inspectable schedules</strong>:</p>
+<ul>
+<li>“Every morning, summarize overnight logs in session X.”</li>
+<li>“Every Monday 09:00, open a hygiene checklist turn.”</li>
+<li>“Every 15 minutes, poll a status endpoint and report if unhealthy.”</li>
+</ul>
+<p>Agents should be able to <strong>create/list/update/delete</strong> those jobs during a turn. Humans should manage the same jobs from a <strong>clock-icon modal</strong> without leaving the chat UI.</p>
+<h3 id="gap-vs-schedule_continuation">Gap vs <code>schedule_continuation</code></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>schedule_continuation</code></th>
+<th><strong>Cron (this ADR)</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lifetime</td>
+<td>One fire</td>
+<td>Recurring (or optional finite)</td>
+</tr>
+<tr>
+<td>Persist</td>
+<td>In-memory (restart loses)</td>
+<td>SQLite (survive restart)</td>
+</tr>
+<tr>
+<td>Scope</td>
+<td>Bound to one session turn flow</td>
+<td>Global catalog; targets a session (create if missing)</td>
+</tr>
+<tr>
+<td>UI</td>
+<td>Optional chip (limited)</td>
+<td>Full modal CRUD + history</td>
+</tr>
+<tr>
+<td>Agent</td>
+<td><code>schedule_continuation</code> only</td>
+<td>CRUD tool suite</td>
+</tr>
+<tr>
+<td>Busy / overlap</td>
+<td>Retry briefly then drop</td>
+<td>Skip if busy; advance schedule</td>
+</tr>
+</tbody>
+</table>
+<p>Keep both. Cron is not a replacement for wait-for-task one-shots (<strong>Q15</strong>).</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Durable cron jobs</strong> stored in SQLite under <code>$MEMORY</code> (<strong>Q9</strong>).  </li>
+<li><strong>Clock icon</strong> in the session sidebar opens a <strong>modal</strong> for list/create/edit/enable/disable/delete + recent runs (<strong>Q1</strong>, <strong>Q2</strong>).  </li>
+<li><strong>Agent tools</strong> for full <strong>CRUD</strong> (and list/get/run) on the same store (<strong>Q10</strong>, <strong>Q13</strong>, <strong>Q18</strong>).  </li>
+<li>On fire: inject a prompt into a <strong>target session</strong> and start a turn; if the session is missing, <strong>create a new session</strong> and bind the job (<strong>Q3</strong>, <strong>Q4</strong>, <strong>Q19</strong>).  </li>
+<li>Survive harness restart; limp-mode pauses fires (<strong>Q14</strong>).  </li>
+<li>Predictable caps so a runaway agent cannot schedule infinite load (<strong>Q11</strong>).</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>Distributed multi-host scheduler / leader election  </li>
+<li>OS <code>crontab</code> integration or systemd timers  </li>
+<li>Arbitrary shell-only cron without a session turn (defer: shell action type)  </li>
+<li>Calendar UI / RRULE / complex holiday calendars  </li>
+<li>Per-user multi-tenant ACL (single-operator harness)  </li>
+<li>Replacing <code>schedule_continuation</code> or BG tasks  </li>
+</ul>
+<h2 id="decision">Decision</h2>
+<h3 id="1-job-model">1. Job model</h3>
+<p>A <strong>cron job</strong> is a durable row:</p>
+<pre><code class="language-text">id              short id (same family as session ids)
+name            human label (required)
+enabled         bool
+schedule_kind   &quot;cron&quot; | &quot;interval&quot;          # Q5
+cron_expr       5-field cron when kind=cron
+interval_sec    ≥ 60 when kind=interval      # Q11
+timezone        IANA; default &quot;Local&quot;        # Q6
+session_id      preferred target (may be empty or stale)
+prompt          text injected at fire (required)
+created_by      &quot;ui&quot; | &quot;agent&quot; | &quot;system&quot;
+created_at / updated_at
+next_run_at     computed, indexed
+last_run_at / last_status / last_error
+run_count
+max_runs        optional finite cap (null = forever)
+</code></pre>
+<p><strong>v1 fire action (</strong>Q4<strong>):</strong> <code>session_prompt</code> only — inject <code>prompt</code> with prefix <code>[cron:&lt;id&gt; &lt;name&gt;]</code> (<strong>Q20</strong>) via the continuation inject path, then start a turn if the session is not busy.</p>
+<p><strong>Session targeting (</strong>Q3<strong>, </strong>Q17<strong>, </strong>Q19<strong>):</strong></p>
+<ol>
+<li>If <code>session_id</code> refers to an <strong>existing</strong> session → use it.  </li>
+<li>If missing / unknown / deleted → <strong>create a new user session</strong>, set the job’s <code>session_id</code> to the new id (persist), inject prompt, start turn.  </li>
+<li>Title for auto-created sessions: e.g. <code>cron: &lt;job name&gt;</code> (implementer detail).  </li>
+<li>No auto-disable for missing session (creation replaces that path).</li>
+</ol>
+<h3 id="2-schedule-formats-q5-q6">2. Schedule formats (<strong>Q5</strong>, <strong>Q6</strong>)</h3>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Spec</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cron</code></td>
+<td>Standard <strong>5-field</strong> (<code>min hour dom mon dow</code>)</td>
+<td>Well-tested parser (e.g. robfig/cron v3). No seconds field in v1.</td>
+</tr>
+<tr>
+<td><code>interval</code></td>
+<td><code>interval_sec</code> ≥ <strong>60</strong></td>
+<td>Advance from last scheduled tick; no catch-up storm.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Timezone (</strong>Q6<strong>):</strong> store IANA string; default <strong><code>Local</code></strong> (host). UI shows next run in that zone.</p>
+<h3 id="3-scheduler-daemon">3. Scheduler daemon</h3>
+<ul>
+<li>In-process ticker (same family as continuation / memory daemon), e.g. every <strong>1–5s</strong>.  </li>
+<li>On tick: claim due jobs (<code>next_run_at &lt;= now</code> AND <code>enabled</code>), compute next, write run row, invoke fire.  </li>
+<li>Single-writer harness (<code>marble.lock</code>) — no multi-writer v1.  </li>
+<li>On harness start: reload enabled jobs; recompute stale <code>next_run_at</code>.</li>
+</ul>
+<h3 id="4-busy-missed-limp-policies-q7-q8-q14">4. Busy / missed / limp policies (<strong>Q7</strong>, <strong>Q8</strong>, <strong>Q14</strong>)</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Target session <strong>busy</strong></td>
+<td><strong>Skip</strong>; log <code>skipped_busy</code>; advance <code>next_run_at</code></td>
+</tr>
+<tr>
+<td>Target session <strong>missing</strong></td>
+<td><strong>Create new session</strong>, rebind job <code>session_id</code>, fire into it</td>
+</tr>
+<tr>
+<td>Harness <strong>down</strong> over a fire time</td>
+<td><strong>No catch-up</strong>; next future slot from now</td>
+</tr>
+<tr>
+<td><strong>Limp / model down</strong></td>
+<td><strong>Pause fires</strong>; log <code>skipped_limp</code>; keep jobs</td>
+</tr>
+<tr>
+<td>Turn <strong>Stop</strong></td>
+<td>Cancels in-flight turn only; jobs unchanged</td>
+</tr>
+</tbody>
+</table>
+<h3 id="5-persistence-q9-q12">5. Persistence (<strong>Q9</strong>, <strong>Q12</strong>)</h3>
+<p>SQLite in <code>marble.db</code> (schema bump):</p>
+<pre><code class="language-sql">CREATE TABLE cron_jobs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  schedule_kind TEXT NOT NULL,        -- cron | interval
+  cron_expr TEXT,
+  interval_sec INTEGER,
+  timezone TEXT NOT NULL DEFAULT 'Local',
+  session_id TEXT,                    -- may be empty; filled/rebound on fire
+  prompt TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  next_run_at TEXT,
+  last_run_at TEXT,
+  last_status TEXT,
+  last_error TEXT,
+  run_count INTEGER NOT NULL DEFAULT 0,
+  max_runs INTEGER
+);
+
+CREATE TABLE cron_runs (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  scheduled_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  status TEXT NOT NULL,  -- ok | skipped_busy | skipped_limp | error | created_session | …
+  error TEXT,
+  session_id TEXT,
+  FOREIGN KEY(job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_cron_jobs_next ON cron_jobs(enabled, next_run_at);
+CREATE INDEX idx_cron_runs_job ON cron_runs(job_id, scheduled_at DESC);
+</code></pre>
+<p><strong>Prune (</strong>Q12<strong>):</strong> keep last <strong>50</strong> runs per job and/or drop older than <strong>30 days</strong>.</p>
+<h3 id="6-caps-q11">6. Caps (<strong>Q11</strong>)</h3>
+<table>
+<thead>
+<tr>
+<th>Cap</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Max jobs (enabled + disabled)</td>
+<td><strong>50</strong></td>
+</tr>
+<tr>
+<td>Max concurrent cron-started turns</td>
+<td><strong>3</strong> (global)</td>
+</tr>
+<tr>
+<td>Min interval</td>
+<td><strong>60s</strong></td>
+</tr>
+<tr>
+<td>Max prompt chars</td>
+<td><strong>16 KiB</strong></td>
+</tr>
+<tr>
+<td>Max name length</td>
+<td><strong>80</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="7-ui-clock-modal-q1-q2-q16-q18">7. UI — clock modal (<strong>Q1</strong>, <strong>Q2</strong>, <strong>Q16</strong>, <strong>Q18</strong>)</h3>
+<p><strong>Entry:</strong> sidebar <strong>🕐</strong> icon only; tooltip “Cron jobs”.</p>
+<p><strong>Order:</strong><br />
+<code>Sessions · 📁 · 🚀 · 👁 · 🕐 · ⚙ · +</code></p>
+<p><strong>Modal title:</strong> “Cron jobs”</p>
+<pre><code>┌ Cron jobs ────────────────────────── [+ New] [↻] [×] ┐
+│ Durable schedules inject a prompt + start a turn.    │
+│ Missing session → create new session and rebind.     │
+│                                                      │
+│ ● Morning summary     cron 0 8 * * *   → 0wbkaz…    │
+│   next in 3h · last ok · [Edit] [Disable] [Run now]  │
+│ ○ Health poll         every 15m        disabled      │
+│                                                      │
+│ ── Recent runs ──────────────────────────────────── │
+│ 08:00 morning-summary  ok / created_session …        │
+└──────────────────────────────────────────────────────┘
+</code></pre>
+<p><strong>Create / edit:</strong> name, enabled, session target (optional / picker), schedule tabs Cron | Interval, timezone, prompt, optional max_runs, <strong>next 5 fire times</strong> preview, Save. Confirm delete / dirty discard.</p>
+<p><strong>Run now (</strong>Q18<strong>):</strong> fire immediately; schedule phase unchanged.</p>
+<h3 id="8-http-api">8. HTTP API</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/cron/jobs</code></td>
+<td>List (+ <code>?enabled=1</code>)</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/cron/jobs/{id}</code></td>
+<td>Job + recent runs</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/cron/jobs</code></td>
+<td>Create</td>
+</tr>
+<tr>
+<td><code>PUT</code></td>
+<td><code>/api/cron/jobs/{id}</code></td>
+<td>Update (partial OK)</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/api/cron/jobs/{id}</code></td>
+<td>Hard delete</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/cron/jobs/{id}/run</code></td>
+<td>Run now</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/cron/runs</code></td>
+<td>Global recent runs</td>
+</tr>
+</tbody>
+</table>
+<p>Validate cron expr / interval on write; return <code>next_run_at</code> and preview times.</p>
+<h3 id="9-agent-tools-q10-q13-q18">9. Agent tools (<strong>Q10</strong>, <strong>Q13</strong>, <strong>Q18</strong>)</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cron_list</code></td>
+<td>List jobs (filters: enabled, session_id)</td>
+</tr>
+<tr>
+<td><code>cron_get</code></td>
+<td>Job detail + last runs</td>
+</tr>
+<tr>
+<td><code>cron_create</code></td>
+<td>Create</td>
+</tr>
+<tr>
+<td><code>cron_update</code></td>
+<td>Patch by id</td>
+</tr>
+<tr>
+<td><code>cron_delete</code></td>
+<td>Delete by id</td>
+</tr>
+<tr>
+<td><code>cron_run</code></td>
+<td>Run now</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;morning-summary&quot;,
+  &quot;enabled&quot;: true,
+  &quot;schedule_kind&quot;: &quot;cron&quot;,
+  &quot;cron_expr&quot;: &quot;0 8 * * *&quot;,
+  &quot;interval_sec&quot;: null,
+  &quot;timezone&quot;: &quot;America/New_York&quot;,
+  &quot;session_id&quot;: &quot;0wbkazh96k&quot;,
+  &quot;prompt&quot;: &quot;Summarize overnight activity and open issues.&quot;,
+  &quot;max_runs&quot;: null
+}
+</code></pre>
+<p><code>session_id</code> optional on create: empty → first fire creates a session and binds it.</p>
+<p><strong>System prompt nudge:</strong></p>
+<pre><code class="language-text">Cron: use cron_* tools for durable recurring schedules (survive restarts).
+Use schedule_continuation for one-shot delayed resume or wait-for-background-task.
+Prefer interval ≥ 60s; target a session_id when you want a known thread, or omit to let the harness create one on first fire.
+</code></pre>
+<p>UI and agent share the same store (<strong>Q13</strong>).</p>
+<h3 id="10-package-layout">10. Package layout</h3>
+<pre><code>internal/cron/
+  manager.go      # load, tick, claim, fire callback
+  schedule.go     # parse cron/interval, next times
+  store.go        # SQLite via internal/db
+internal/db/cron.go
+internal/api/cron.go
+internal/tools/cron.go + specs
+internal/web/static/cron.js + modal in index.html
+</code></pre>
+<p>Fire callback: resolve-or-create session → inject → start turn (reuse continuation inject path).</p>
+<h2 id="decisions-locked-q1q20">Decisions locked (Q1–Q20)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td><strong>🕐</strong> icon only; order <code>Sessions · 📁 · 🚀 · 👁 · 🕐 · ⚙ · +</code></td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td><strong>Modal</strong> (settings / explorer / soul chrome)</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td><strong>Global</strong> catalog; target existing <code>session_id</code>, or <strong>create session</strong> if none</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Inject prompt + start turn on target session only (v1)</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Both <strong>5-field cron</strong> and <strong>interval_sec</strong> (min 60s)</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Default <strong>Local</strong> (host); per-job IANA override</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Busy → <strong>skip</strong> + <code>skipped_busy</code>; advance <code>next_run_at</code></td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td><strong>No catch-up</strong>; next future slot from now after downtime</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>SQLite <strong><code>cron_jobs</code> + <code>cron_runs</code></strong> in <code>marble.db</code></td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td><code>cron_list</code>, <code>cron_get</code>, <code>cron_create</code>, <code>cron_update</code>, <code>cron_delete</code>, <code>cron_run</code></td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td><strong>50</strong> jobs · <strong>3</strong> concurrent cron turns · min interval <strong>60s</strong></td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Last <strong>50</strong> runs/job and/or <strong>30 days</strong></td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>UI + agent full CRUD on the same store</td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td>Limp → <strong>pause fires</strong>, log <code>skipped_limp</code>; keep jobs</td>
+</tr>
+<tr>
+<td><strong>Q15</strong></td>
+<td>Keep <strong><code>schedule_continuation</code></strong> for one-shot / wait-for-task</td>
+</tr>
+<tr>
+<td><strong>Q16</strong></td>
+<td>Show next <strong>5</strong> fire times on create/edit</td>
+</tr>
+<tr>
+<td><strong>Q17</strong></td>
+<td>Missing target → <strong>create session</strong> (not auto-disable); optional <code>max_runs</code> still OK</td>
+</tr>
+<tr>
+<td><strong>Q18</strong></td>
+<td><strong>Run now</strong> from UI and <code>cron_run</code></td>
+</tr>
+<tr>
+<td><strong>Q19</strong></td>
+<td>Target missing at fire → <strong>create new session</strong>, rebind, fire</td>
+</tr>
+<tr>
+<td><strong>Q20</strong></td>
+<td>Prefix: <strong><code>[cron:&lt;id&gt; &lt;name&gt;]</code></strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Operators control long-lived automation in one modal.  </li>
+<li>Agents set up recurring ops without shell crontab.  </li>
+<li>Missing session no longer silently drops work — a new thread is created.  </li>
+<li>Clear split: continuation = ephemeral one-shot; cron = durable.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Auto-creating sessions can accumulate orphan threads if jobs keep losing targets — mitigate with clear <code>cron: &lt;name&gt;</code> titles and UI visibility.  </li>
+<li>No catch-up means downtime gaps are silent except run log.  </li>
+<li>Global concurrent fire cap may delay some jobs under load.</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent creates noisy every-minute jobs</td>
+<td>Min 60s; max 50 jobs; UI visible</td>
+</tr>
+<tr>
+<td>Runaway turns from cron</td>
+<td>Concurrent fire cap 3; tool-round hard stops</td>
+</tr>
+<tr>
+<td>Session spam from missing targets</td>
+<td>Rebind job to new session; show in modal</td>
+</tr>
+<tr>
+<td>Timezone confusion</td>
+<td>Store IANA; preview next fires</td>
+</tr>
+<tr>
+<td>DB growth from runs</td>
+<td>Prune 50/job + 30d</td>
+</tr>
+</tbody>
+</table>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Open questions answered (<code>0015-answers.json</code>)  </li>
+<li>[x] ADR locked table + review HTML updated  </li>
+<li>[x] Schema + manager + API + tools + clock modal implemented  </li>
+<li>[x] Restart preserves jobs; fire injects turn; busy/skip/limp + create-session policies work  </li>
+<li>[x] Tests: schedule next, CRUD, manager fire + schema v2  </li>
+</ul>
+<h2 id="implementation-order">Implementation order</h2>
+<ol>
+<li>DB schema + store + schedule next-time helpers  </li>
+<li><code>internal/cron</code> manager + fire callback (resolve-or-create session)  </li>
+<li>REST <code>/api/cron/*</code>  </li>
+<li>Agent <code>cron_*</code> tools + system prompt  </li>
+<li>UI: 🕐 + modal + form + run history + next-5 preview + run now  </li>
+<li>Tests + manual smoke (interval job, busy skip, missing session create, restart)  </li>
+</ol>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-19</td>
+<td>Proposed</td>
+</tr>
+<tr>
+<td>2026-07-20</td>
+<td>Locked Q1–Q20 from <code>0015-answers.json</code>; missing session → create + rebind (Q3/Q17/Q19)</td>
+</tr>
+<tr>
+<td>2026-07-20</td>
+<td>Implemented: schema v2, <code>internal/cron</code>, API, tools, 🕐 modal</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li><code>adr/0015-answers.json</code>  </li>
+<li>ADR-0005 <code>schedule_continuation</code> / BG tasks  </li>
+<li>ADR-0003 SQLite memory  </li>
+<li>ADR-0007 / 0013 modal chrome  </li>
+<li>ADR-0010 turn busy / stop  </li>
+<li>Common cron parsers (e.g. robfig/cron v3)  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0015-cron-jobs.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

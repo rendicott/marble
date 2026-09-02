@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0027</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0027</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0027-server-side-tts.md">Markdown</a>
+      <a href="0027-review.html">Review</a>
+      <a href="0027-answers.json">Answers</a>
+      <a href="0026-doc.html">← 0026</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0027-server-side-tts-neural-narration-for-wonderstand-and-clients">ADR-0027: Server-side TTS — neural narration for Wonderstand (and clients)</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-08-18</td>
+</tr>
+<tr>
+<td><strong>Accepted</strong></td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tts, audio, elevenlabs, openai, wonderstand, immersion, attachments, presentation, config</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0025 (Wonderstand protocol / <code>speech_text</code>), ADR-0024 (Wonderstand client), ADR-0019 (session attachments / blobs), ADR-0016 (API key env pattern), ADR-0018 (catalog / secrets style), ADR-0010 (SSE)</td>
+</tr>
+<tr>
+<td><strong>Supersedes (partial)</strong></td>
+<td>ADR-0019 non-goal “no audio/voice wire” — <strong>outbound synthesized narration only</strong>. Inbound mic/STT and <code>cap_voice</code> model wire remain out of scope.</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0027-review.html">0027-review.html</a></td>
+</tr>
+<tr>
+<td><strong>Sketch</strong></td>
+<td><a href="../docs/tts-server-sketch.md">docs/tts-server-sketch.md</a></td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><a href="0027-answers.json">0027-answers.json</a> (<code>2026-08-20T20:30:32.189Z</code>) — all Q1–Q10 locked</td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p>Add <strong>optional server-side text-to-speech</strong> to the Marble harness so immersion clients (Wonderstand first) can play <strong>neural narration</strong> instead of awkward on-device <code>TextToSpeech</code>.</p>
+<p>Design principles:</p>
+<ol>
+<li><strong>Pluggable providers</strong> — config chooses <code>elevenlabs</code> | <code>openai</code> | <code>none</code> (more later). Not hard-wired to one vendor forever.  </li>
+<li><strong>Secrets like models</strong> — only <strong>env var names</strong> in config (<code>ELEVENLABS_API_KEY</code>); never keys in git, ADR answers, or tool args.  </li>
+<li><strong>Audio as session attachments</strong> — reuse ADR-0019 blob store + GET; MIME <code>audio/mpeg</code> (or <code>audio/wav</code> / <code>audio/ogg</code> as provider requires).  </li>
+<li><strong>Protocol additive</strong> — optional <code>phase.audio</code> (and/or message-level audio refs) on ADR-0025 presentation; plain <code>speech_text</code> remains required for fallback and web.  </li>
+<li><strong>Client fallback</strong> — if TTS disabled, key missing, synthesize fails, or offline → Wonderstand keeps platform TTS.  </li>
+<li><strong>Cache</strong> — hash(<code>provider</code> + <code>model</code> + <code>voice</code> + <code>speech_text</code>) → reuse blob; immersion replay is free.  </li>
+<li><strong>Phased delivery</strong> — config + interface → on-demand API → Wonderstand player → optional eager synthesize on turn complete.</li>
+</ol>
+<h2 id="context-pain">Context &amp; pain</h2>
+<h3 id="today">Today</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Wonderstand</strong></td>
+<td><code>TtsPlayer</code> → Android <code>TextToSpeech</code>; mute default; <code>SpeechText.clean()</code>; segments from presentation or <code>ArtifactParser</code></td>
+</tr>
+<tr>
+<td><strong>Harness</strong></td>
+<td>ADR-0025 <code>speech_text</code> plain per phase; <strong>no</strong> audio generation; attachments are image/doc-oriented (ADR-0019 v1 explicitly deferred audio)</td>
+</tr>
+<tr>
+<td><strong>Operator</strong></td>
+<td>Family internal testing; immersion diagrams work; <strong>voice still robotic</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="observed-pain">Observed pain</h3>
+<table>
+<thead>
+<tr>
+<th>Pain</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>On-device TTS awkward</td>
+<td>OEM engines, flat prosody, choppy multi-utterance segments</td>
+</tr>
+<tr>
+<td>No shared voice identity</td>
+<td>Each phone sounds different; no “Wonderstand narrator” brand</td>
+</tr>
+<tr>
+<td>Client-held API keys</td>
+<td>Bad for Family APK; billing and rotation live on device</td>
+</tr>
+<tr>
+<td>Replay cost / latency if naive</td>
+<td>Re-synthesize every unmute without cache</td>
+</tr>
+<tr>
+<td>ADR-0019 “no audio”</td>
+<td>Blocks first-class audio attachments until this ADR opens <strong>outbound</strong> audio</td>
+</tr>
+</tbody>
+</table>
+<p>Research (2026): ElevenLabs / OpenAI gpt-4o-mini-tts / Google Chirp / Cartesia all viable; <strong>server-side + cache + fallback</strong> is the product fit for Marble + Wonderstand.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Config-gated TTS</strong> on the harness: enable/disable, provider, voice, model, key env name.  </li>
+<li><strong>Provider interface</strong> <code>Synthesize(ctx, req) → (audio []byte, mime string, meta)</code> with <strong>ElevenLabs</strong> as first implementation (<strong>Q1</strong> locked).  </li>
+<li><strong>On-demand HTTP API</strong> so clients can request audio for text (or phase id) without blocking the agent turn (<strong>Q2</strong> locked).  </li>
+<li><strong>Durable audio attachments</strong> under the session; safe GET like other attachments (inline playable where appropriate).  </li>
+<li><strong>Wire into presentation</strong> — optional <code>audio</code> on phase pointing at <code>attachment_id</code> (+ duration/mime/voice meta).  </li>
+<li><strong>Wonderstand consume path</strong> — prefer phase audio / attachment URL; else platform TTS.  </li>
+<li><strong>Cache + caps</strong> — avoid duplicate spend; bound text length and concurrent synth jobs.  </li>
+<li><strong>No regression</strong> when TTS off — web UI and non-Wonderstand clients unchanged.</li>
+</ol>
+<h2 id="non-goals">Non-goals</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inbound speech-to-text / mic pipeline on harness</td>
+<td>Wonderstand already uses on-device STT; separate ADR</td>
+</tr>
+<tr>
+<td>Model <code>cap_voice</code> / multimodal audio <strong>to</strong> the LLM</td>
+<td>ADR-0019 / 0018 territory; not immersion playback</td>
+</tr>
+<tr>
+<td>Real-time duplex voice agent</td>
+<td>Different product (Cartesia/LiveKit-class); not phase read-aloud</td>
+</tr>
+<tr>
+<td>Shipping vendor SDKs inside the Android APK</td>
+<td>Keys and synthesis stay on rinux</td>
+</tr>
+<tr>
+<td>Perfect lip-sync / word timestamps in p1</td>
+<td>Optional later (<code>alignment</code>); scrubber stays phase-level in p1</td>
+</tr>
+<tr>
+<td>Replacing ADR-0025 <code>speech_text</code></td>
+<td>Audio is enrichment; speech_text remains canonical for fallback and a11y</td>
+</tr>
+<tr>
+<td>Multi-tenant billing UI</td>
+<td>Single-operator Family harness; env key is enough</td>
+</tr>
+<tr>
+<td>Guaranteed offline neural voice</td>
+<td>Offline = platform TTS only</td>
+</tr>
+</tbody>
+</table>
+<h2 id="design">Design</h2>
+<h3 id="a-config-process-settings">A. Config (process / settings)</h3>
+<p>Conceptual shape (p1: flags and/or JSON under <code>$MEMORY</code>; Settings UI later — <strong>Q3</strong> locked):</p>
+<pre><code class="language-json">{
+  &quot;tts&quot;: {
+    &quot;enabled&quot;: false,
+    &quot;provider&quot;: &quot;none&quot;,
+    &quot;api_key_env&quot;: &quot;ELEVENLABS_API_KEY&quot;,
+    &quot;default_voice&quot;: &quot;&quot;,
+    &quot;default_model&quot;: &quot;&quot;,
+    &quot;format&quot;: &quot;mp3&quot;,
+    &quot;cache&quot;: true,
+    &quot;max_chars_per_request&quot;: 4000,
+    &quot;max_concurrent&quot;: 2,
+    &quot;eager_on_wonderstand_turn&quot;: false
+  }
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td>Master switch; false ⇒ API returns 503/disabled; clients use platform TTS</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>none</code> | <code>elevenlabs</code> | <code>openai</code> (extensible)</td>
+</tr>
+<tr>
+<td><code>api_key_env</code></td>
+<td><strong>Name</strong> of env var only (ADR-0016 style)</td>
+</tr>
+<tr>
+<td><code>default_voice</code> / <code>default_model</code></td>
+<td>Provider-specific ids</td>
+</tr>
+<tr>
+<td><code>cache</code></td>
+<td>Content-addressed blob reuse</td>
+</tr>
+<tr>
+<td><code>eager_on_wonderstand_turn</code></td>
+<td>If true, after final assistant + presentation, synth all phase <code>speech_text</code> (<strong>Q2</strong> / <strong>Q4</strong>)</td>
+</tr>
+</tbody>
+</table>
+<p>Operator puts secrets in <strong><code>$MEMORY/env</code></strong> (Settings → Secrets) or process environment:</p>
+<pre><code class="language-bash">ELEVENLABS_API_KEY=sk_...
+# or OPENAI_API_KEY=... when provider=openai
+</code></pre>
+<h3 id="b-package-layout-harness">B. Package layout (harness)</h3>
+<pre><code class="language-text">internal/tts/
+  tts.go           // Provider interface, Request/Result, cache key
+  config.go        // load/validate
+  cache.go         // hash → attachment id or blob id
+  elevenlabs.go    // first provider
+  openai.go        // optional second (same milestone or M2)
+</code></pre>
+<pre><code class="language-go">type Request struct {
+    Text     string
+    Voice    string // empty → default
+    Model    string
+    Format   string // mp3|wav|…
+    SessionID string // for attachment ownership
+    PhaseID   string // optional correlation
+    MessageID string
+}
+
+type Result struct {
+    MIME     string
+    Bytes    []byte
+    Duration time.Duration // if known
+    Provider string
+    Voice    string
+    Model    string
+    Cached   bool
+}
+
+type Provider interface {
+    Name() string
+    Synthesize(ctx context.Context, req Request) (Result, error)
+}
+</code></pre>
+<h3 id="c-http-api">C. HTTP API</h3>
+<h4 id="c1-on-demand-synthesize-normative-for-p1-q2-locked">C1. On-demand synthesize (normative for p1 — <strong>Q2</strong> locked)</h4>
+<pre><code class="language-http">POST /api/sessions/{id}/tts
+Content-Type: application/json
+
+{
+  &quot;text&quot;: &quot;Your package is in transit with USPS.&quot;,
+  &quot;voice&quot;: optional,
+  &quot;model&quot;: optional,
+  &quot;message_id&quot;: optional,
+  &quot;phase_id&quot;: optional
+}
+</code></pre>
+<p><strong>Response 200:</strong></p>
+<pre><code class="language-json">{
+  &quot;attachment_id&quot;: &quot;att_…&quot;,
+  &quot;mime&quot;: &quot;audio/mpeg&quot;,
+  &quot;bytes&quot;: 48210,
+  &quot;duration_ms&quot;: 4200,
+  &quot;voice&quot;: &quot;…&quot;,
+  &quot;provider&quot;: &quot;elevenlabs&quot;,
+  &quot;cached&quot;: false,
+  &quot;url&quot;: &quot;/api/sessions/{id}/attachments/att_…&quot;
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>200</td>
+<td>Synth or cache hit</td>
+</tr>
+<tr>
+<td>400</td>
+<td>Empty text / over max chars</td>
+</tr>
+<tr>
+<td>404</td>
+<td>Session missing</td>
+</tr>
+<tr>
+<td>409</td>
+<td><strong>Not used for busy</strong> — TTS is allowed while the session is busy (<strong>Q5</strong> locked: read-only synth; does not start an agent turn)</td>
+</tr>
+<tr>
+<td>503</td>
+<td>TTS disabled / no key / provider error</td>
+</tr>
+</tbody>
+</table>
+<p>Auth: same as other session APIs (ADR-0017). Any authenticated session client may call TTS (<strong>Q10</strong>); Wonderstand is primary UX, not sole caller.</p>
+<h4 id="c2-optional-batch">C2. Optional batch</h4>
+<pre><code class="language-http">POST /api/sessions/{id}/tts/batch
+{ &quot;items&quot;: [ { &quot;text&quot;:&quot;…&quot;, &quot;phase_id&quot;:&quot;p1&quot; }, … ] }
+</code></pre>
+<p>Returns array of results; used by eager path or client prefetch. Cap items (e.g. 32 = presentation phase cap).</p>
+<h4 id="c3-attachment-get">C3. Attachment GET</h4>
+<p>Reuse <code>GET /api/sessions/{id}/attachments/{attId}</code>:</p>
+<ul>
+<li>Serve <code>Content-Type: audio/mpeg</code> (etc.)</li>
+<li>Prefer <strong>inline</strong> disposition for audio so mobile players and <code>ExoPlayer</code> can stream (<strong>Q6</strong> locked — extend ADR-0019 safe GET allowlist: <code>audio/mpeg</code>, <code>wav</code>, <code>ogg</code>, <code>mp4</code>, <code>webm</code>).</li>
+</ul>
+<h3 id="d-presentation-wire-extends-adr-0025">D. Presentation wire (extends ADR-0025)</h3>
+<p>Additive on <code>Phase</code> (protocol 1 compatible if clients ignore unknown fields; bump guidance in Wonderstand):</p>
+<pre><code class="language-json">{
+  &quot;id&quot;: &quot;p1&quot;,
+  &quot;speech_text&quot;: &quot;Your package is in transit with USPS.&quot;,
+  &quot;prose_markdown&quot;: &quot;Package **in transit**…&quot;,
+  &quot;visual&quot;: { &quot;kind&quot;: &quot;table&quot;, &quot;table&quot;: { &quot;…&quot;: &quot;…&quot; } },
+  &quot;audio&quot;: {
+    &quot;attachment_id&quot;: &quot;att_…&quot;,
+    &quot;mime&quot;: &quot;audio/mpeg&quot;,
+    &quot;duration_ms&quot;: 4200,
+    &quot;voice&quot;: &quot;Rachel&quot;,
+    &quot;provider&quot;: &quot;elevenlabs&quot;
+  }
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>speech_text</code></td>
+<td><strong>Still required</strong> for fallback / a11y / cache key input</td>
+</tr>
+<tr>
+<td><code>audio</code> absent</td>
+<td>Client synthesizes via C1 or platform TTS</td>
+</tr>
+<tr>
+<td><code>audio.attachment_id</code></td>
+<td>Must be session-scoped; resolve via existing attachment GET</td>
+</tr>
+<tr>
+<td>Eager path</td>
+<td>Off by default; optional <code>eager_on_wonderstand_turn</code> fills <code>audio</code> later (<strong>Q4</strong>, M4)</td>
+</tr>
+<tr>
+<td>Protocol version</td>
+<td><strong>No bump</strong> — stay on presentation protocol 1 with additive <code>audio</code>; clients that do not understand it ignore it (<strong>Q7</strong>). <code>speech_text</code> remains required. Only bump later if audio becomes mandatory or speech semantics change</td>
+</tr>
+</tbody>
+</table>
+<h3 id="e-cache">E. Cache</h3>
+<pre><code class="language-text">key = sha256(provider + &quot;\0&quot; + model + &quot;\0&quot; + voice + &quot;\0&quot; + normalize(text))
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Behavior</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hit</td>
+<td>Return existing <code>attachment_id</code> (or duplicate ref); <code>cached: true</code></td>
+</tr>
+<tr>
+<td>Miss</td>
+<td>Call provider; <code>SpillBlob</code> / session attachment row; store key → att id index</td>
+</tr>
+<tr>
+<td>GC</td>
+<td>Same as session blobs (ADR-0019 maintenance); optional global TTS cache dir under <code>$MEMORY/tts-cache/</code> for cross-session reuse (<strong>Q8</strong> locked)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Normalize:</strong> Unicode NFC, collapse whitespace — avoid cache misses on trivial spacing.</p>
+<h3 id="f-when-to-synthesize">F. When to synthesize</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Trigger</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>On-demand only (p1 rec)</strong></td>
+<td>Client unmute / prefetch next phase</td>
+<td>No spend if muted; simple</td>
+<td>First play latency</td>
+</tr>
+<tr>
+<td><strong>Eager Wonderstand</strong></td>
+<td>End of turn if <code>client.name=wonderstand</code> &amp;&amp; presentation</td>
+<td>Instant unmute</td>
+<td>Cost even if never played</td>
+</tr>
+<tr>
+<td><strong>Hybrid</strong></td>
+<td>On-demand + prefetch N+1 while N plays</td>
+<td>Best UX</td>
+<td>Slightly more client logic</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Locked (</strong>Q2<strong> / </strong>Q4<strong>):</strong> p1 = <strong>on-demand + client prefetch next phase</strong>; eager off by default (<code>eager_on_wonderstand_turn: false</code>).</p>
+<h3 id="g-wonderstand-client-consume">G. Wonderstand client (consume)</h3>
+<pre><code class="language-text">on play phase P:
+  if P.audio?.attachment_id:
+    play stream(baseUrl + attachment GET)
+  else if harness tts enabled (settings or probe):
+    POST …/tts { text: P.speech_text, phase_id, message_id }
+    play result.url
+  else:
+    TtsPlayer.speak(P.speech_text)  // platform
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>UX</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mute</td>
+<td>No network synth (unless already cached and user scrubbing — still OK to fetch cache)</td>
+</tr>
+<tr>
+<td>Back / leave immersion</td>
+<td>Stop audio player (same as TTS stop today)</td>
+</tr>
+<tr>
+<td>Scrubber</td>
+<td>Seek within clip if <code>duration_ms</code> known; else restart clip from phase start in p1</td>
+</tr>
+<tr>
+<td>Settings</td>
+<td>Optional: “Neural narration” on/off; show provider status from <code>GET /api/health</code> or <code>/api/tts/status</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="h-health-status">H. Health / status</h3>
+<pre><code class="language-http">GET /api/tts/status
+</code></pre>
+<pre><code class="language-json">{
+  &quot;enabled&quot;: true,
+  &quot;provider&quot;: &quot;elevenlabs&quot;,
+  &quot;configured&quot;: true,
+  &quot;default_voice&quot;: &quot;…&quot;,
+  &quot;cache&quot;: true
+}
+</code></pre>
+<p>No secrets. <code>configured: false</code> if env empty.</p>
+<h3 id="i-provider-notes-implementers">I. Provider notes (implementers)</h3>
+<h4 id="elevenlabs-first">ElevenLabs (first)</h4>
+<ul>
+<li>REST text-to-speech; voice_id + model_id. <strong>Default tier = Flash</strong> (low latency immersion); Quality/multilingual model + voice override via config (<strong>Q9</strong> locked).  </li>
+<li>MP3 output default.  </li>
+<li>Errors: map 401 → configured false / 503; 429 → retry-after or 503.</li>
+</ul>
+<h4 id="openai-second-alternative">OpenAI (second / alternative)</h4>
+<ul>
+<li><code>audio/speech</code> (<code>tts-1</code>, <code>tts-1-hd</code>, <code>gpt-4o-mini-tts</code>).  </li>
+<li>Reuse <code>OPENAI_API_KEY</code> or dedicated env; may share model catalog base URL patterns where applicable.</li>
+</ul>
+<h4 id="future">Future</h4>
+<p>Google Chirp, Azure, Cartesia — same <code>Provider</code> interface.</p>
+<h3 id="j-security-abuse">J. Security &amp; abuse</h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Auth</td>
+<td>Session API auth required</td>
+</tr>
+<tr>
+<td>Max chars</td>
+<td>Default 4 KiB per request (align presentation speech cap 2 KiB soft; allow slightly more for non-phase use)</td>
+</tr>
+<tr>
+<td>Max concurrent</td>
+<td>Global semaphore (default 2)</td>
+</tr>
+<tr>
+<td>MIME allowlist on GET</td>
+<td><code>audio/mpeg</code>, <code>audio/mp4</code>, <code>audio/wav</code>, <code>audio/ogg</code>, <code>audio/webm</code></td>
+</tr>
+<tr>
+<td>No open proxy</td>
+<td>Only synthesize <strong>text body</strong>, not arbitrary URLs</td>
+</tr>
+<tr>
+<td>Logging</td>
+<td>Log provider, bytes, cached, latency — <strong>never</strong> full API key; truncate text in logs</td>
+</tr>
+</tbody>
+</table>
+<h3 id="k-web-ui">K. Web UI</h3>
+<p><strong>p1 non-goal to ship full web immersion player.</strong> Optional later: small “▶ speak” on assistant bubbles when TTS configured. Does not block Wonderstand.</p>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Why not default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>On-device only (voice pick + rate)</td>
+<td>Cheap polish; does not meet “natural narrator” bar</td>
+</tr>
+<tr>
+<td>App → ElevenLabs direct</td>
+<td>Keys in APK / user accounts; no shared cache with sessions</td>
+</tr>
+<tr>
+<td>Always-on eager synth for every session</td>
+<td>Wastes $ on web/cron sessions</td>
+</tr>
+<tr>
+<td>Replace speech_text with audio-only phases</td>
+<td>Breaks fallback, search, a11y</td>
+</tr>
+<tr>
+<td>New <code>/api/wonderstand/tts</code> only</td>
+<td>Prefer session-scoped generic TTS; Wonderstand is primary client not sole</td>
+</tr>
+<tr>
+<td>Store base64 audio inside <code>presentation_json</code></td>
+<td>Blows SQLite/SSE; use attachments</td>
+</tr>
+<tr>
+<td>Local open-weight TTS on rinux GPU</td>
+<td>Attractive later; ops-heavy; not p1</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisions-locked-q1q10">Decisions locked (Q1–Q10)</h2>
+<p>Source: <code>adr/0027-answers.json</code> (<code>2026-08-20T20:30:32.189Z</code>). All recommendations accepted.</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+<th>Locked</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>First provider <strong>ElevenLabs</strong>; <code>Provider</code> interface ready for OpenAI (or others) as second implementation without API redesign</td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>p1 = on-demand <code>POST /api/sessions/{id}/tts</code> + client prefetch of next phase; <code>eager_on_wonderstand_turn</code> defaults <strong>false</strong></td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>p1 config via <strong>JSON file and/or process flags</strong> (plus env secret); Settings UI toggle/status can follow once core works</td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Do <strong>not</strong> fill <code>phase.audio</code> on turn complete by default; optional <code>eager_on_wonderstand_turn</code> for Wonderstand sessions later (<strong>M4</strong>)</td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td><strong>Allow</strong> TTS while session busy — synthesize does not start an agent turn; concurrent with tools/model</td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Attachment GET serves <code>audio/*</code> <strong>inline</strong> (playable); extend ADR-0019 safe GET allowlist for <code>audio/mpeg</code>, <code>wav</code>, <code>ogg</code>, <code>mp4</code>, <code>webm</code></td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td><strong>No</strong> presentation <code>protocol_version</code> bump for <code>phase.audio</code> — additive optional field; old clients ignore unknown keys; <code>speech_text</code> remains required</td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Cache: content hash → session attachment; optional global <code>$MEMORY/tts-cache</code> for cross-session reuse of same hash</td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Default ElevenLabs model tier = <strong>Flash</strong> (low latency) for immersion; allow Quality/multilingual model + voice override in config</td>
+<td>2026-08-20</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Any authenticated session client may call <code>POST …/tts</code>; Wonderstand is primary UX but API is not wonderstand-only</td>
+<td>2026-08-20</td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-plan">Implementation plan</h2>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>Scope</th>
+<th>Owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M0</strong></td>
+<td>This ADR + review HTML + sketch</td>
+<td>Docs</td>
+</tr>
+<tr>
+<td><strong>M1</strong></td>
+<td><code>internal/tts</code> + ElevenLabs + config + status + <code>POST …/tts</code> + audio attachment MIME</td>
+<td>Harness</td>
+</tr>
+<tr>
+<td><strong>M2</strong></td>
+<td>Cache (hash → blob); batch optional; health fields</td>
+<td>Harness</td>
+</tr>
+<tr>
+<td><strong>M3</strong></td>
+<td>Wonderstand: ExoPlayer/MediaPlayer path; prefetch; stop on back; settings probe</td>
+<td>App</td>
+</tr>
+<tr>
+<td><strong>M4</strong></td>
+<td>Optional eager <code>phase.audio</code> fill; OpenAI provider; web ▶ speak</td>
+<td>Harness + web</td>
+</tr>
+<tr>
+<td><strong>M5</strong></td>
+<td>Metrics (chars, $, latency); voice catalog endpoint</td>
+<td>Harness</td>
+</tr>
+</tbody>
+</table>
+<h3 id="suggested-pr-slice-post-accept">Suggested PR slice (post-accept)</h3>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>T0</strong></td>
+<td>Config + interface + fake provider tests</td>
+</tr>
+<tr>
+<td><strong>T1</strong></td>
+<td>ElevenLabs client + <code>POST /api/sessions/{id}/tts</code></td>
+</tr>
+<tr>
+<td><strong>T2</strong></td>
+<td>Audio MIME on attachment GET + spill helpers</td>
+</tr>
+<tr>
+<td><strong>T3</strong></td>
+<td>Cache layer</td>
+</tr>
+<tr>
+<td><strong>T4</strong></td>
+<td>Wonderstand playback + fallback</td>
+</tr>
+<tr>
+<td><strong>T5</strong></td>
+<td>Optional eager + <code>phase.audio</code> write-back</td>
+</tr>
+<tr>
+<td><strong>T6</strong></td>
+<td>OpenAI provider / status in Settings</td>
+</tr>
+</tbody>
+</table>
+<h2 id="success-metrics">Success metrics</h2>
+<ul>
+<li>Unmute immersion on neural path sounds clearly more natural than platform TTS on a mid-range Android.  </li>
+<li>Second play of same phase is cache hit (<code>cached: true</code>) and starts quickly.  </li>
+<li>TTS disabled or no key → identical behavior to pre-ADR Wonderstand (platform TTS).  </li>
+<li>Web sessions with no client call incur <strong>$0</strong> TTS.  </li>
+<li>No API keys in logs, APK, or git.</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Provider outage / 429</td>
+<td>Fallback platform TTS; 503 + client catch</td>
+</tr>
+<tr>
+<td>Cost surprise</td>
+<td>Off by default; cache; max chars; no eager default</td>
+</tr>
+<tr>
+<td>Latency on first unmute</td>
+<td>Prefetch next phase; Flash model; show short buffering UI</td>
+</tr>
+<tr>
+<td>Large MP3 in memory</td>
+<td>Stream to blob file; cap text length</td>
+</tr>
+<tr>
+<td>ADR-0019 GET treats unknown as download-only</td>
+<td>Explicit audio inline branch (<strong>Q6</strong>)</td>
+</tr>
+<tr>
+<td>SSML / markdown leak into provider</td>
+<td>Only synth <code>speech_text</code> / API <code>text</code> after normalize; never raw <code>content</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="0025-doc.html">ADR-0025 Wonderstand protocol</a> — <code>speech_text</code>, phases  </li>
+<li><a href="0024-doc.html">ADR-0024 Wonderstand client</a>  </li>
+<li><a href="0019-doc.html">ADR-0019 Multimodal attachments</a> — blobs, GET, MIME  </li>
+<li><a href="0016-doc.html">ADR-0016 Model API key auth</a> — <code>api_key_env</code> pattern  </li>
+<li><a href="../docs/tts-server-sketch.md">docs/tts-server-sketch.md</a>  </li>
+<li>marble-wonderstand <code>TtsPlayer</code>, immersion UX notes  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-08-18</td>
+<td><strong>Proposed</strong> — server-side pluggable TTS; ElevenLabs-first; on-demand API; audio attachments; phase.audio additive; Q1–Q10 open for review</td>
+</tr>
+<tr>
+<td>2026-08-20</td>
+<td><strong>Accepted</strong> — locked Q1–Q10 (<code>2026-08-20T20:30:32.189Z</code>); ElevenLabs + Flash default; on-demand TTS; no protocol bump; busy allowed; audio GET inline</td>
+</tr>
+<tr>
+<td>2026-08-20</td>
+<td><strong>Implemented (harness p1)</strong> — <code>internal/tts</code>, <code>$MEMORY/tts.json</code>, <code>GET /api/tts/status</code>, <code>POST …/tts</code>, audio attachments + inline GET, global <code>tts-cache</code>.</td>
+</tr>
+<tr>
+<td>2026-08-20</td>
+<td><strong>Implemented remaining</strong> — OpenAI provider; eager <code>phase.audio</code> (config); Settings → TTS; web ▶ speak; batch POST; health TTS fields; Wonderstand ImmersionAudioPlayer (prefer attachment → synth → platform TTS).</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0027-server-side-tts.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

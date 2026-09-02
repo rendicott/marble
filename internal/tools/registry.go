@@ -42,6 +42,15 @@ type TurnContext struct {
 	// LastScreenshotAt is set when computer_screenshot succeeds this turn.
 	// Desktop clicks require a recent shot so x,y are vision-grounded.
 	LastScreenshotAt time.Time
+	// LastScreenshotHash is SHA256 hex of the last staged screenshot JPEG (ui_unchanged).
+	LastScreenshotHash string
+	// LastScreenshotAttID is the attachment id of the last staged screenshot.
+	LastScreenshotAttID string
+	// Last click in image space (near-dup thrash).
+	LastClickX, LastClickY int
+	LastClickSet           bool
+	// PostClickShotAt is when a post-click screenshot was staged (suppress redundant shots).
+	PostClickShotAt time.Time
 	// Thrash is ADR-0022 turn-scoped anti-repeat / escalate state.
 	Thrash *ThrashState
 	// callbacks set by session loop
@@ -54,6 +63,8 @@ type TurnContext struct {
 	// OnPeerConfirm notifies the session UI that a computer_confirm is waiting
 	// (Accept/Deny from Marble harness, not only the peer machine).
 	OnPeerConfirm func(confirm map[string]interface{})
+	// OnPeerAction records a short summary for session info (last peer action).
+	OnPeerAction func(summary string)
 	HistorySnippet func() string
 }
 
@@ -93,6 +104,12 @@ type Registry struct {
 	ListComputers        func() ([]map[string]interface{}, error)
 	GetSessionComputerID func(sessionID string) (string, error)
 	SetSessionComputerID func(sessionID, computerID string) error
+	// SetLastPeerAction persists a short last-action blurb on the session (session info UI).
+	SetLastPeerAction func(sessionID, summary string)
+	// PublicBaseURL returns the harness origin for Tailscale-reachable confirm links (no trailing slash).
+	PublicBaseURL func() string
+	// ListPendingConfirms returns open computer_confirm cards (for soft gates / UI).
+	ListPendingConfirms func(sessionID string) []map[string]interface{}
 
 	// Thrash is ADR-0022 anti-repeat / escalate / sleep-block policy (set from CLI).
 	Thrash    ThrashPolicy

@@ -1,0 +1,1493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0019</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0019</span>
+      <span class="status accepted">Accepted (ready to implement)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0019-multimodal-attachments.md">Markdown</a>
+      <a href="0019-review.html">Review</a>
+      <a href="0019-answers.json">Answers</a>
+      <a href="0018-doc.html">← 0018</a>
+      <a href="0020-doc.html">0020 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0019-multimodal-chat-images-basic-documents-no-audio">ADR-0019: Multimodal Chat — Images &amp; Basic Documents (No Audio)</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-25</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>multimodal, attachments, images, documents, chat, cap_images, UI</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (inner loop / model client), ADR-0003 (SQLite + blobs), ADR-0004 (workspace upload), ADR-0005 (tools / <code>attach_file</code> Q27), ADR-0017 (actor on user messages), ADR-0018 (selectable models / <code>cap_images</code> / <code>ApplyCapabilityFilter</code>)</td>
+</tr>
+<tr>
+<td><strong>Supersedes (partial)</strong></td>
+<td>ADR-0005 Q27 for <strong>chat-scoped</strong> attachments only — workspace <code>attach_file</code> remains UI-only; new path is first-class. Aligns with ADR-0018 strip/re-include for unsupported modalities (Q11 locked).</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0019-answers.json</code> (<code>2026-07-26T00:35:08.912Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="overview">Overview</h2>
+<p>Marble’s chat path is <strong>text-only end-to-end</strong>: <code>model.Message.Content</code> is a <code>string</code> (<a href="internal/model/client.go"><code>internal/model/client.go</code></a>); user posts are JSON <code>{content}</code> (<a href="internal/api/server.go"><code>internal/api/server.go</code></a> <code>handleMessages</code>); the composer has no paste/attach staging (<a href="internal/web/static/app.js"><code>internal/web/static/app.js</code></a>, <a href="internal/web/static/index.html"><code>index.html</code></a>); and agent <code>attach_file</code> emits SSE chips that are <strong>not re-injected into model history</strong> and <strong>not durable in <code>s.ui</code></strong> (ADR-0005 Q27; <a href="internal/tools/memory_skills.go"><code>internal/tools/memory_skills.go</code></a> <code>attachFile</code>, <a href="internal/session/loop.go"><code>session/loop.go</code></a> <code>OnAttachment</code> publish-only).</p>
+<p>Operators need true <strong>multimodal chat</strong>:</p>
+<ol>
+<li><strong>User → agent:</strong> paste images, paperclip/drag-drop images and basic text documents; stage before send; show in transcript; feed models that advertise <code>cap_images</code> (ADR-0018).</li>
+<li><strong>Agent → user:</strong> attach images/docs into the chat as durable, previewable artifacts (modal), not only ephemeral workspace path chips.</li>
+<li><strong>Scope v1:</strong> common image formats + basic text documents; <strong>no audio/voice wire</strong> (<code>cap_voice</code> stays catalog-only for later).</li>
+</ol>
+<p>This ADR proposes: a <strong>session attachment store</strong> under <code>$MEMORY</code>, OpenAI-compatible <strong>content parts</strong> on the model wire, <strong>two-phase upload + message</strong> API, composer staging UX, capability-aware prompt build (<code>ApplyCapabilityFilter</code> real implementation), a <strong>strict ordered</strong> trim → filter → estimate → deep-clone materialize pipeline, token estimates for images, session-MD encoding for reload, and an evolved agent tool (<code>message_attach</code>) alongside legacy <code>attach_file</code>.</p>
+<h2 id="background-motivation">Background &amp; Motivation</h2>
+<h3 id="current-state-verified">Current state (verified)</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model wire</td>
+<td><code>model.Message.Content string</code> only; <code>Chat</code> marshals JSON as string content (<a href="internal/model/client.go"><code>internal/model/client.go</code></a>)</td>
+</tr>
+<tr>
+<td>User post</td>
+<td><code>POST /api/sessions/{id}/messages</code> body <code>{content}</code> string; empty rejected; busy → 409 (<a href="internal/api/server.go"><code>server.go</code></a> <code>handleMessages</code>)</td>
+</tr>
+<tr>
+<td>Loop</td>
+<td><code>postMessage</code> trims empty text and returns <strong>true without turn</strong> (<a href="internal/session/loop.go"><code>loop.go</code></a> ~54–57); appends <code>model.Message{Role:"user", Content:text}</code> to <code>s.history</code> and UI; shallow <code>copy</code> of history then <code>trimHistory</code> → <code>ApplyCapabilityFilter</code> → <code>estimateAll</code> → <code>client.Chat</code> (~200–262)</td>
+</tr>
+<tr>
+<td>Caps</td>
+<td><code>EffectiveModel.CapImages</code> / <code>CapVoice</code> / <code>CapTools</code> from catalog; process default <code>CapImages=false</code> (<a href="internal/session/model_resolve.go"><code>model_resolve.go</code></a>); <code>ApplyCapabilityFilter</code> is <strong>no-op stub</strong></td>
+</tr>
+<tr>
+<td>Provider error</td>
+<td>Loop already special-cases image rejection text when <code>!em.CapImages</code> (<a href="internal/session/loop.go"><code>loop.go</code></a> ~266)</td>
+</tr>
+<tr>
+<td><code>attach_file</code></td>
+<td>Workspace path → SSE <code>attachment</code> only (not <code>appendUI</code>); tool result notes “UI only” (<a href="internal/tools/memory_skills.go"><code>memory_skills.go</code></a>); UI synthesizes ephemeral bubble (<a href="internal/web/static/app.js"><code>app.js</code></a> ~896–904) lost on <code>syncTranscript</code></td>
+</tr>
+<tr>
+<td>Workspace upload</td>
+<td>Multipart <code>POST /api/workspace/upload</code>, max <strong>50 MiB</strong> (<a href="internal/workspacefs/fs.go"><code>workspacefs.MaxUploadBytes</code></a>)</td>
+</tr>
+<tr>
+<td>Blobs</td>
+<td><code>$MEMORY/blobs/&lt;id&gt;</code> + <code>blobs</code> table; <code>SpillBlob</code> fails when DB not writable; <code>RunMaintenance</code> prunes closed-session blobs (<a href="internal/session/registry.go"><code>registry.go</code></a> ~508–536) — <strong>no</strong> attachment GC today</td>
+</tr>
+<tr>
+<td>Events</td>
+<td><code>db.Event.MetaJSON</code> exists; <code>logEvent</code> <strong>never sets</strong> it (only <code>logModelCall</code> does) (<a href="internal/session/persist.go"><code>persist.go</code></a>)</td>
+</tr>
+<tr>
+<td>Session MD</td>
+<td>Text transcript; roles include <code>attachment</code> heading; <code>LoadFromDoc</code> rebuilds model history from user/assistant/tool <strong>string</strong> content only</td>
+</tr>
+<tr>
+<td>XSS / CSP</td>
+<td>Transcript MD via <code>marked</code> + <strong>DOMPurify</strong>; global <code>nosniff</code> / <code>X-Frame-Options: DENY</code>; mpub strict CSP</td>
+</tr>
+<tr>
+<td>Token est</td>
+<td><code>token.Estimate</code> = chars/4 (<a href="internal/token/estimate.go"><code>token/estimate.go</code></a>)</td>
+</tr>
+<tr>
+<td>Schema</td>
+<td><code>CurrentSchemaVersion = 3</code> (ADR-0018) (<a href="internal/db/db.go"><code>db/db.go</code></a>)</td>
+</tr>
+<tr>
+<td>cloneMessages</td>
+<td>Deep-copies <code>ToolCalls</code> only — <strong>not</strong> content parts (<a href="internal/session/budget.go"><code>budget.go</code></a>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pain-points">Pain points</h3>
+<ol>
+<li>Vision-capable catalog models cannot receive clipboard/screenshots from the operator UI.  </li>
+<li>Agent “attachments” are transient SSE cosmetics; they do not survive reload as rich objects and cannot open in a proper viewer.  </li>
+<li>Documents the agent wants to hand back have no first-class chat surface beyond workspace paths.  </li>
+<li><code>cap_images</code> is stored and shown in Settings but never enforced on content (strip is a stub).  </li>
+<li>History trim/token budget would under-count multimodal prompts if images were base64-stuffed into shared history.  </li>
+<li>A naive attachment GET serving stored <code>text/html</code> inline would open XSS beyond the DOMPurify transcript path.</li>
+</ol>
+<h2 id="goals-non-goals">Goals &amp; Non-Goals</h2>
+<h3 id="goals">Goals</h3>
+<ol>
+<li><strong>Inbound multimodal UX:</strong> clipboard paste, drag-drop, paperclip/file picker; staging strip before send; clear size/MIME errors.  </li>
+<li><strong>Durable storage</strong> of attachment bytes keyed by session + id; safe serve for preview/download; delete with session prune.  </li>
+<li><strong>Model wire:</strong> OpenAI-compatible multimodal <code>content</code> parts (<code>text</code>, <code>image_url</code> with <code>data:</code> base64).  </li>
+<li><strong>Capability integration (Q11):</strong> honor <code>em.CapImages</code> on the <strong>outbound</strong> path only — <strong>strip</strong> image parts while the active model lacks image support (with advisory); <strong>re-include</strong> from durable <code>marble-att://</code> history when a vision-capable model is active again. Never delete attachment bytes or sentinels from history on strip.  </li>
+<li><strong>Outbound agent attachments:</strong> <code>message_attach</code> stores chat-scoped artifacts, <strong>durable <code>appendUI</code></strong>, modal-capable; not merely workspace chips.  </li>
+<li><strong>Transcript + MD persistence</strong> so restart reloads chips and model history references deterministically.  </li>
+<li><strong>Token budget:</strong> image token estimate + multimodal-aware <code>trimHistory</code> / <code>estimateAll</code> on <strong>sentinel</strong> form.  </li>
+<li><strong>Security:</strong> MIME allowlist, max bytes, no audio, path jail, <strong>safe GET</strong> (no HTML as executable), DOMPurify modal for docs, no provider SSRF.</li>
+</ol>
+<h3 id="non-goals-v1">Non-goals (v1)</h3>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Audio / voice input or output / <code>cap_voice</code> wire</td>
+<td>Explicit product defer</td>
+</tr>
+<tr>
+<td>Video</td>
+<td>Out of scope</td>
+</tr>
+<tr>
+<td>PDF OCR / full Office (docx/xlsx) parsing</td>
+<td>Complexity; recommend text exports</td>
+</tr>
+<tr>
+<td>Streaming vision / token-by-token multimodal</td>
+<td>Chat remains non-streaming</td>
+</tr>
+<tr>
+<td>Model-generated image synthesis APIs</td>
+<td>Agent attaches existing files/bytes only</td>
+</tr>
+<tr>
+<td>Public anonymous attachment URLs</td>
+<td>Auth same as session API (ADR-0017)</td>
+</tr>
+<tr>
+<td>Replacing workspace explorer upload</td>
+<td>Unrelated surface; keep ADR-0004</td>
+</tr>
+<tr>
+<td>Client-side canvas downscale before stage</td>
+<td>Optional future; surface provider size errors instead</td>
+</tr>
+<tr>
+<td>Server-side thumbnail generation</td>
+<td>Browser CSS/<code>img</code> scale only (Q7)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="key-decisions">Key Decisions</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>KD1</strong></td>
+<td>Store chat attachments under <strong><code>$MEMORY/attachments/&lt;session_id&gt;/&lt;att_id&gt;</code></strong> + SQLite table <code>session_attachments</code> (schema <strong>v4</strong>), not workspace and not only event blobs</td>
+<td>Session-scoped GC; MIME/name/kind metadata; distinct from event spill (<code>blobs</code>); limp uses path convention + MD markers</td>
+</tr>
+<tr>
+<td><strong>KD2</strong></td>
+<td><strong>Two-phase API:</strong> <code>POST …/attachments</code> (multipart) stages bytes → ids; <code>POST …/messages</code> JSON <code>{content, attachment_ids[]}</code> commits turn</td>
+<td>Matches staging UX; avoids huge base64 in JSON</td>
+</tr>
+<tr>
+<td><strong>KD3</strong></td>
+<td>Model <code>content</code> is a <strong>custom type</strong>: <strong><code>len(Parts)&gt;0</code> wins</strong> → marshal JSON array; else marshal <code>Text</code> as string (incl. <code>""</code>). Helpers never set both</td>
+<td>OpenAI-compatible; unambiguous marshal; text-only turns unchanged on wire</td>
+</tr>
+<tr>
+<td><strong>KD4</strong></td>
+<td><strong>Outbound modality filter (Q11):</strong> Always accept user/agent image attachments into durable history (<code>marble-att://</code> + store). On each Chat build: if <code>!em.CapImages</code>, <strong>strip</strong> image parts on a <strong>deep-cloned</strong> prompt only + <strong>one advisory per turn</strong>; if <code>em.CapImages</code>, <strong>re-include</strong> (materialize). Docs always inject as text (truncated). UI may warn when staging images under a non-vision model but <strong>must not block Send</strong>.</td>
+<td>History remains modality-complete; strip is temporary for the active model only</td>
+</tr>
+<tr>
+<td><strong>KD5</strong></td>
+<td>Provider wire uses <strong><code>image_url</code> with <code>data:&lt;mime&gt;;base64,…</code></strong> only after <strong>deep-clone materialize</strong> on Chat outbound; history keeps <code>marble-att://&lt;id&gt;</code></td>
+<td>No public URLs; no SSRF; history RAM stays small</td>
+</tr>
+<tr>
+<td><strong>KD6</strong></td>
+<td>Keep <strong><code>attach_file</code></strong> workspace UI-only (Q27, SSE path-only, ephemeral). Add <strong><code>message_attach</code></strong> for durable chat-scoped attachments</td>
+<td>Clear split; no broken agent tool semantics</td>
+</tr>
+<tr>
+<td><strong>KD7</strong></td>
+<td><code>message_attach</code> <strong>tool</strong> writes store + returns JSON (≤2 KiB optional preview); invokes <strong><code>TurnContext.OnChatAttachment</code> (new)</strong>. <strong>Loop</strong> wires that callback to <code>appendUI</code> + <code>publish type:message</code> + mark dirty. <strong>Not</strong> legacy <code>OnAttachment</code>; tools package never holds <code>*session.Session</code>. No full image bytes in tool result / same-turn model injection</td>
+<td>Package boundary matches <code>TurnContext</code> pattern; durable UI without tools→session coupling</td>
+</tr>
+<tr>
+<td><strong>KD15</strong></td>
+<td>User <code>POST …/messages</code> <code>attachment_ids</code>: <strong>staged only</strong> (<code>message_id IS NULL</code>). Already-committed ids → <strong>400</strong> <code>attachment already committed</code>. Re-send requires re-upload/stage (or future re-attach API). Limp: accept if file exists under validated path and id not duplicated in this request</td>
+<td>One clear re-use rule; no multi-message share of same staged id</td>
+</tr>
+<tr>
+<td><strong>KD8</strong></td>
+<td>Image tokens: <code>EstimateImage(w,h)</code> = <code>85+(w*h)/750</code> if <code>w&gt;0 &amp;&amp; h&gt;0</code>, else <strong><code>DefaultImageTokens = 1500</code></strong>. No image decode in v1</td>
+<td>Single constant; good enough for trim</td>
+</tr>
+<tr>
+<td><strong>KD9</strong></td>
+<td>MIME allowlist <strong>strict</strong>. Images: png/jpeg/webp/gif. Docs: plain/markdown/csv/json/html. <strong>Reject</strong> <code>image/svg+xml</code>, audio, video, pdf, office</td>
+<td>SVG is XSS vector; gif accepted as opaque bytes</td>
+</tr>
+<tr>
+<td><strong>KD10</strong></td>
+<td>Limits: <strong>10</strong> attachments/message; <strong>8 MiB/file</strong> on disk; <strong>20 MiB total/message</strong>; <strong>model inject for docs ≤ 64 KiB</strong> (or budget-aware floor — see below); staged TTL <strong>24h</strong></td>
+<td>Disk can hold more than model may see; protect context</td>
+</tr>
+<tr>
+<td><strong>KD11</strong></td>
+<td>Session MD: attachment markers only (<strong>never</strong> base64); <code>meta_json</code> records inject caps/sha for deterministic reload</td>
+<td>Human-readable MD; reload fidelity</td>
+</tr>
+<tr>
+<td><strong>KD12</strong></td>
+<td>Modal: images via GET <code>inline=1</code> (image MIME only); docs always fetched as text + DOMPurify/<code>textContent</code> — <strong>never</strong> iframe/srcdoc or <code>text/html</code> document navigation</td>
+<td>XSS-safe preview</td>
+</tr>
+<tr>
+<td><strong>KD13</strong></td>
+<td>Per-iteration Chat pipeline is <strong>ordered and pure w.r.t. history</strong> (see § Prompt pipeline)</td>
+<td>Prevents base64 poison and wrong estimates</td>
+</tr>
+<tr>
+<td><strong>KD14</strong></td>
+<td><strong>POST attachments: 400 closed, 409 busy, else 201</strong></td>
+<td>Matches composer disabled-while-busy; one normative rule</td>
+</tr>
+</tbody>
+</table>
+<h2 id="proposed-design">Proposed Design</h2>
+<h3 id="architecture">Architecture</h3>
+<pre><code class="language-mermaid">flowchart TB
+  subgraph UI
+    Composer[Composer: paste / drop / paperclip]
+    Stage[Staging strip]
+    Transcript[Transcript chips]
+    Modal[Attachment modal]
+  end
+
+  subgraph API
+    Up[&quot;POST /sessions/{id}/attachments&quot;]
+    Msg[&quot;POST /sessions/{id}/messages&quot;]
+    Get[&quot;GET /sessions/{id}/attachments/{att_id}&quot;]
+  end
+
+  subgraph Core
+    Store[(&quot;$MEMORY/attachments/...&quot;)]
+    Table[(session_attachments SQLite)]
+    Loop[runTurn]
+    Trim[trimHistory sentinel]
+    Cap[ApplyCapabilityFilter sentinel]
+    Est[estimateAll]
+    Mat[deepClone + materializeImages]
+    Client[model.Client.Chat]
+  end
+
+  subgraph Tools
+    AF[attach_file SSE ephemeral]
+    MA[message_attach durable UI]
+  end
+
+  Composer --&gt; Stage --&gt; Up --&gt; Store
+  Up --&gt; Table
+  Stage --&gt; Msg --&gt; Loop
+  Loop --&gt; Trim --&gt; Cap --&gt; Est --&gt; Mat --&gt; Client
+  MA --&gt; Store
+  MA --&gt; Transcript
+  AF -.-&gt;|SSE only| Transcript
+  Transcript --&gt; Modal
+  Modal --&gt; Get
+  Get --&gt; Store
+</code></pre>
+<h3 id="attachment-identity-storage-kd1">Attachment identity &amp; storage (KD1)</h3>
+<p><strong>Filesystem:</strong></p>
+<pre><code class="language-text">$MEMORY/attachments/&lt;session_id&gt;/&lt;att_id&gt;
+</code></pre>
+<ul>
+<li><code>att_id</code>: 16 random bytes hex = <strong>32 lowercase hex chars</strong> (same style as <a href="internal/db/blobs.go"><code>newBlobID</code></a>).  </li>
+<li><strong>Validation (normative):</strong> <code>att_id</code> must match <code>^[0-9a-f]{32}$</code>; <code>session_id</code> must match existing session id charset (Crockford base32 / project convention) and must not contain <code>.</code> / <code>/</code> / <code>..</code>. Resolve path with <code>filepath.Join(Root, "attachments", sessionID, attID)</code> then <strong>require</strong> <code>strings.HasPrefix(abs, filepath.Clean(Root)+sep)</code>.  </li>
+<li>File mode <code>0o644</code>; parent dirs <code>0o755</code>.  </li>
+<li><strong>Never</strong> under workspace.  </li>
+<li><strong>Immutability:</strong> once written, attachment bytes are <strong>never overwritten</strong> (reload determinism).</li>
+</ul>
+<p><strong>SQLite schema v4</strong> — table <code>session_attachments</code>:</p>
+<pre><code class="language-sql">CREATE TABLE session_attachments (
+  id            TEXT PRIMARY KEY,
+  session_id    TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  name          TEXT NOT NULL,          -- display filename
+  mime          TEXT NOT NULL,          -- sniffed storage MIME (may differ from GET Content-Type for docs)
+  kind          TEXT NOT NULL,          -- image | document
+  byte_size     INTEGER NOT NULL,
+  sha256        TEXT,                   -- hex; set on write
+  source        TEXT NOT NULL,          -- staged | user_upload | agent_attach
+  path          TEXT NOT NULL,          -- rel under $MEMORY e.g. attachments/&lt;sid&gt;/&lt;id&gt;
+  message_id    TEXT,                   -- set when committed to a message
+  meta_json     TEXT                    -- inject_bytes, truncated, width/height, etc.
+);
+CREATE INDEX idx_att_session ON session_attachments(session_id);
+CREATE INDEX idx_att_session_msg ON session_attachments(session_id, message_id);
+</code></pre>
+<ul>
+<li>No <code>FOREIGN KEY(session_id)</code> — consistent with <code>blobs</code>.  </li>
+<li>On Open: <code>mkdir</code> <code>$MEMORY/attachments</code> (like <code>blobs/</code>).  </li>
+<li><code>migrateV3toV4</code>: create table + indexes; failure <strong>aborts</strong> process start.</li>
+</ul>
+<p><strong>Lifecycle:</strong></p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>source=staged</code> / <code>message_id NULL</code></td>
+<td>Uploaded for composer; not yet in a turn</td>
+</tr>
+<tr>
+<td>committed (<code>user_upload</code>)</td>
+<td><code>message_id</code> set when message accepted; source may flip staged→user_upload</td>
+</tr>
+<tr>
+<td>agent</td>
+<td><code>source=agent_attach</code> after <code>message_attach</code> (message_id set to UI row id)</td>
+</tr>
+<tr>
+<td>session prune / delete</td>
+<td><strong><code>DeleteSessionAttachments(sessionID)</code></strong> — remove rows + files</td>
+</tr>
+<tr>
+<td>GC staged</td>
+<td>unreferenced staged (<code>message_id IS NULL</code>) older than 24h</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Session prune / delete (normative — Issue 7):</strong></p>
+<p>Every path that today calls <code>DeleteSessionBlobs</code> for a session <strong>must</strong> also call <code>DeleteSessionAttachments</code>:</p>
+<ul>
+<li><code>RunMaintenance</code> closed-session prune (<a href="internal/session/registry.go"><code>registry.go</code></a>)  </li>
+<li>Any explicit session-delete / wipe helpers  </li>
+</ul>
+<p><strong>When session row is pruned but MD file is retained</strong> (if that mode exists): still <strong>delete</strong> <code>$MEMORY/attachments/&lt;session_id&gt;/</code> and rows. Orphan policy: prefer no attachment leaks over keeping previews for pruned sessions. If MD later reloads a pruned session and files are gone → <code>[missing attachment …]</code> placeholders (KD11).</p>
+<p><strong>Limp mode (normative — Issue 8):</strong> when SQLite not writable:</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Upload / stage</td>
+<td><strong>Allowed</strong>: write file under path convention; allocate <code>att_id</code> via same RNG as <code>newBlobID</code>; return id to client. No row insert.</td>
+</tr>
+<tr>
+<td>Commit message</td>
+<td>Encode attachment markers in session MD only (source of truth).</td>
+</tr>
+<tr>
+<td>GET by id</td>
+<td>After hex/session validation, serve file if exists — <strong>no SQL required</strong>.</td>
+</tr>
+<tr>
+<td>List / GC staged / meta queries</td>
+<td><strong>Degrade</strong>: GC staged <strong>skipped</strong> in limp; list incomplete.</td>
+</tr>
+<tr>
+<td>Contrast with blobs</td>
+<td><code>SpillBlob</code> fails closed without DB; attachments deliberately differ because chat UX needs bytes without events table</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Not</strong> 503-reject-all: operators in limp still paste screenshots into MD-backed sessions.</p>
+<h3 id="mime-sniffing-allowlist-kd9">MIME sniffing &amp; allowlist (KD9)</h3>
+<p>On upload:</p>
+<ol>
+<li>Read first 512 bytes; <code>http.DetectContentType</code> + extension map.  </li>
+<li>Image MIME conflict with sniff → <strong>reject</strong>.  </li>
+<li>Documents: extension + printable UTF-8 check (reuse <code>utf8Printable</code> idea from <code>attachFile</code>).  </li>
+<li>Reject: <code>audio/*</code>, <code>video/*</code>, <code>application/pdf</code>, office MIME, <strong><code>image/svg+xml</code></strong>, empty, executable sniff.</li>
+</ol>
+<p><strong>Allowlist (normative v1):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>MIME (stored)</th>
+<th>Extensions</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>image</td>
+<td><code>image/png</code></td>
+<td><code>.png</code></td>
+<td></td>
+</tr>
+<tr>
+<td>image</td>
+<td><code>image/jpeg</code></td>
+<td><code>.jpg</code>, <code>.jpeg</code></td>
+<td></td>
+</tr>
+<tr>
+<td>image</td>
+<td><code>image/webp</code></td>
+<td><code>.webp</code></td>
+<td></td>
+</tr>
+<tr>
+<td>image</td>
+<td><code>image/gif</code></td>
+<td><code>.gif</code></td>
+<td>Opaque bytes; no frame expand</td>
+</tr>
+<tr>
+<td>document</td>
+<td><code>text/plain</code></td>
+<td><code>.txt</code>, <code>.log</code></td>
+<td></td>
+</tr>
+<tr>
+<td>document</td>
+<td><code>text/markdown</code></td>
+<td><code>.md</code>, <code>.markdown</code></td>
+<td></td>
+</tr>
+<tr>
+<td>document</td>
+<td><code>text/csv</code></td>
+<td><code>.csv</code></td>
+<td></td>
+</tr>
+<tr>
+<td>document</td>
+<td><code>application/json</code></td>
+<td><code>.json</code></td>
+<td></td>
+</tr>
+<tr>
+<td>document</td>
+<td><code>text/html</code></td>
+<td><code>.html</code>, <code>.htm</code></td>
+<td>Stored as html; <strong>GET never serves as text/html</strong> (see GET policy)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inbound-ux">Inbound UX</h3>
+<h4 id="composer-staging">Composer staging</h4>
+<p>Extend <a href="internal/web/static/index.html"><code>index.html</code></a> composer:</p>
+<pre><code class="language-text">┌──────────────────────────────────────────────────────────┐
+│ [📎]  [thumb.png ×] [notes.md ×]                         │  ← stage strip
+│ Message Marble…                                          │
+│                                              [Send]      │
+└──────────────────────────────────────────────────────────┘
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Interaction</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Paste</td>
+<td>Clipboard <code>image/*</code> → stage upload; else default text paste</td>
+</tr>
+<tr>
+<td>Drag-drop</td>
+<td>On composer zone → stage; toast on reject</td>
+</tr>
+<tr>
+<td>Paperclip</td>
+<td><code>&lt;input type=file multiple accept="image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,text/csv,application/json,text/html,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,.html,.log"&gt;</code> — <strong>no</strong> audio/pdf</td>
+</tr>
+<tr>
+<td>Remove chip</td>
+<td><code>DELETE</code> staged attachment</td>
+</tr>
+<tr>
+<td>Send</td>
+<td><code>content.trim()</code> <strong>or</strong> ≥1 attachment; POST messages with ids; clear stage on 202</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Busy:</strong> disable attach + send while busy (KD14).  </p>
+<p><strong>Live <code>activeCapImages</code> (Q11 / Issue 16):</strong> on session select, session GET (<code>model_effective</code>), and <code>session_meta</code> / model SSE events, store <code>activeCapImages = !!model_effective.capabilities.images</code>. If stage has any image and <code>!activeCapImages</code> → show a <strong>non-blocking</strong> warning chip: <em>“Active model has no image support — images stay in the chat and are sent when you switch to a vision model.”</em> <strong>Do not disable Send.</strong> Server accepts the message; outbound strip happens in the turn pipeline only.</p>
+<h4 id="message-accept-flow-normative-issue-5">Message accept flow (normative — Issue 5)</h4>
+<p>Extend signature to <code>Registry.PostUserMessage(id, text, actor, attachmentIDs []string) error</code> (or options struct). HTTP <code>handleMessages</code> maps status codes.</p>
+<p><strong>Order (before any busy flip leaves the session stuck):</strong></p>
+<ol>
+<li>Session <strong>closed</strong> → <strong>400</strong> <code>"session closed"</code>.  </li>
+<li>Decode body: <code>content</code> string + <code>attachment_ids []string</code>.  </li>
+<li><code>text = strings.TrimSpace(content)</code>; if <code>text == ""</code> <strong>and</strong> <code>len(attachment_ids)==0</code> → <strong>400</strong> <code>"content or attachment_ids required"</code>.  </li>
+<li>Resolve each <code>attachment_id</code> (<strong>KD15 — staged only</strong>):<br />
+   - Valid hex id; <code>session_id</code> match; file on disk.<br />
+   - <strong>Normal (SQLite):</strong> <code>message_id IS NULL</code> (still staged). If row missing → <strong>400</strong> <code>attachment not found: &lt;id&gt;</code>. If <code>message_id</code> set → <strong>400</strong> <code>attachment already committed: &lt;id&gt;</code> (immutable chip/history artifact; <strong>not</strong> re-submittable on a later user message without re-stage).<br />
+   - <strong>Limp (no SQL):</strong> accept if file exists under validated path; reject duplicate ids within the same request; no “already committed” table — MD markers are SoT after commit.<br />
+   - Enforce KD10 totals (count, per-file, total bytes). Other fails → <strong>400</strong> (<code>too many attachments</code>, <code>message attachments exceed size limit</code>).<br />
+   - Once accepted, commit sets <code>message_id</code> + source <code>user_upload</code> so the id cannot be used on a subsequent POST.  </li>
+<li><strong>No CapImages gate on accept</strong> (Q11). Images are always committed to durable history as <code>marble-att://</code> sentinels regardless of the active model.  </li>
+<li><strong>Then</strong> <code>tryBeginTurn</code>; if false → <strong>409</strong> <code>"session busy"</code> (session not left busy).  </li>
+<li>Build UI message: title fallback if text empty → first attachment name, else <code>"N attachments"</code>.  </li>
+<li>Append UI + history (sentinel form); commit attachment rows (<code>message_id</code>, source); log event with meta; publish; <code>go runTurn</code>.  </li>
+<li>Outbound Chat path applies <strong>KD4/KD13</strong>: strip image parts on the deep-cloned prompt when <code>!em.CapImages</code> (+ advisory); re-include/materialize when <code>em.CapImages</code>.</li>
+</ol>
+<p><strong>Error strings (UI tooltips):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Example body</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>400</td>
+<td><code>content or attachment_ids required</code></td>
+</tr>
+<tr>
+<td>400</td>
+<td><code>attachment not found: &lt;id&gt;</code></td>
+</tr>
+<tr>
+<td>400</td>
+<td><code>attachment already committed: &lt;id&gt;</code></td>
+</tr>
+<tr>
+<td>400</td>
+<td><code>file type not allowed</code> / <code>file too large (max 8388608 bytes)</code></td>
+</tr>
+<tr>
+<td>400</td>
+<td><code>session closed</code></td>
+</tr>
+<tr>
+<td>409</td>
+<td><code>session busy</code></td>
+</tr>
+</tbody>
+</table>
+<p>Document-only attachments always allowed regardless of <code>CapImages</code>.<br />
+<strong>v1 non-goal:</strong> multi-turn re-use of the same attachment id on a new user message without re-upload (future optional re-attach/copy API).</p>
+<h3 id="wire-format-model-content-parts-kd3-kd5">Wire format — model content parts (KD3, KD5)</h3>
+<h4 id="go-types-internalmodelclientgo">Go types (<a href="internal/model/client.go"><code>internal/model/client.go</code></a>)</h4>
+<pre><code class="language-go">// Content is OpenAI-compatible: string OR []Part.
+// Invariant: if len(Parts) &gt; 0, Parts win on marshal; Text is ignored.
+// Helpers never set both: ContentFromText clears Parts; ContentFromParts clears Text.
+type Content struct {
+    Text  string
+    Parts []Part
+}
+
+type Part struct {
+    Type     string    `json:&quot;type&quot;` // text | image_url
+    Text     string    `json:&quot;text,omitempty&quot;`
+    ImageURL *ImageURL `json:&quot;image_url,omitempty&quot;`
+}
+
+type ImageURL struct {
+    URL    string `json:&quot;url&quot;` // data:… or marble-att://&lt;id&gt; (internal only)
+    Detail string `json:&quot;detail,omitempty&quot;` // default &quot;auto&quot;
+}
+</code></pre>
+<p><strong>Marshal / Unmarshal (normative):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>JSON</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>len(Parts) &gt; 0</code></td>
+<td>array of parts (<strong>Parts win</strong> even if Text non-empty)</td>
+</tr>
+<tr>
+<td>else</td>
+<td>JSON string of <code>Text</code> (including <code>""</code>)</td>
+</tr>
+<tr>
+<td>Unmarshal string</td>
+<td><code>{Text: s, Parts: nil}</code></td>
+</tr>
+<tr>
+<td>Unmarshal array</td>
+<td><code>{Text: "", Parts: …}</code></td>
+</tr>
+</tbody>
+</table>
+<p>Helpers:</p>
+<ul>
+<li><code>ContentFromText(s)</code> → <code>{Text: s}</code>  </li>
+<li><code>ContentFromParts(parts)</code> → <code>{Parts: parts}</code>  </li>
+<li><code>PlainText()</code> → Text or concat text parts  </li>
+<li><code>HasImages()</code> → any <code>image_url</code> part  </li>
+<li><code>Clone()</code> → deep copy including Parts and ImageURL pointers  </li>
+</ul>
+<p><strong>Assistant / tool / system responses:</strong> after <code>normalizeMessage</code>, always string form (<code>ContentFromText(PlainText())</code> or empty + tool_calls). Multimodal <strong>user</strong> (and reloaded user) messages may use Parts.</p>
+<p><strong>High-touch compile sites:</strong></p>
+<ul>
+<li><a href="internal/session/loop.go"><code>loop.go</code></a>, <a href="internal/session/budget.go"><code>budget.go</code></a> — string slices on Content become part-aware (PR3)  </li>
+<li><a href="internal/session/session.go"><code>session.go</code></a> <code>LoadFromDoc</code>  </li>
+<li><a href="internal/session/persist.go"><code>persist.go</code></a>  </li>
+<li><a href="internal/model/client.go"><code>client.go</code></a> <code>normalizeMessage</code>  </li>
+<li>All tests constructing <code>model.Message{Content: "…"}</code> → <code>ContentFromText("…")</code></li>
+</ul>
+<p><strong>UI <code>session.Message</code>:</strong></p>
+<pre><code class="language-go">type Message struct {
+    // ...
+    Content     string          `json:&quot;content&quot;`
+    Attachments []AttachmentRef `json:&quot;attachments,omitempty&quot;`
+}
+
+type AttachmentRef struct {
+    ID   string `json:&quot;id&quot;`
+    Name string `json:&quot;name&quot;`
+    Mime string `json:&quot;mime&quot;`
+    Kind string `json:&quot;kind&quot;` // image | document
+    Size int64  `json:&quot;size&quot;`
+}
+</code></pre>
+<h4 id="building-model-user-message-from-attachments">Building model user message from attachments</h4>
+<pre><code class="language-text">parts = []
+if userText != &quot;&quot; { parts.append text(userText) }
+for each attachment_id (order preserved):
+  load row + bytes; verify sha256 if set
+  if kind==document:
+    inject = truncateUTF8(bytes, DocInjectMaxBytes)  // default 64 KiB
+    record meta: inject_bytes, truncated bool, sha256
+    parts.append text(&quot;--- file: name (mime) ---\n&quot; + inject
+                      + optional &quot;\n…[truncated for model inject; full file in chat attachment]&quot;)
+  if kind==image:
+    parts.append image_url url=&quot;marble-att://&quot;+id detail=&quot;auto&quot;
+if only images and empty text:
+  parts.prepend text(&quot;(user attached N image(s))&quot;)
+→ history append Message{Role:user, ContentFromParts(parts)}
+→ UI Content = userText or summary; Attachments = refs
+</code></pre>
+<p><strong>Disk size vs model inject (KD10 — Issue 3):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Limit</th>
+<th>Value</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-file disk</td>
+<td>8 MiB</td>
+<td>Storage / modal / download</td>
+</tr>
+<tr>
+<td>Per-message total disk</td>
+<td>20 MiB</td>
+<td>Upload DoS bound</td>
+</tr>
+<tr>
+<td><strong>Doc inject to model</strong></td>
+<td><strong><code>DocInjectMaxBytes = 64 KiB</code></strong></td>
+<td>Default hard cap per doc part</td>
+</tr>
+<tr>
+<td>Budget-aware inject</td>
+<td><code>min(DocInjectMaxBytes, max(4 KiB, remaining_budget_chars))</code> optional at build time when budget known</td>
+<td>Avoid first-turn blowup; remaining ≈ <code>(em.Budget() - estimate_so_far) * 3</code> chars</td>
+</tr>
+<tr>
+<td>Tool result preview</td>
+<td><strong>≤ 2 KiB</strong></td>
+<td><code>message_attach</code> only</td>
+</tr>
+</tbody>
+</table>
+<p>Full file always remains on disk for modal/download even when inject truncates.</p>
+<h4 id="history-representation-normative">History representation (normative)</h4>
+<ul>
+<li>Text parts: injected (already truncated) text.  </li>
+<li>Image parts: <strong><code>marble-att://&lt;att_id&gt;</code> only</strong> in <code>s.history</code>.  </li>
+<li><strong>Never</strong> store <code>data:</code> base64 in <code>s.history</code>.  </li>
+<li>Sentinel must never leave the process on the wire.</li>
+</ul>
+<h3 id="prompt-pipeline-kd13-issue-2">Prompt pipeline (KD13 — Issue 2)</h3>
+<p><strong>Normative order each <code>runTurn</code> iteration</strong> (replaces ambiguous “materialize + filter”):</p>
+<pre><code class="language-text">1. hist := shallow snapshot of s.history slice header
+2. prompt := trimHistory(hist, budget, toolEst)
+     - cloneMessages MUST deep-copy Content.Parts (and ImageURL)
+     - operates on sentinel form only
+3. prompt := injectSoul(prompt)          // existing
+4. prompt := ApplyCapabilityFilter(prompt, em)
+     - strip image_url parts (incl. marble-att://) when !em.CapImages
+     - sentinel form; no disk I/O
+5. estIn := estimateAll(prompt) + toolEst
+     - EstimateImage on image parts (1500 / formula); text via token.Estimate
+     - does NOT expand base64
+6. outbound := deepCloneMessages(prompt)
+   materializeImages(outbound)           // marble-att:// → data: MIME;base64
+     - reject any non-data / non-marble-att URL
+     - only this copy is sent
+7. client.Chat(ctx, outbound, toolSpecs)
+</code></pre>
+<p><strong>Unit tests (required):</strong> after a simulated Chat, <code>s.history</code> image URLs still <code>marble-att://…</code>; estimates on a prompt with sentinels match non-base64 sizes; filter before materialize does not require reading files.</p>
+<p><code>compactSession</code> source: <code>PlainText</code> + <code>"[N images omitted from compact source]"</code> — never materialize images into compact Chat.</p>
+<h3 id="capability-filter-kd4-q11-strip-while-unsupported-re-include-when-supported">Capability filter (KD4 / Q11 — strip while unsupported, re-include when supported)</h3>
+<p>Implement <a href="internal/session/model_resolve.go"><code>ApplyCapabilityFilter</code></a> on a <strong>deep clone only</strong> (never mutate <code>s.history</code>):</p>
+<pre><code class="language-text">// History always retains marble-att:// image parts after commit.
+if !em.CapImages:
+  for each message on the clone:
+    drop image_url parts (marble-att or data)
+    if message content empty → text &quot;[image attachment omitted: model has no image support]&quot;
+  once per turn: harness advisory if any strip occurred
+else:
+  leave image parts intact → later materialize step expands marble-att:// to data:
+// CapTools: omit tools at loop level (unchanged)
+// CapVoice: no-op in v1
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New user send + images + <code>!CapImages</code></td>
+<td><strong>Accept</strong> into UI/history; <strong>strip on outbound</strong> only + advisory (Q11)</td>
+</tr>
+<tr>
+<td>Later turn with vision model (<code>CapImages</code>)</td>
+<td><strong>Re-include</strong> same history sentinels → materialize for Chat</td>
+</tr>
+<tr>
+<td>Switch to non-vision model mid-session</td>
+<td><strong>Strip outbound</strong> for that turn; durable history unchanged</td>
+</tr>
+<tr>
+<td>Docs without images</td>
+<td>Always allowed (text inject)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="token-budget-trimhistory-kd8">Token budget &amp; trimHistory (KD8)</h3>
+<pre><code class="language-go">const DefaultImageTokens = 1500
+
+func EstimateImage(w, h int) int {
+    if w &lt;= 0 || h &lt;= 0 {
+        return DefaultImageTokens
+    }
+    return 85 + (w*h)/750
+}
+</code></pre>
+<p><code>estimateAll</code>: text parts / Text via <code>token.Estimate</code>; image parts via <code>EstimateImage</code> (meta width/height from attachment <code>meta_json</code> if present, else unknown → 1500). <strong>Never</strong> estimate base64 string length.</p>
+<p><code>trimHistory</code> when over budget:</p>
+<ol>
+<li>Drop oldest non-system messages.  </li>
+<li>Within a multimodal message: <strong>drop image parts first</strong>, then truncate text parts.  </li>
+<li>Preserve tool-call pairing invariants.</li>
+</ol>
+<h3 id="outbound-agent-tools-kd6-kd7-issue-11">Outbound — agent tools (KD6, KD7, Issue 11)</h3>
+<h4 id="attach_file-unchanged-ephemeral"><code>attach_file</code> (unchanged — ephemeral)</h4>
+<ul>
+<li>Workspace path → SSE <code>type: attachment</code> with <code>path</code> (no <code>id</code>).  </li>
+<li><strong>Does not</strong> <code>appendUI</code>; <strong>does not</strong> survive <code>syncTranscript</code> / reload.  </li>
+<li>Description remains “UI-only, not re-injected.”  </li>
+<li>UI may show ephemeral chip; treat path-only SSE as non-durable.</li>
+</ul>
+<h4 id="message_attach-new-durable"><code>message_attach</code> (new — durable)</h4>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>Workspace-relative (<code>resolve</code> jail) <strong>or</strong></td>
+</tr>
+<tr>
+<td><code>attachment_id</code></td>
+<td>Copy prior session attachment to a <strong>new</strong> id (agent re-share); does not re-use staged user ids</td>
+</tr>
+<tr>
+<td><code>as</code></td>
+<td>Display name</td>
+</tr>
+<tr>
+<td><code>mime</code></td>
+<td>Optional; still sniffed</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Package boundary (KD7 — normative):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Tool</strong> (<code>tools</code> package)</td>
+<td>Read/copy bytes; write store + row (<code>source=agent_attach</code>); build tool-result JSON; call <strong><code>tc.OnChatAttachment(att)</code></strong> if non-nil. <strong>Never</strong> <code>appendUI</code>, never publish SSE, never import/hold <code>*session.Session</code>.</td>
+</tr>
+<tr>
+<td><strong>Loop</strong> (<code>session</code> package)</td>
+<td>Wire <code>TurnContext.OnChatAttachment</code> to: <code>appendUI</code> (<code>role=attachment</code> + <code>Attachments[]</code>) → <code>publish Event{Type:"message", Message:…}</code> → mark session dirty (persist MD). <strong>Do not</strong> use legacy <code>OnAttachment</code> for this path.</td>
+</tr>
+<tr>
+<td><strong>Legacy</strong></td>
+<td><code>attach_file</code> → <code>OnAttachment</code> → SSE <code>type:attachment</code> only (ephemeral, Q27).</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-go">// tools.TurnContext — add alongside OnAttachment
+OnChatAttachment func(Attachment) // durable chat-scoped; loop implements UI
+
+// session/loop.go wiring (sketch)
+tc := &amp;tools.TurnContext{
+    OnAttachment: /* attach_file SSE-only — unchanged */,
+    OnChatAttachment: func(a tools.Attachment) {
+        um := Message{
+            Role: &quot;attachment&quot;,
+            Content: &quot;📎 &quot; + a.Name,
+            Attachments: []AttachmentRef{{ID: a.ID, Name: a.Name, Mime: a.Mime, Kind: a.Kind, Size: a.Size}},
+            CreatedAt: time.Now(),
+        }
+        s.appendUI(um)
+        s.publish(Event{Type: &quot;message&quot;, Message: &amp;um})
+        // dirty → MD persist on existing flush paths
+    },
+}
+</code></pre>
+<p><strong>Tool implementation steps:</strong></p>
+<ol>
+<li>Read workspace file (≤ 8 MiB) or copy existing attachment bytes to a <strong>new</strong> immutable id.  </li>
+<li>Write store + row (<code>source=agent_attach</code>, sha256, mime, kind); set <code>message_id</code> when loop assigns UI id <strong>or</strong> leave null until callback returns id — <strong>recommended:</strong> tool creates row with <code>message_id</code> null / agent source; loop callback sets <code>message_id</code> to the new UI message id when wiring (or tool passes att after store and loop updates row). Either way, tools package does not touch <code>s.ui</code>.  </li>
+<li><code>if tc != nil &amp;&amp; tc.OnChatAttachment != nil { tc.OnChatAttachment(att) }</code>.  </li>
+<li>Return tool result JSON (model-facing only):</li>
+</ol>
+<pre><code class="language-json">{
+  &quot;attached&quot;: true,
+  &quot;attachment_id&quot;: &quot;…&quot;,
+  &quot;name&quot;: &quot;report.md&quot;,
+  &quot;mime&quot;: &quot;text/markdown&quot;,
+  &quot;kind&quot;: &quot;document&quot;,
+  &quot;size&quot;: 1234,
+  &quot;preview&quot;: &quot;…≤2KiB…&quot;,
+  &quot;note&quot;: &quot;stored in chat; open in UI&quot;
+}
+</code></pre>
+<p>Preview: documents only, <strong>≤ 2 KiB</strong> UTF-8; images: no preview field.<br />
+Reload source of truth: <strong>UI messages</strong> (from loop <code>appendUI</code>), not SSE.</p>
+<p><strong>Allowed kinds:</strong> same allowlist. Else error: use workspace / <code>attach_file</code> for non-chat files.</p>
+<h3 id="modal-ux-kd12">Modal UX (KD12)</h3>
+<p>In <a href="internal/web/static/app.js"><code>app.js</code></a>:</p>
+<ul>
+<li>Prefer <code>message.attachments[]</code> chips (durable). Path-only SSE = ephemeral.  </li>
+<li>Click chip with <code>id</code>:</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Modal body</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>image</td>
+<td><code>&lt;img src="/api/sessions/{sid}/attachments/{id}?inline=1"&gt;</code> (same-origin, cookies/auth)</td>
+</tr>
+<tr>
+<td>markdown</td>
+<td><code>fetch</code> → text → <code>renderMarkdown</code> + DOMPurify</td>
+</tr>
+<tr>
+<td>plain/csv/json/html</td>
+<td><code>fetch</code> → <strong><code>textContent</code> in <code>&lt;pre&gt;</code></strong> or MD path; <strong>never</strong> set <code>iframe.src</code> / <code>srcdoc</code> to attachment URL</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Footer: Download (<code>?inline=0</code> or default attachment disposition), Close.  </li>
+<li>Escape / backdrop closes.</li>
+</ul>
+<h3 id="get-attachment-policy-issue-1-security-critical">GET attachment policy (Issue 1 — security critical)</h3>
+<p><code>GET /api/sessions/{id}/attachments/{att_id}</code>:</p>
+<ol>
+<li>Auth as other session routes.  </li>
+<li>Validate ids (hex / charset); path jail.  </li>
+<li>Load row (or limp FS exists check).  </li>
+<li><strong>Content-Type / Disposition (normative):</strong></li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>kind</th>
+<th><code>inline=1</code></th>
+<th>Content-Type</th>
+<th>Content-Disposition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>image</strong></td>
+<td>yes</td>
+<td>stored image MIME (<code>image/png</code> etc.)</td>
+<td><code>inline; filename="…"</code></td>
+</tr>
+<tr>
+<td><strong>image</strong></td>
+<td>no / default</td>
+<td>same</td>
+<td><code>attachment; filename="…"</code></td>
+</tr>
+<tr>
+<td><strong>document</strong> (any, incl. stored <code>text/html</code>)</td>
+<td><strong>ignored for type</strong></td>
+<td><strong><code>text/plain; charset=utf-8</code></strong> always</td>
+<td><strong><code>attachment; filename="…"</code></strong> always</td>
+</tr>
+</tbody>
+</table>
+<ol start="5">
+<li>Always set <code>X-Content-Type-Options: nosniff</code> on this route.  </li>
+<li><strong>Never</strong> serve <code>text/html</code>, <code>image/svg+xml</code>, or scriptable types.  </li>
+<li>Optional: <code>Content-Security-Policy: default-src 'none'</code> on attachment responses for defense in depth.</li>
+</ol>
+<p>Modal for images is the <strong>only</strong> consumer of <code>inline=1</code>. Document preview uses fetch-as-text, not navigation to GET URL as a document.</p>
+<h3 id="persistence-session-md-kd11-issue-10">Persistence — session MD (KD11, Issue 10)</h3>
+<pre><code class="language-markdown">## 2026-07-25T12:00:00Z · user
+&lt;!-- id: m1 attachments: attA,attB --&gt;
+Please review this screenshot and notes.
+
+## 2026-07-25T12:00:05Z · attachment
+&lt;!-- id: m2 attachment_id: attC name: &quot;out.png&quot; mime: image/png kind: image size: 44012 --&gt;
+📎 out.png
+</code></pre>
+<p><strong>Commit-time <code>meta_json</code> (per attachment row):</strong></p>
+<pre><code class="language-json">{
+  &quot;inject_bytes&quot;: 1200,
+  &quot;truncated&quot;: true,
+  &quot;sha256&quot;: &quot;…&quot;,
+  &quot;width&quot;: 0,
+  &quot;height&quot;: 0
+}
+</code></pre>
+<p><strong>LoadFromDoc / rebuild history:</strong></p>
+<ol>
+<li>Parse attachment ids from markers.  </li>
+<li>For each id: open file; verify sha256 if meta present — mismatch → text part <code>"[changed attachment &lt;id&gt;]"</code>.  </li>
+<li>Missing file → <code>"[missing attachment &lt;id&gt;]"</code>.  </li>
+<li>Document: re-apply <strong>same</strong> <code>DocInjectMaxBytes</code> (and stored <code>inject_bytes</code> if present as exact slice length preference: prefer re-truncate with current cap then if <code>meta.inject_bytes</code> set and file unchanged, truncate to <code>inject_bytes</code> for bit-stability).  </li>
+<li>Image: <code>marble-att://id</code> sentinel.  </li>
+</ol>
+<p>Attachment files are immutable → re-read + meta yields deterministic inject when caps unchanged; if cap constant changes across versions, <code>inject_bytes</code> in meta pins prior inject length when sha matches.</p>
+<h3 id="session-events-logevent-issue-6">Session events / logEvent (Issue 6)</h3>
+<p>Today <code>logEvent</code> never sets <code>MetaJSON</code>. <strong>Normative change:</strong></p>
+<pre><code class="language-go">// Extend logEvent (or add logUserMessage):
+func (r *Registry) logEvent(..., meta map[string]interface{}) {
+    // marshal meta → Event.MetaJSON when non-nil
+}
+</code></pre>
+<p>For <code>kind=user_message</code> with attachments:</p>
+<pre><code class="language-json">{
+  &quot;attachment_ids&quot;: [&quot;…&quot;],
+  &quot;image_count&quot;: 1,
+  &quot;doc_count&quot;: 1
+}
+</code></pre>
+<p>Content field remains <strong>text only</strong> (no base64). Tests in PR4 assert <code>meta_json</code> populated.</p>
+<h3 id="api-interface-changes">API / Interface Changes</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/sessions/{id}/attachments</code></td>
+<td>multipart <code>file</code>; optional <code>name</code>. MaxBytesReader = 8 MiB+slop. <strong>400 closed, 409 busy, else 201</strong> <code>{id,name,mime,kind,size}</code>. MIME/size errors → 400.</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/api/sessions/{id}/attachments/{att_id}</code></td>
+<td>Only staged (<code>message_id</code> null); 404/400 otherwise; 409 if busy optional (recommend allow delete of staged when busy so user can cancel — <strong>or</strong> 409 busy for simplicity: <strong>409 busy</strong>)</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/sessions/{id}/attachments/{att_id}</code></td>
+<td>See <strong>GET attachment policy</strong> above</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/sessions/{id}/messages</code></td>
+<td><code>{ "content": string, "attachment_ids": ["…"] }</code> — see <strong>Message accept flow</strong>; <strong>KD15 staged-only</strong> ids</td>
+</tr>
+<tr>
+<td>SSE</td>
+<td><code>message</code></td>
+<td>Primary for durable attachment UI rows</td>
+</tr>
+<tr>
+<td>SSE</td>
+<td><code>attachment</code></td>
+<td>Legacy <code>attach_file</code> path-only; optional live hint for <code>message_attach</code> but not reload source</td>
+</tr>
+<tr>
+<td>GET session</td>
+<td></td>
+<td><code>messages[].attachments[]</code>; <code>model_effective</code> for cap gate</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Auth:</strong> ADR-0017 middleware (same as other session routes).</p>
+<h3 id="data-model-changes">Data Model Changes</h3>
+<ol>
+<li>Schema <strong>v4</strong>: <code>session_attachments</code> + indexes; <code>CurrentSchemaVersion = 4</code>; mkdir <code>attachments/</code>.  </li>
+<li><code>model.Content</code> type + helpers.  </li>
+<li><code>session.Message.Attachments</code>; tools <code>Attachment</code> gains <code>ID, Kind, Mime, Source</code>.  </li>
+<li><code>memory.TranscriptMessage</code> attachment fields.  </li>
+<li><code>logEvent</code> meta parameter.  </li>
+<li><code>DeleteSessionAttachments</code> + prune wiring.  </li>
+<li>Constants: <code>DocInjectMaxBytes=64&lt;&lt;10</code>, <code>DefaultImageTokens=1500</code>, chat max file 8 MiB.</li>
+</ol>
+<h3 id="sequence-user-image-paste">Sequence — user image paste</h3>
+<pre><code class="language-mermaid">sequenceDiagram
+  participant U as Operator UI
+  participant API as marble-harness
+  participant FS as attachments FS
+  participant L as runTurn
+  participant M as Model API
+
+  U-&gt;&gt;API: POST /attachments (png)
+  Note over API: 409 if busy; 400 if closed
+  API-&gt;&gt;FS: write file
+  API--&gt;&gt;U: 201 {id}
+  U-&gt;&gt;API: POST /messages {content, attachment_ids}
+  API-&gt;&gt;API: resolve atts; resolveEffective CapImages
+  alt !CapImages
+    API--&gt;&gt;U: 400
+  else busy
+    API--&gt;&gt;U: 409
+  else ok
+    API-&gt;&gt;L: history with marble-att:// (tryBeginTurn)
+    loop each model call
+      L-&gt;&gt;L: trimHistory (sentinel)
+      L-&gt;&gt;L: ApplyCapabilityFilter (sentinel)
+      L-&gt;&gt;L: estimateAll
+      L-&gt;&gt;L: deepClone + materializeImages → data:
+      L-&gt;&gt;M: Chat(outbound)
+      M--&gt;&gt;L: assistant text
+    end
+    L--&gt;&gt;U: SSE message
+  end
+</code></pre>
+<h2 id="alternatives-considered">Alternatives Considered</h2>
+<h3 id="a1-workspace-only-storage">A1. Workspace-only storage</h3>
+<p><strong>Rejected</strong> — pollutes workspace; weak GC; path ≠ chat artifact.</p>
+<h3 id="a2-single-multipart-post-for-message-files">A2. Single multipart POST for message + files</h3>
+<p><strong>Rejected</strong> as sole API; two-phase is primary.</p>
+<h3 id="a3-always-base64-in-session-md-history">A3. Always base64 in session MD / history</h3>
+<p><strong>Rejected</strong> (KD11 / sentinel).</p>
+<h3 id="a4-provider-hosted-image-urls">A4. Provider-hosted image URLs</h3>
+<p><strong>Rejected</strong> — SSRF / not local-first.</p>
+<h3 id="a5-expand-attach_file-only">A5. Expand <code>attach_file</code> only</h3>
+<p><strong>Rejected</strong> — breaks Q27; use <code>message_attach</code>.</p>
+<h3 id="a6-fail-closed-http-400-when-cap_images-on-new-image-sends">A6. Fail-closed HTTP 400 when <code>!cap_images</code> on new image sends</h3>
+<p><strong>Rejected</strong> by locked <strong>Q11</strong>. Operators may send images under a text-only model; strip is <strong>outbound-only</strong> and reversible when a vision model is selected. Durable store + <code>marble-att://</code> history remain intact (KD4).</p>
+<h3 id="a7-reject-all-attachment-uploads-in-limp-503">A7. Reject all attachment uploads in limp (503)</h3>
+<p><strong>Rejected</strong> in favor of FS-only write/GET + MD markers (Issue 8) so chat still works when SQLite is limp.</p>
+<h2 id="security-privacy">Security &amp; Privacy</h2>
+<table>
+<thead>
+<tr>
+<th>Threat</th>
+<th>Severity</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Path traversal</td>
+<td>High</td>
+<td>Hex att_id; charset session_id; Join + prefix check</td>
+</tr>
+<tr>
+<td><strong>XSS via GET <code>text/html</code> inline</strong></td>
+<td><strong>Critical</strong></td>
+<td>Documents always <code>text/plain</code> + <code>Content-Disposition: attachment</code>; images only for inline image MIME; <strong>reject SVG</strong>; modal never iframe</td>
+</tr>
+<tr>
+<td>MIME polyglot</td>
+<td>Medium</td>
+<td>Sniff + allowlist; nosniff</td>
+</tr>
+<tr>
+<td>XSS via .md preview</td>
+<td>High</td>
+<td>DOMPurify / textContent only</td>
+</tr>
+<tr>
+<td>Audio/video surprise</td>
+<td>Low</td>
+<td>Reject MIME</td>
+</tr>
+<tr>
+<td>Secret exfil via vision</td>
+<td>Medium</td>
+<td>Operator trust; document risk</td>
+</tr>
+<tr>
+<td>Provider SSRF</td>
+<td>High</td>
+<td>materialize → <strong>only</strong> <code>data:</code>; reject other schemes</td>
+</tr>
+<tr>
+<td>Oversized body DoS</td>
+<td>Medium</td>
+<td>8 MiB/file; 10 files; 20 MiB total</td>
+</tr>
+<tr>
+<td>Cross-session read</td>
+<td>High</td>
+<td>session_id match + auth</td>
+</tr>
+<tr>
+<td>Agent path escape</td>
+<td>High</td>
+<td>workspace <code>resolve</code> jail only</td>
+</tr>
+<tr>
+<td>HTML stored but safe</td>
+<td>High</td>
+<td>Storage MIME may be text/html; GET forces text/plain</td>
+</tr>
+</tbody>
+</table>
+<h2 id="observability">Observability</h2>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Upload / message</td>
+<td>Log sizes + mime + counts (not raw bytes)</td>
+</tr>
+<tr>
+<td><code>session_events.meta_json</code></td>
+<td><code>attachment_ids</code>, <code>image_count</code>, <code>doc_count</code> via <strong>extended <code>logEvent</code></strong></td>
+</tr>
+<tr>
+<td>Harness advisories</td>
+<td>Strip on <code>!cap_images</code>; doc truncate; missing/changed attachment; <strong>provider image/size errors</strong> with “try smaller PNG/JPEG”</td>
+</tr>
+<tr>
+<td>UI toast</td>
+<td>Surface 400 bodies; provider failure after Chat</td>
+</tr>
+</tbody>
+</table>
+<h2 id="risks-mitigations">Risks &amp; Mitigations</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Severity</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Context blowup (images + docs)</td>
+<td>High</td>
+<td>64 KiB doc inject; image estimates; trim drops images first; budget-aware inject optional</td>
+</tr>
+<tr>
+<td>Provider rejects gif / huge data URL</td>
+<td>Medium</td>
+<td>Surface error body as harness advisory + UI toast; suggest smaller PNG/JPEG; no resize pipeline in v1</td>
+</tr>
+<tr>
+<td>Wrong catalog <code>cap_images</code></td>
+<td>Medium</td>
+<td>Outbound strip + advisory; Settings; re-include when corrected</td>
+</tr>
+<tr>
+<td>Materialize mutates history</td>
+<td>High</td>
+<td>KD13 pipeline + tests</td>
+</tr>
+<tr>
+<td>MD reload ≠ original inject</td>
+<td>Medium</td>
+<td>immutable files + meta inject_bytes/sha256</td>
+</tr>
+<tr>
+<td>Schema v4 migrate fail</td>
+<td>High</td>
+<td>Abort Open; backup</td>
+</tr>
+<tr>
+<td>Attachment dir leak</td>
+<td>High</td>
+<td>DeleteSessionAttachments on every blob prune path</td>
+</tr>
+<tr>
+<td><code>message_attach</code> implemented as SSE-only or tools-side UI</td>
+<td>High</td>
+<td>KD7: <code>OnChatAttachment</code> → loop <code>appendUI</code> + <code>type:message</code> only</td>
+</tr>
+<tr>
+<td>Double storage workspace + attach</td>
+<td>Low</td>
+<td>Accept; document copy-in</td>
+</tr>
+</tbody>
+</table>
+<h2 id="rollout-plan">Rollout Plan</h2>
+<ol>
+<li>Schema v4 + FS helpers + delete/GC + tests.  </li>
+<li><code>model.Content</code> + golden JSON text-only wire.  </li>
+<li>Budget/trim/filter on synthetic parts.  </li>
+<li>Upload/GET (safe policy) + message flow + logEvent meta + loop pipeline.  </li>
+<li>Session MD + LoadFromDoc fidelity.  </li>
+<li>UI staging/chips/modal (<code>activeCapImages</code>).  </li>
+<li><code>message_attach</code> durable path.  </li>
+<li>README / answers.</li>
+</ol>
+<p><strong>Rollback:</strong> older binary + v4 DB → limp. Orphan attachment files if mixed versions — maintenance GC.</p>
+<p><strong>Feature flag:</strong> not required.</p>
+<p><strong>Manual verification:</strong></p>
+<ol>
+<li><code>cap_images=1</code> → paste PNG → model describes.  </li>
+<li><code>cap_images=0</code> → paste + send <strong>succeeds</strong>; advisory strip on outbound; UI chip still shows image.  </li>
+<li>Switch same session to vision model → <strong>re-include</strong> prior image sentinels on next turn.  </li>
+<li>Switch back to non-vision → strip outbound again; history still sentinel.  </li>
+<li><code>message_attach</code> md → durable chip after restart + modal.  </li>
+<li>Upload <code>.html</code> → GET is <code>text/plain</code> attachment; modal uses textContent.  </li>
+<li>Reject <code>.mp3</code>, <code>.pdf</code>, <code>.svg</code>.  </li>
+<li>Closed session prune removes attachments dir.</li>
+</ol>
+<h2 id="decisions-locked-q1q12">Decisions locked (Q1–Q12)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Stage while busy → <strong>409</strong> (match message path)</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td><strong>8 MiB</strong>/file · <strong>20 MiB</strong> total · <strong>10</strong> files; doc model inject <strong>64 KiB</strong></td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Accept <strong>GIF</strong> as opaque image bytes</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>HTML: allow store; GET <strong>text/plain</strong> + attachment; preview DOMPurify/text only</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td><code>message_attach</code> tool preview ≤ <strong>2 KiB</strong></td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Process <code>CapImages</code> remains <strong>false</strong></td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td><strong>No</strong> server thumbnails in v1</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Compact source: <strong>placeholders only</strong> (no image bytes)</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>image <code>detail</code>: <strong><code>auto</code> only</strong></td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Schema <strong>v4</strong> = <code>session_attachments</code> only</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td><strong>Strip while modality unsupported; re-include when a supporting model is active</strong> (outbound-only; durable history keeps <code>marble-att://</code>) — <strong>not</strong> fail-closed 400 on send</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td><strong>Defer PDF</strong>; reject with convert-to-md/png guidance</td>
+</tr>
+</tbody>
+</table>
+<h2 id="pr-plan">PR Plan</h2>
+<p>Ordered, independently reviewable. <strong>Text-only sessions with no <code>attachment_ids</code> must behave identically to pre-ADR</strong> on every PR.</p>
+<h3 id="pr1-schema-v4-attachment-store-prune">PR1 — Schema v4 + attachment store + prune</h3>
+<ul>
+<li><strong>Title:</strong> <code>db: schema v4 session_attachments + FS store + GC</code></li>
+<li><strong>Files:</strong> <a href="internal/db/db.go"><code>internal/db/db.go</code></a> (<code>CurrentSchemaVersion=4</code>, <code>migrateV3toV4</code>, mkdir <code>attachments/</code>), new <code>internal/db/attachments.go</code> (CRUD, <code>DeleteSessionAttachments</code>, GC staged 24h), <a href="internal/session/registry.go"><code>internal/session/registry.go</code></a> <code>RunMaintenance</code> + any delete path that calls <code>DeleteSessionBlobs</code>, <code>db_test.go</code></li>
+<li><strong>Dependencies:</strong> none</li>
+<li><strong>Description:</strong> Table + indexes <code>(session_id)</code>, <code>(session_id, message_id)</code>; id validation helpers; limp-safe path resolve; wire delete on prune. No HTTP.</li>
+</ul>
+<h3 id="pr2-modelcontent-multimodal-type">PR2 — model.Content multimodal type</h3>
+<ul>
+<li><strong>Title:</strong> <code>model: Content string|parts OpenAI wire</code></li>
+<li><strong>Files:</strong> <a href="internal/model/client.go"><code>internal/model/client.go</code></a>, new <code>internal/model/content.go</code>, <code>content_test.go</code>; fix all compile breakages with <code>ContentFromText</code></li>
+<li><strong>Dependencies:</strong> none (parallel PR1)</li>
+<li><strong>Acceptance:</strong> all packages compile; existing session tests green; <strong>golden JSON</strong> Chat body for text-only messages identical to pre-change (<code>"content":"hello"</code> not array). <code>normalizeMessage</code> keeps assistant/tool as string form. Minimal budget compile fix: <code>PlainText()</code> for any remaining string ops (behavior fix in PR3).</li>
+<li><strong>Note:</strong> May merge with PR3 if review load allows (Issue 14).</li>
+</ul>
+<h3 id="pr3-budget-trim-capability-filter">PR3 — Budget / trim / capability filter</h3>
+<ul>
+<li><strong>Title:</strong> <code>session: multimodal estimate, trim, ApplyCapabilityFilter</code></li>
+<li><strong>Files:</strong> <a href="internal/session/budget.go"><code>budget.go</code></a> (<code>cloneMessages</code> deep-copy Parts; part-aware trim), <a href="internal/session/model_resolve.go"><code>model_resolve.go</code></a>, <a href="internal/token/estimate.go"><code>token/estimate.go</code></a> <code>EstimateImage</code> + <code>DefaultImageTokens=1500</code>, unit tests with <strong>synthetic parts only</strong> (no FS)</li>
+<li><strong>Dependencies:</strong> PR2</li>
+<li><strong>Acceptance:</strong> estimate/trim/filter unit tests; strip when <code>!CapImages</code>; text-only path token-identical within rounding.</li>
+</ul>
+<h3 id="pr4-upload-safe-get-message-wiring-pipeline-logevent">PR4 — Upload / safe GET / message wiring / pipeline / logEvent</h3>
+<ul>
+<li><strong>Title:</strong> <code>api/session: chat attachments + strip/re-include pipeline</code></li>
+<li><strong>Files:</strong> new <code>internal/api/attachments.go</code>, <a href="internal/api/server.go"><code>server.go</code></a>, <a href="internal/session/loop.go"><code>loop.go</code></a> (accept flow + <strong>KD13 pipeline</strong>), <a href="internal/session/session.go"><code>session.go</code></a>, <a href="internal/session/persist.go"><code>persist.go</code></a> <strong>extend <code>logEvent</code> meta</strong>, MIME helper, tests (GET never text/html; history stays sentinel after Chat; accept images under <code>!CapImages</code>; strip outbound only; empty text+atts OK)</li>
+<li><strong>Dependencies:</strong> PR1, PR2, PR3</li>
+<li><strong>Description checklist:</strong> two-phase API; GET policy; message accept order; DocInjectMaxBytes=64KiB; meta_json on user_message; materialize only on deep clone.</li>
+</ul>
+<h3 id="pr5-session-md-persistence-reload-fidelity">PR5 — Session MD persistence + reload fidelity</h3>
+<ul>
+<li><strong>Title:</strong> <code>memory: encode/decode message attachments</code></li>
+<li><strong>Files:</strong> <a href="internal/memory/session_md.go"><code>session_md.go</code></a>, tests, <a href="internal/session/session.go"><code>session.go</code></a> <code>LoadFromDoc</code> (sha + inject_bytes)</li>
+<li><strong>Dependencies:</strong> PR4</li>
+<li><strong>Description:</strong> Markers without base64; missing/changed placeholders; bit-stable inject when meta present.</li>
+</ul>
+<h3 id="pr6-ui-staging-chips-modal">PR6 — UI staging, chips, modal</h3>
+<ul>
+<li><strong>Title:</strong> <code>web: composer attach + attachment modal</code></li>
+<li><strong>Files:</strong> <a href="internal/web/static/index.html"><code>index.html</code></a>, <a href="internal/web/static/app.js"><code>app.js</code></a>, <a href="internal/web/static/style.css"><code>style.css</code></a></li>
+<li><strong>Dependencies:</strong> PR4; <strong>PR5 preferred for reload chips</strong> — if PR6 ships first, document “reload chips require PR5”</li>
+<li><strong>Description:</strong> paste/drop/paperclip; <code>accept=</code> allowlist; <code>activeCapImages</code> warning (non-blocking) when staging images under non-vision model; chips from <code>message.attachments[]</code>; modal (img vs text/DOMPurify); no iframe.</li>
+</ul>
+<h3 id="pr7-message_attach-durable-tool">PR7 — <code>message_attach</code> durable tool</h3>
+<ul>
+<li><strong>Title:</strong> <code>tools: message_attach chat-scoped attachments</code></li>
+<li><strong>Files:</strong> <a href="internal/tools/specs.go"><code>specs.go</code></a>, <a href="internal/tools/registry.go"><code>registry.go</code></a> (<code>OnChatAttachment</code> on <code>TurnContext</code>), tool impl (store + JSON + callback only), <a href="internal/session/loop.go"><code>loop.go</code></a> <strong>wires</strong> <code>OnChatAttachment</code> → <code>appendUI</code> + <code>type:message</code> + dirty, system prompt line in <a href="internal/session/session.go"><code>session.go</code></a></li>
+<li><strong>Dependencies:</strong> PR4 (PR5 for MD of agent chips)</li>
+<li><strong>Description:</strong> <strong>Boundary:</strong> tool never <code>appendUI</code>/SSE; loop owns durable UI. Do <strong>not</strong> call legacy <code>OnAttachment</code> for <code>message_attach</code>. Leave <code>attach_file</code> → <code>OnAttachment</code> Q27 intact; ≤2 KiB preview.</li>
+</ul>
+<h3 id="pr8-docs-readme">PR8 — Docs / README</h3>
+<ul>
+<li><strong>Title:</strong> <code>docs: multimodal attachments operator notes</code></li>
+<li><strong>Files:</strong> <a href="README.md"><code>README.md</code></a>, ADR → Accepted when answers locked, <code>adr/0019-answers.json</code></li>
+<li><strong>Dependencies:</strong> PR6–PR7</li>
+<li><strong>Description:</strong> Allowlist, disk vs inject limits, cap_images Settings, XSS GET policy note.</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><a href="0018-doc.html"><code>adr/0018-selectable-models.md</code></a> — <code>cap_images</code>, <code>ApplyCapabilityFilter</code>, EffectiveModel; Q11 aligns strip/re-include with outbound filter</li>
+<li><a href="0005-doc.html"><code>adr/0005-tools-and-agent-loop.md</code></a> — <code>attach_file</code> Q27  </li>
+<li><a href="0004-doc.html"><code>adr/0004-workspace-file-explorer.md</code></a> — multipart upload  </li>
+<li><a href="0003-doc.html"><code>adr/0003-sqlite-memory-db.md</code></a> — blobs / events / prune  </li>
+<li>OpenAI Chat Completions multimodal content parts  </li>
+<li>Code: <a href="internal/model/client.go"><code>internal/model/client.go</code></a>, <a href="internal/session/loop.go"><code>internal/session/loop.go</code></a>, <a href="internal/session/budget.go"><code>internal/session/budget.go</code></a>, <a href="internal/session/model_resolve.go"><code>internal/session/model_resolve.go</code></a>, <a href="internal/session/persist.go"><code>internal/session/persist.go</code></a>, <a href="internal/session/registry.go"><code>internal/session/registry.go</code></a>, <a href="internal/tools/memory_skills.go"><code>internal/tools/memory_skills.go</code></a>, <a href="internal/db/blobs.go"><code>internal/db/blobs.go</code></a>, <a href="internal/web/static/app.js"><code>internal/web/static/app.js</code></a></li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-25</td>
+<td>Initial draft (Proposed) — multimodal images + basic documents; no audio</td>
+</tr>
+<tr>
+<td>2026-07-25</td>
+<td>Review revision: safe GET (no HTML XSS); KD13 materialize pipeline; 64 KiB doc inject; message accept/busy order; logEvent meta; prune deletes; limp FS rules; Content Parts-wins; reload meta/sha; durable message_attach UI; KD14 busy staging; DefaultImageTokens=1500; PR acceptance criteria</td>
+</tr>
+<tr>
+<td>2026-07-25</td>
+<td>Revision 2: KD7/PR7 <code>OnChatAttachment</code> boundary (tool store+JSON; loop appendUI+message); KD15 staged-only <code>attachment_ids</code> on user POST</td>
+</tr>
+<tr>
+<td>2026-07-26</td>
+<td><strong>Accepted</strong> — Q1–Q12 locked from <code>0019-answers.json</code>. <strong>Q11 custom:</strong> strip only while modality unsupported; re-include when vision model returns (not fail-closed 400). KD4/goals/accept flow/UI/PR4 updated.</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0019-multimodal-attachments.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

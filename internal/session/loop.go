@@ -23,6 +23,10 @@ type Runner struct {
 	// CatalogGet optional override for tests; default uses Reg.sqldb.
 	CatalogGet CatalogLookup
 
+	// FillPresentationAudio optionally fills phase.audio for Wonderstand eager TTS (ADR-0027 M4).
+	// Best-effort; must not fail the turn. May be nil.
+	FillPresentationAudio func(sessionID, messageID string, pres *Presentation)
+
 	clientMu    sync.Mutex
 	clientCache map[string]*model.Client
 }
@@ -272,6 +276,9 @@ func (r *Runner) runTurn(s *Session) {
 			// Live Accept/Deny card in harness UI (operator may not have peer access).
 			s.publish(Event{Type: "confirm", Confirm: confirm})
 		},
+		OnPeerAction: func(summary string) {
+			s.SetLastPeerAction(summary)
+		},
 		OnHarnessNote: func(note string) {
 			r.advisory(s, note)
 		},
@@ -439,7 +446,11 @@ func (r *Runner) runTurn(s *Session) {
 		}
 		// Strict providers (vLLM): only one system block at the start; never mid-history.
 		outbound = normalizeOutboundChatMessages(outbound)
-		result, err := client.Chat(ctx, outbound, toolSpecs)
+		effort := ""
+		s.mu.Lock()
+		effort = s.ReasoningEffort
+		s.mu.Unlock()
+		result, err := client.ChatWithOpts(ctx, outbound, toolSpecs, model.ChatOpts{ReasoningEffort: effort})
 		if err != nil {
 			stopNote = stopMessage(err, s)
 			// Capability / provider errors surface as harness-visible errors
@@ -463,6 +474,9 @@ func (r *Runner) runTurn(s *Session) {
 			}
 			return
 		}
+		if note := strings.TrimSpace(result.ReasoningEffortNote); note != "" {
+			r.advisory(s, "[harness] "+note)
+		}
 		msg := result.Message
 		finish := result.FinishReason
 		var tin, tout *int
@@ -474,16 +488,31 @@ func (r *Runner) runTurn(s *Session) {
 		estOut := estimateTokens(msg.Content.PlainText())
 		lat := result.LatencyMs
 		s.setLastModelLatency(lat)
+		thought := model.ThoughtText(msg)
+		stepDetail := fmt.Sprintf("finish=%s model=%s", finish, em.Model)
+		if thought != "" {
+			stepDetail += " · thought_chars=" + itoa(len(thought))
+		}
 		s.appendStep(TurnStep{
 			Kind:    "model_call",
 			Iter:    iter,
-			Detail:  fmt.Sprintf("finish=%s model=%s", finish, em.Model),
+			Detail:  stepDetail,
 			Latency: &lat,
 		})
 		s.publishTurnProgress()
 
 		if r.Reg != nil {
-			r.Reg.logModelCall(s, em, "assistant", msg.Content.PlainText(), tin, tout, intPtr(estIn), intPtr(estOut), &lat, finish, "")
+			logBody := msg.Content.PlainText()
+			if thought != "" && logBody == "" {
+				logBody = thought
+			}
+			r.Reg.logModelCall(s, em, "assistant", logBody, tin, tout, intPtr(estIn), intPtr(estOut), &lat, finish, "")
+		}
+
+		// ADR-0026: surface model reasoning / interim prose as collapsible thinking
+		// rows when the provider actually returns text (many tool-only rounds do not).
+		if thought != "" && len(msg.ToolCalls) > 0 {
+			r.publishThinking(s, thought, fmt.Sprintf("thinking · model i%d", iter), lat)
 		}
 
 		if len(msg.ToolCalls) > 0 {
@@ -494,6 +523,8 @@ func (r *Runner) runTurn(s *Session) {
 				Role:      "assistant",
 				Content:   model.ContentFromText(msg.Content.PlainText()),
 				ToolCalls: msg.ToolCalls,
+				// Keep reasoning out of default history echo unless we need signatures;
+				// ThoughtText already published to UI.
 			})
 			s.mu.Unlock()
 
@@ -554,41 +585,29 @@ func (r *Runner) runTurn(s *Session) {
 				}
 
 				s.mu.Lock()
-				tid := s.nextID("t")
-				// Inject vision parts for tool screenshots (computer_screenshot, etc.)
-				// so the model receives pixels on the next Chat call — not only UI chips.
-				modelContent := toolResultContent(toolResult)
-				if !em.CapImages && modelContent.HasImages() {
-					// Text fallback when process/catalog model cannot see images.
-					modelContent = model.ContentFromText(toolResult +
-						"\n[harness] WARNING: active model CapImages=false — screenshot was stored for the UI but NOT sent to the model. Switch this session to a vision-capable model (model_list / session_set_model) to see peer screenshots.")
-					r.advisory(s, "[harness] computer screenshot omitted from model context: active model has no image support — switch to a vision model to use desktop screenshots")
-				}
-				tm := Message{
-					ID:         tid,
-					Role:       "tool",
-					Content:    fmt.Sprintf("%s → %s", name, compact(toolResult, 400)),
-					ToolName:   name,
-					ToolCallID: call.ID,
-					CreatedAt:  time.Now(),
-					Attachments: uiAttachmentsFromToolResult(toolResult),
-				}
-				s.appendUI(tm)
-				s.history = append(s.history, model.Message{
-					Role:       "tool",
-					Content:    modelContent,
-					ToolCallID: call.ID,
-					Name:       name,
-				})
+				tm, omitNote := recordToolResultLocked(s, name, call.ID, toolResult, em.CapImages)
 				s.mu.Unlock()
+				if omitNote != "" {
+					// Never call advisory() while holding s.mu — it re-locks via appendStep
+					// (session 0wdd4vkfme: first computer_screenshot wedged the harness).
+					r.advisory(s, omitNote)
+				}
 				s.publish(Event{Type: "message", Message: &tm})
 			}
 			continue
 		}
 
 		content := strings.TrimSpace(msg.Content.PlainText())
+		// Prefer final answer in content; if only reasoning was returned, use it as content.
 		if content == "" {
-			content = "(empty model response)"
+			if t := strings.TrimSpace(msg.Reasoning); t != "" {
+				content = t
+			} else {
+				content = "(empty model response)"
+			}
+		} else if rsn := strings.TrimSpace(msg.Reasoning); rsn != "" && rsn != content {
+			// Show chain-of-thought as a thinking row above the final answer.
+			r.publishThinking(s, rsn, fmt.Sprintf("thinking · model i%d", iter), lat)
 		}
 		// ADR-0025: optional presentation on final assistant only (Q5); clamp never fails turn (Q6).
 		pres := enrichPresentationFromContent(content)
@@ -597,6 +616,17 @@ func (r *Runner) runTurn(s *Session) {
 
 		s.mu.Lock()
 		aid := s.nextID("m")
+		s.mu.Unlock()
+
+		// ADR-0027 M4: optional eager neural audio on Wonderstand sessions.
+		if pres != nil && r.FillPresentationAudio != nil {
+			name, proto := s.ClientAdvertiseSnapshot()
+			if IsWonderstandProtocol(name, proto) {
+				r.FillPresentationAudio(s.ID, aid, pres)
+			}
+		}
+
+		s.mu.Lock()
 		am := Message{
 			ID:           aid,
 			Role:         "assistant",
@@ -844,7 +874,41 @@ func enrichPresentationFromContent(content string) *Presentation {
 	return ClampPresentation(p)
 }
 
+// publishThinking emits a collapsible UI thinking row (not model history).
+// Used when the model returns reasoning and/or interim content before tool calls.
+func (r *Runner) publishThinking(s *Session, body, summary string, latencyMs int) {
+	body = strings.TrimSpace(body)
+	if s == nil || body == "" {
+		return
+	}
+	const maxThink = 12 * 1024
+	if len(body) > maxThink {
+		body = body[:maxThink] + "…"
+	}
+	if strings.TrimSpace(summary) == "" {
+		summary = "thinking"
+	}
+	if latencyMs > 0 {
+		summary = summary + " · " + fmt.Sprintf("%dms", latencyMs)
+	}
+	s.mu.Lock()
+	tm := Message{
+		ID:        s.nextID("th"),
+		Role:      "thinking",
+		Summary:   summary,
+		Content:   body,
+		CreatedAt: time.Now(),
+	}
+	s.appendUI(tm)
+	s.mu.Unlock()
+	s.publish(Event{Type: "message", Message: &tm})
+	if r.Reg != nil {
+		r.Reg.logEvent(s, "thinking", "thinking", body, "", "", "", nil, nil, nil, nil, &latencyMs, "", "")
+	}
+}
+
 // advisory emits UI harness chip + DB event; never writes to session MD transcript body intentionally.
+// Must not be called while holding s.mu — appendStep and publishTurnProgress lock again.
 func (r *Runner) advisory(s *Session, note string) {
 	s.publish(Event{Type: "harness", Status: note})
 	s.appendStep(TurnStep{Kind: "advisory", Detail: truncateOneLine(note, 200)})
@@ -1088,6 +1152,37 @@ func shouldAutoTitleLocked(s *Session) bool {
 		return false
 	}
 	return true
+}
+
+// recordToolResultLocked appends the tool UI row + model history.
+// Caller MUST hold s.mu. Do not call advisory/appendStep/Progress here.
+// If the model cannot see images, image parts are stripped and omitNote is set
+// so the caller can advisory() after unlocking.
+func recordToolResultLocked(s *Session, name, callID, toolResult string, capImages bool) (tm Message, omitNote string) {
+	tid := s.nextID("t")
+	modelContent := toolResultContent(toolResult)
+	if !capImages && modelContent.HasImages() {
+		modelContent = model.ContentFromText(toolResult +
+			"\n[harness] WARNING: active model CapImages=false — screenshot was stored for the UI but NOT sent to the model. Switch this session to a vision-capable model (model_list / session_set_model) to see peer screenshots.")
+		omitNote = "[harness] computer screenshot omitted from model context: active model has no image support — switch to a vision model to use desktop screenshots"
+	}
+	tm = Message{
+		ID:          tid,
+		Role:        "tool",
+		Content:     fmt.Sprintf("%s → %s", name, compact(toolResult, 400)),
+		ToolName:    name,
+		ToolCallID:  callID,
+		CreatedAt:   time.Now(),
+		Attachments: uiAttachmentsFromToolResult(toolResult),
+	}
+	s.appendUI(tm)
+	s.history = append(s.history, model.Message{
+		Role:       "tool",
+		Content:    modelContent,
+		ToolCallID: callID,
+		Name:       name,
+	})
+	return tm, omitNote
 }
 
 func compact(s string, n int) string {

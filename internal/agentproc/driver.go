@@ -87,7 +87,9 @@ func (grokDriver) BuildArgv(req Request, cfg DriverConfig) ([]string, error) {
 		argv = append(argv, "--always-approve")
 	}
 	argv = append(argv, cfg.DefaultArgs...)
+	// Extra args override defaults for the same flag (avoid "cannot be used multiple times").
 	argv = append(argv, filterExtra(req.ExtraArgs, grokExtraAllow)...)
+	argv = dedupeFlagsLastWins(argv)
 	return argv, nil
 }
 
@@ -164,6 +166,7 @@ func (claudeDriver) BuildArgv(req Request, cfg DriverConfig) ([]string, error) {
 	}
 	argv = append(argv, cfg.DefaultArgs...)
 	argv = append(argv, filterExtra(req.ExtraArgs, claudeExtraAllow)...)
+	argv = dedupeFlagsLastWins(argv)
 	return argv, nil
 }
 
@@ -190,6 +193,7 @@ var grokExtraAllow = map[string]bool{
 	"--no-subagents": true, "--worktree": true, "--worktree-ref": true,
 	"--ref": true, "--rules": true, "--verbatim": true, "--tools": true,
 	"--sandbox": true, "--reasoning-effort": true, "--effort": true,
+	"--no-plan": true, "--permission-mode": true, "--debug-file": true,
 }
 
 var claudeExtraAllow = map[string]bool{
@@ -217,6 +221,91 @@ func filterExtra(extra []string, allow map[string]bool) []string {
 		if !strings.Contains(a, "=") && i+1 < len(extra) && !strings.HasPrefix(extra[i+1], "-") {
 			out = append(out, extra[i+1])
 			i++
+		}
+	}
+	return out
+}
+
+// dedupeFlagsLastWins collapses repeated CLI flags so DefaultArgs + ExtraArgs
+// don't pass e.g. --max-turns twice (grok exits 2: "cannot be used multiple times").
+// Keeps first non-flag tokens (binary, -p, prompt) in order; for each flag key,
+// the last occurrence (and its value) wins.
+func dedupeFlagsLastWins(argv []string) []string {
+	if len(argv) == 0 {
+		return argv
+	}
+	type item struct {
+		flag string
+		val  string // empty if boolean flag
+		hasV bool
+	}
+	var head []string
+	var flags []item
+	seen := map[string]int{} // flag key -> index in flags
+
+	i := 0
+	// Keep program path and everything until we've passed -p <prompt> if present.
+	for i < len(argv) {
+		a := argv[i]
+		if strings.HasPrefix(a, "-") && a != "-" {
+			break
+		}
+		head = append(head, a)
+		i++
+	}
+	for i < len(argv) {
+		a := argv[i]
+		if a == "-p" || a == "--" {
+			head = append(head, a)
+			i++
+			if i < len(argv) {
+				head = append(head, argv[i])
+				i++
+			}
+			continue
+		}
+		if !strings.HasPrefix(a, "-") {
+			head = append(head, a)
+			i++
+			continue
+		}
+		key := a
+		val := ""
+		hasV := false
+		if strings.Contains(a, "=") {
+			parts := strings.SplitN(a, "=", 2)
+			key = parts[0]
+			val = parts[1]
+			hasV = true
+			// store as separate flag+value for clarity
+			a = key
+		} else if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
+			// value-taking flags we know about
+			switch key {
+			case "--output-format", "--cwd", "-m", "--model",
+				"--max-turns", "--effort", "--reasoning-effort",
+				"--worktree", "--worktree-ref", "--ref", "--rules",
+				"--tools", "--sandbox", "--permission-mode", "--debug-file",
+				"--allowedTools", "--disallowedTools", "--append-system-prompt":
+				hasV = true
+				val = argv[i+1]
+				i++
+			}
+		}
+		it := item{flag: a, val: val, hasV: hasV}
+		if idx, ok := seen[key]; ok {
+			flags[idx] = it
+		} else {
+			seen[key] = len(flags)
+			flags = append(flags, it)
+		}
+		i++
+	}
+	out := append([]string{}, head...)
+	for _, it := range flags {
+		out = append(out, it.flag)
+		if it.hasV {
+			out = append(out, it.val)
 		}
 	}
 	return out

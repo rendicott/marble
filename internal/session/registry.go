@@ -9,6 +9,7 @@ import (
 
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/memory"
+	"github.com/rendicott/marble/internal/model"
 )
 
 // Registry holds live sessions and coordinates persistence.
@@ -84,6 +85,18 @@ func (r *Registry) SetComputerID(sessionID, computerID string) error {
 	s.dirty = true
 	s.mu.Unlock()
 	return r.PersistSession(s)
+}
+
+// SetLastPeerAction records the latest computer_* blurb on a loaded session (session info).
+func (r *Registry) SetLastPeerAction(sessionID, summary string) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	s, ok := r.Get(sessionID)
+	if !ok {
+		return
+	}
+	s.SetLastPeerAction(summary)
 }
 
 // Runner returns the agent runner (may be nil before wire).
@@ -179,6 +192,28 @@ func (r *Registry) SetSessionTitle(id, title string) (*Session, error) {
 	return s, nil
 }
 
+// SetSessionReasoningEffort sets none|low|medium|high (empty clears to provider default).
+// Allowed while busy so operator can adjust mid-turn for the next model call.
+func (r *Registry) SetSessionReasoningEffort(id, effort string) (*Session, error) {
+	raw := strings.TrimSpace(effort)
+	norm := model.NormalizeReasoningEffort(raw)
+	if raw != "" && norm == "" {
+		return nil, fmt.Errorf("reasoning_effort must be none, low, medium, or high")
+	}
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.ReasoningEffort = norm
+	s.UpdatedAt = time.Now()
+	s.dirty = true
+	s.mu.Unlock()
+	_ = r.PersistSession(s)
+	r.syncSessionRow(s)
+	return s, nil
+}
+
 // Get returns a loaded live session.
 func (r *Registry) Get(id string) (*Session, bool) {
 	r.mu.RLock()
@@ -220,17 +255,27 @@ func (r *Registry) EnsureLoaded(id string) (*Session, error) {
 // List returns session summaries (live + disk), newest first.
 func (r *Registry) List() []Summary {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+	live := make([]*Session, 0, len(r.sessions))
+	for _, s := range r.sessions {
+		live = append(live, s)
+	}
+	disk := make([]memory.SessionMeta, 0, len(r.diskIndex))
+	for _, m := range r.diskIndex {
+		disk = append(disk, m)
+	}
+	r.mu.RUnlock()
 
 	seen := make(map[string]bool)
-	out := make([]Summary, 0, len(r.sessions)+len(r.diskIndex))
+	out := make([]Summary, 0, len(live)+len(disk))
+	liveByID := make(map[string]*Session, len(live))
 
-	for _, s := range r.sessions {
+	for _, s := range live {
 		out = append(out, s.Summary())
 		seen[s.ID] = true
+		liveByID[s.ID] = s
 	}
-	for id, m := range r.diskIndex {
-		if seen[id] {
+	for _, m := range disk {
+		if seen[m.ID] {
 			continue
 		}
 		kind := m.Kind
@@ -278,8 +323,8 @@ func (r *Registry) List() []Summary {
 					}
 				}
 				// preserve busy/loaded from live
-				if live, ok := r.sessions[row.ID]; ok {
-					ls := live.Summary()
+				if liveSess, ok := liveByID[row.ID]; ok {
+					ls := liveSess.Summary()
 					sum.Busy = ls.Busy
 					sum.Loaded = true
 				}
@@ -568,9 +613,13 @@ func (r *Registry) PersistDirty() (flushed int, err error) {
 // DirtyCount returns number of dirty live sessions.
 func (r *Registry) DirtyCount() int {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	n := 0
+	list := make([]*Session, 0, len(r.sessions))
 	for _, s := range r.sessions {
+		list = append(list, s)
+	}
+	r.mu.RUnlock()
+	n := 0
+	for _, s := range list {
 		if s.IsDirty() {
 			n++
 		}

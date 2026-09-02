@@ -317,7 +317,11 @@ func (m *Manager) summarize(sessionID string) {
 	}
 	// Dedicated short-output client so thinking models don't burn huge max_tokens.
 	const clerkMaxTokens = 1536
-	client := model.New(base.BaseURL, base.Model, clerkMaxTokens, base.APIKey)
+	to := base.HTTPTimeout()
+	if to <= 0 {
+		to = model.DefaultHTTPTimeout
+	}
+	client := model.New(base.BaseURL, base.Model, clerkMaxTokens, base.APIKey, to)
 
 	s, err := m.Reg.EnsureLoaded(sessionID)
 	if err != nil || s == nil {
@@ -333,7 +337,8 @@ func (m *Manager) summarize(sessionID string) {
 		transcript = "(empty transcript)"
 	}
 	prompt := `You maintain a short operator dashboard entry for one Marble agent session.
-Given recent transcript, return ONLY JSON (no markdown fences, no prose):
+Reply with ONE JSON object only — no markdown fences, no preamble, no chain-of-thought.
+Exact shape:
 {"summary":"≤120 chars plain language","needs_user":true|false,"action_items":["…"]}
 Rules:
 - needs_user=true if the agent is waiting on a choice, approval, OTP, missing input, or an explicit question to the human.
@@ -341,6 +346,7 @@ Rules:
 - For needs_user, summary should state the decision crisply (e.g. "foo or bar?").
 - For idle done, summary should be outcome-oriented (e.g. "foo done").
 - action_items: short bullets the human must act on; empty array if none.
+- summary must be plain text (no markdown tables, no code fences).
 
 Transcript:
 ` + transcript
@@ -348,14 +354,19 @@ Transcript:
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	msgs := []model.Message{
-		{Role: "system", Content: model.ContentFromText("You output only compact JSON for a session dashboard. No thinking aloud.")},
+		{Role: "system", Content: model.ContentFromText("Output only a single JSON object for a session dashboard. No thinking, no markdown.")},
 		{Role: "user", Content: model.ContentFromText(prompt)},
 	}
 	start := time.Now()
-	result, err := client.Chat(ctx, msgs, nil)
+	// Disable thinking / CoT for structured JSON — Qwen otherwise often returns
+	// prose (or reasoning-only) and Clerk shows "parse: no JSON object…".
+	result, err := client.ChatWithOpts(ctx, msgs, nil, model.ChatOpts{ReasoningEffort: "none"})
 	modelName := ""
 	if m.ProcessModelName != nil {
 		modelName = m.ProcessModelName()
+	}
+	if err == nil && strings.TrimSpace(result.ReasoningEffortNote) != "" {
+		log.Printf("clerk: %s %s", sessionID, result.ReasoningEffortNote)
 	}
 
 	var out sumOut
@@ -365,13 +376,15 @@ Transcript:
 		// KD6 fallback heuristics
 		out = fallbackFromSession(s)
 	} else {
-		raw := strings.TrimSpace(result.Message.Content.PlainText())
-		if raw == "" {
-			raw = strings.TrimSpace(result.Message.Reasoning)
-		}
-		if jerr := parseSumOut(raw, &out); jerr != nil {
-			sumErr = "parse: " + jerr.Error()
+		if jerr := parseSumOutFromMessage(result.Message, &out); jerr != nil {
 			out = fallbackFromSession(s)
+			// Heuristic fallback is fine for the roster; don't alarm the UI for
+			// parse misses when we still have a usable summary.
+			if strings.TrimSpace(out.Summary) == "" {
+				sumErr = "parse: " + jerr.Error()
+			} else {
+				log.Printf("clerk: parse miss %s (%v); using transcript fallback", sessionID, jerr)
+			}
 		}
 	}
 	out.Summary = clipRunes(strings.TrimSpace(out.Summary), maxSummaryRunes)
@@ -422,25 +435,120 @@ Transcript:
 		sessionID, out.NeedsUser, time.Since(start).Round(time.Millisecond), sumErr)
 }
 
-// parseSumOut extracts JSON object from model text (handles fences / trailing prose).
-func parseSumOut(raw string, out *sumOut) error {
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
-	if err := json.Unmarshal([]byte(raw), out); err == nil {
-		return nil
+func parseSumOutFromMessage(msg model.Message, out *sumOut) error {
+	candidates := []string{
+		strings.TrimSpace(msg.Content.PlainText()),
+		strings.TrimSpace(msg.Reasoning),
+		strings.TrimSpace(model.ThoughtText(msg)),
 	}
-	// Find outermost { … }
-	i := strings.Index(raw, "{")
-	j := strings.LastIndex(raw, "}")
-	if i >= 0 && j > i {
-		if err := json.Unmarshal([]byte(raw[i:j+1]), out); err == nil {
+	var last error
+	for _, raw := range candidates {
+		if raw == "" {
+			continue
+		}
+		if err := parseSumOut(raw, out); err == nil {
 			return nil
+		} else {
+			last = err
 		}
 	}
+	if last != nil {
+		return last
+	}
 	return fmt.Errorf("no JSON object in model output")
+}
+
+// parseSumOut extracts a sumOut JSON object from model text (fences / prose / nested braces).
+func parseSumOut(raw string, out *sumOut) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("empty model output")
+	}
+	// Strip common thinking wrappers / fences before scanning.
+	raw = stripClerkNoise(raw)
+	for _, cand := range jsonObjectCandidates(raw) {
+		var tmp sumOut
+		if err := json.Unmarshal([]byte(cand), &tmp); err != nil {
+			continue
+		}
+		if strings.TrimSpace(tmp.Summary) == "" {
+			continue
+		}
+		*out = tmp
+		return nil
+	}
+	return fmt.Errorf("no JSON object in model output")
+}
+
+func stripClerkNoise(s string) string {
+	s = strings.TrimSpace(s)
+	// ```json … ``` or ``` … ```
+	if strings.HasPrefix(s, "```") {
+		s = strings.TrimPrefix(s, "```json")
+		s = strings.TrimPrefix(s, "```JSON")
+		s = strings.TrimPrefix(s, "```")
+		if i := strings.LastIndex(s, "```"); i >= 0 {
+			s = s[:i]
+		}
+		s = strings.TrimSpace(s)
+	}
+	// Drop Qwen/DeepSeek-style think blocks if present.
+	for _, tag := range []string{"</think>", "</thinking>"} {
+		if i := strings.LastIndex(strings.ToLower(s), tag); i >= 0 {
+			s = strings.TrimSpace(s[i+len(tag):])
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+// jsonObjectCandidates returns brace-balanced {...} slices, preferring later
+// (final-answer) objects when models ramble then emit JSON.
+func jsonObjectCandidates(raw string) []string {
+	var out []string
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '{' {
+			continue
+		}
+		depth := 0
+		inStr := false
+		esc := false
+		for j := i; j < len(raw); j++ {
+			c := raw[j]
+			if inStr {
+				if esc {
+					esc = false
+					continue
+				}
+				if c == '\\' {
+					esc = true
+					continue
+				}
+				if c == '"' {
+					inStr = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inStr = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					out = append(out, raw[i:j+1])
+					i = j
+					goto next
+				}
+			}
+		}
+	next:
+	}
+	// Prefer last candidates first (final answer after CoT).
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
 }
 
 func fallbackFromSession(s *session.Session) sumOut {
@@ -521,7 +629,12 @@ func lastRoleContent(s *session.Session, role string) string {
 }
 
 func snippet(s string, max int) string {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	s = strings.TrimSpace(s)
+	// Soften markdown leftovers for dashboard chips.
+	s = strings.ReplaceAll(s, "```", " ")
+	s = strings.ReplaceAll(s, "**", "")
+	s = strings.ReplaceAll(s, "__", "")
+	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.Join(strings.Fields(s), " ")
 	return clipRunes(s, max)
 }

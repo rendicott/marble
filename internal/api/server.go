@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -21,6 +22,7 @@ import (
 	"github.com/rendicott/marble/internal/session"
 	"github.com/rendicott/marble/internal/shellpolicy"
 	"github.com/rendicott/marble/internal/tools"
+	"github.com/rendicott/marble/internal/tts"
 	"github.com/rendicott/marble/internal/web"
 	"github.com/rendicott/marble/internal/workspacefs"
 )
@@ -33,6 +35,7 @@ type Server struct {
 	Daemon   *session.Daemon
 	WS       *workspacefs.FS
 	MCP      *mcp.Manager
+	TTS      *tts.Manager
 	Policy   *shellpolicy.Policy
 	Tools    *tools.Registry
 	Mpub     *mpub.Store
@@ -72,6 +75,9 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/computers/", s.handleComputers)
 	s.Mux.HandleFunc("/api/clerk", s.handleClerk)
 	s.Mux.HandleFunc("/api/clerk/", s.handleClerk)
+	s.Mux.HandleFunc("/api/tts/status", s.handleTTSStatus)
+	// Tailscale-reachable confirm Accept/Deny (before SPA catch-all)
+	s.Mux.HandleFunc("/confirm/", s.handleConfirmPage)
 	// mpub before SPA catch-all (ADR-0009)
 	s.Mux.HandleFunc("/mpub", s.handleMpub)
 	s.Mux.HandleFunc("/mpub/", s.handleMpub)
@@ -150,7 +156,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	modelOK := true
 	modelErr := ""
 	if s.Client != nil {
-		if err := s.Client.Health(ctx); err != nil {
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := s.Client.Health(hctx)
+		cancel()
+		if err != nil {
 			modelOK = false
 			modelErr = err.Error()
 		}
@@ -195,6 +204,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.MCP != nil {
 		for k, v := range s.MCP.Health() {
 			out[k] = v
+		}
+	}
+	if s.TTS != nil {
+		st := s.TTS.Status()
+		out["tts_enabled"] = st.Enabled
+		out["tts_provider"] = st.Provider
+		out["tts_configured"] = st.Configured
+		out["tts_ready"] = st.Ready
+		if st.ReadyHint != "" {
+			out["tts_ready_hint"] = st.ReadyHint
+		}
+		if st.LastError != "" {
+			out["tts_last_error"] = st.LastError
 		}
 	}
 	if s.Mpub != nil {
@@ -294,6 +316,11 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionAttachments(w, r, id, parts[2:])
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "tts" {
+		// ADR-0027: allowed while busy — handler does not start a turn.
+		s.handleSessionTTS(w, r, id, parts[2:])
+		return
+	}
 
 	sess, err := s.Registry.EnsureLoaded(id)
 	if err != nil {
@@ -366,6 +393,7 @@ func (s *Server) handleSessionInfo(w http.ResponseWriter, r *http.Request, id st
 	if !info.Session.Cron && isCronTitle(info.Session.Title) {
 		info.Session.Cron = true
 	}
+	info.TTS = s.sessionTTSInfo(id)
 	writeJSON(w, http.StatusOK, info)
 }
 
@@ -431,15 +459,16 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request, id string) 
 
 func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		ModelID *string `json:"model_id"`
-		Title   *string `json:"title"`
+		ModelID         *string `json:"model_id"`
+		Title           *string `json:"title"`
+		ReasoningEffort *string `json:"reasoning_effort"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if body.ModelID == nil && body.Title == nil {
-		http.Error(w, "model_id or title required", http.StatusBadRequest)
+	if body.ModelID == nil && body.Title == nil && body.ReasoningEffort == nil {
+		http.Error(w, "model_id, title, or reasoning_effort required", http.StatusBadRequest)
 		return
 	}
 
@@ -478,6 +507,19 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 			return
 		}
 		auth.LogAction("session_set_model", "session="+id+" model_id="+*body.ModelID, u)
+	}
+
+	if body.ReasoningEffort != nil {
+		sess, err = s.Registry.SetSessionReasoningEffort(id, *body.ReasoningEffort)
+		if err != nil {
+			if strings.Contains(err.Error(), "reasoning_effort") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		auth.LogAction("session_set_reasoning", "session="+id+" effort="+*body.ReasoningEffort, u)
 	}
 
 	if sess == nil {

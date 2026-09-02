@@ -116,14 +116,25 @@ func (s *Server) getAttachment(w http.ResponseWriter, r *http.Request, sess *ses
 		mime, kind = m, k
 	}
 	inline := r.URL.Query().Get("inline") == "1"
-	// Safe GET policy (ADR-0019): never serve docs as text/html for inline display
+	// Safe GET policy (ADR-0019 + ADR-0027 Q6): images/audio may be inline; never serve docs as text/html
+	safeAudio := kind == "audio" || (strings.HasPrefix(mime, "audio/") && isInlineAudioMIME(mime))
 	if kind == "image" && inline && strings.HasPrefix(mime, "image/") && mime != "image/svg+xml" {
 		w.Header().Set("Content-Type", mime)
 		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
+	} else if safeAudio && isInlineAudioMIME(mime) {
+		// Audio: default inline so ExoPlayer / <audio> can stream (ADR-0027); ?inline=0 forces download
+		forceAttach := r.URL.Query().Get("inline") == "0"
+		w.Header().Set("Content-Type", mime)
+		if forceAttach {
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+		} else {
+			w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
+		}
 	} else {
-		// documents always attachment + text/plain when text-ish
+		// documents always attachment + text/plain when text-ish.
+		// Never serve image/svg+xml (XSS); treat like stored HTML.
 		ct := "application/octet-stream"
-		if strings.HasPrefix(mime, "text/") || mime == "application/json" || mime == "text/html" || mime == "text/markdown" {
+		if strings.HasPrefix(mime, "text/") || mime == "application/json" || mime == "text/html" || mime == "text/markdown" || mime == "image/svg+xml" {
 			ct = "text/plain; charset=utf-8"
 		}
 		w.Header().Set("Content-Type", ct)
@@ -132,6 +143,15 @@ func (s *Server) getAttachment(w http.ResponseWriter, r *http.Request, sess *ses
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func isInlineAudioMIME(mime string) bool {
+	switch strings.ToLower(strings.TrimSpace(mime)) {
+	case "audio/mpeg", "audio/mp3", "audio/mp4", "audio/wav", "audio/ogg", "audio/webm":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) deleteAttachment(w http.ResponseWriter, r *http.Request, sess *session.Session, attID string) {

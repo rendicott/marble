@@ -15,7 +15,8 @@ ExecStart=%h/src/marble/bin/marble-harness \
   --memory %h/.marble \
   --base-url http://127.0.0.1:8000/v1 \
   --model YourLocalModelId \
-  --addr :8080
+  --addr :8080 \
+  --public-url http://YOUR-TAILSCALE-HOST:8080
 Restart=on-failure
 RestartSec=3
 KillMode=control-group

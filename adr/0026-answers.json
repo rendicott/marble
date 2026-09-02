@@ -1,0 +1,88 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0026",
+  "title": "Transcript density — tools, timestamps, thinking",
+  "updated_at": "2026-08-13T13:57:11.405Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Collapsed by default: one-line tool chip; click header to expand full body.",
+      "notes": "",
+      "question": "Default tool density?",
+      "rec": "Collapsed by default: one-line tool chip; click header to expand full body."
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No turn-level tool accordion in v1; per-tool compact rows only. Revisit if still too tall.",
+      "notes": "",
+      "question": "Group all tools since last user message into one “N tools” accordion?",
+      "rec": "No turn-level tool accordion in v1; per-tool compact rows only. Revisit if still too tall."
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Expand all / collapse all control in transcript toolbar near session actions.",
+      "notes": "",
+      "question": "Expand-all control placement?",
+      "rec": "Expand all / collapse all control in transcript toolbar near session actions."
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Remember expand-default in localStorage first; promote to Settings key only if needed.",
+      "notes": "",
+      "question": "Persist “tools expanded by default”?",
+      "rec": "Remember expand-default in localStorage first; promote to Settings key only if needed."
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Same calendar day: time only (locale). Else short date + time. Full ISO in title tooltip.",
+      "notes": "",
+      "question": "Timestamp display format?",
+      "rec": "Same calendar day: time only (locale). Else short date + time. Full ISO in title tooltip."
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes — subtle timestamp on compact tool header as well as user/assistant.",
+      "notes": "",
+      "question": "Show timestamps on tool rows too?",
+      "rec": "Yes — subtle timestamp on compact tool header as well as user/assistant."
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Both: keep ADR-0010 turn card; add one live “⋯ thinking / running tool” line above it while busy.",
+      "notes": "",
+      "question": "Thinking status: in-transcript line vs only turn card?",
+      "rec": "Both: keep ADR-0010 turn card; add one live “⋯ thinking / running tool” line above it while busy."
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Yes, persist thinking but collapse in history like tool calls, expand all button expands thinking too while clicking on a single thinking line only expands that line",
+      "notes": "",
+      "question": "Persist thinking lines after the turn ends?",
+      "rec": "Ephemeral only — remove thinking line when turn goes idle; do not persist to MD or message list."
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Keep harness advisory bubbles as today; only phase/tool noise uses the ephemeral status line.",
+      "notes": "",
+      "question": "Demote harness advisories into the status strip?",
+      "rec": "Keep harness advisory bubbles as today; only phase/tool noise uses the ephemeral status line."
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Always show attachment/image chips on tool rows even when body is collapsed.",
+      "notes": "",
+      "question": "Screenshots on collapsed tool rows?",
+      "rec": "Always show attachment/image chips on tool rows even when body is collapsed."
+    }
+  }
+}

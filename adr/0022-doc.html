@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0022</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0022</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0022-long-turn-efficiency.md">Markdown</a>
+      <a href="0022-review.html">Review</a>
+      <a href="0022-answers.json">Answers</a>
+      <a href="0021-doc.html">← 0021</a>
+      <a href="0023-doc.html">0023 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0022-long-turn-efficiency-anti-thrash-escalation-tool-discipline-checklist-dod">ADR-0022: Long-Turn Efficiency — Anti-Thrash, Escalation, Tool Discipline, Checklist / DoD</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-08-01</td>
+</tr>
+<tr>
+<td><strong>Accepted</strong></td>
+<td>2026-08-02</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>agent-loop, tools, computer-use, anti-thrash, continuation, context, peer</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0005 (tools &amp; agent loop), ADR-0001 (inner loop), ADR-0010 (turn transparency), ADR-0013 (soul/system), ADR-0019 (attachments), ADR-0020 / <strong>0021</strong> (peer computer-use)</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>Session <code>0wc5p9dwyv</code> (Princess Dance / Play Console): ~639 tool rounds, 165/179 <code>browser_act</code> were raw <code>eval</code>, ~115 sleep-only shells, zero <code>computer_confirm</code>, zero <code>wait</code> / <code>set_input_files</code>, repeated identical desktop coords, turn deaths at 15m wall / 80 iters before later limit raises</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0022-answers.json</code> (<code>2026-08-02T01:23:00.354Z</code>) — all Q1–Q12 locked</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0022-review.html">0022-review.html</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="overview">Overview</h2>
+<p>Long multi-tool turns (computer-use, research, multi-system ops) currently <strong>survive</strong> better after soft/hard wall and auto-continuation work, but still <strong>waste</strong> large fractions of rounds on:</p>
+<ol>
+<li><strong>Identical retries</strong> (same tool args / same screen coordinates) with no progress  </li>
+<li><strong>Low-level reinvention</strong> of higher tools (<code>eval</code> + <code>sleep</code> instead of <code>wait</code> / <code>click_text</code> / <code>set_input_files</code>)  </li>
+<li><strong>No escalation</strong> when a UI will not yield (never <code>computer_confirm</code>, never a one-step human ask)  </li>
+<li><strong>No durable plan / definition of done</strong>, so the agent re-tours the same pages and re-celebrates partial API success  </li>
+<li><strong>Context bloat</strong> (screenshots + eval dumps) that soft-warns but rarely changes structure  </li>
+<li><strong>Continuation that only says “keep going”</strong>, replaying the same thrash  </li>
+</ol>
+<p>This ADR defines <strong>general-purpose</strong> harness + peer + prompt policies for <strong>all</strong> long tasks—not Play Console specifically—in four priority bands:</p>
+<table>
+<thead>
+<tr>
+<th>Band</th>
+<th>Theme</th>
+<th>Intent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P0</strong></td>
+<td>Hard anti-thrash + stuck→escalate</td>
+<td>Stop pure loops; force a different move or a human</td>
+</tr>
+<tr>
+<td><strong>P1</strong></td>
+<td>Tool discipline + rich auto-continue</td>
+<td>Prefer right primitives; continue with <strong>state</strong>, not slogans</td>
+</tr>
+<tr>
+<td><strong>P2</strong></td>
+<td>Peer host-chrome + eval demotion</td>
+<td>Cheap environmental fixes; make bad defaults harder</td>
+</tr>
+<tr>
+<td><strong>P3</strong></td>
+<td>Checklist / DoD / compact / skills</td>
+<td>Plan, verify, remember; teach patterns once</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Architecture principle:</strong> efficiency is a <strong>loop + tool contract</strong> problem first. Raising <code>--max-tool-iters</code> and <code>--hard-wall</code> alone only buys more thrash. Policies must be <strong>fail-closed on repetition</strong> and <strong>fail-open toward confirmation and structured tools</strong>.</p>
+<h2 id="background-motivation">Background &amp; Motivation</h2>
+<h3 id="observed-failure-modes-session-0wc5p9dwyv-generalizable">Observed failure modes (session <code>0wc5p9dwyv</code>, generalizable)</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>What happened</th>
+<th>General form</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Eval-as-browser</td>
+<td>165× <code>action=eval</code> for click/read/dismiss</td>
+<td>Model treats CDP as a JS REPL</td>
+</tr>
+<tr>
+<td>Sleep-as-wait</td>
+<td>~115× <code>shell_execute</code> = <code>sleep N</code></td>
+<td>Polling without a condition</td>
+</tr>
+<tr>
+<td>Coord thrash</td>
+<td>Same <code>(x,y)</code> desktop click 7–9×</td>
+<td>Blind GUI retry</td>
+</tr>
+<tr>
+<td>Overlay thrash</td>
+<td>Escape + “Restore pages?” forever</td>
+<td>Host chrome steals agency</td>
+</tr>
+<tr>
+<td>No confirm</td>
+<td><code>computer_confirm</code> never used</td>
+<td>Stuck SPA never escalates</td>
+</tr>
+<tr>
+<td>Wrong layer</td>
+<td>Hours of UI after API already uploaded AAB</td>
+<td>GUI before API/scripts</td>
+</tr>
+<tr>
+<td>Weak DoD</td>
+<td>“Release completed” ≠ user can install</td>
+<td>Provider truth ≠ user truth</td>
+</tr>
+<tr>
+<td>Empty continue</td>
+<td>User typed Continue; agent replayed Family checkbox</td>
+<td>No transferred state</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-already-shipped-context-not-this-adrs-scope-to-re-decide">What already shipped (context; not this ADR’s scope to re-decide)</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Soft wall default 20m, throttled</td>
+<td>Live</td>
+</tr>
+<tr>
+<td>Hard wall configurable (e.g. 2h)</td>
+<td>Live</td>
+</tr>
+<tr>
+<td>Max tool iters higher (e.g. 200) + soft 150</td>
+<td>Live</td>
+</tr>
+<tr>
+<td><code>--auto-continue-reserve</code> near max → schedule continuation</td>
+<td>Live</td>
+</tr>
+<tr>
+<td>Browser <code>wait</code>, <code>set_input_files</code>, post-click mini snapshot</td>
+<td>Peer + specs (underused by models)</td>
+</tr>
+<tr>
+<td>Screenshot-gated desktop click + post-click auto-shot</td>
+<td>Live</td>
+</tr>
+<tr>
+<td>CDP-fail auto-screenshot</td>
+<td>Live</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Gap:</strong> survival ≠ efficiency. This ADR closes the efficiency gap.</p>
+<h2 id="goals-non-goals">Goals &amp; Non-Goals</h2>
+<h3 id="goals">Goals</h3>
+<ol>
+<li><strong>Detect no-progress loops</strong> at the harness (tool name + args fingerprint, optional desktop coords) and <strong>hard-fail</strong> the tool with a directive to change approach or confirm.  </li>
+<li><strong>Escalate stuck GUI</strong> after a small fixed number of failures of the same class → prefer <code>computer_confirm</code> / user one-step, not more coords.  </li>
+<li><strong>Discourage sleep-only shell</strong> and <strong>default eval-for-click/read</strong> via tool results + specs + optional soft blocks.  </li>
+<li><strong>Enrich auto-continuation</strong> with last checklist, URL, failure mode, and a ban list of recently failed fingerprints.  </li>
+<li><strong>Peer:</strong> dismiss common host overlays once per navigation; return <strong>before/after</strong> success signals on actions.  </li>
+<li><strong>Checklist / DoD</strong> for multi-step work: durable artifact + verification against user-visible outcome.  </li>
+<li><strong>Context hygiene:</strong> compact or strip bulky tool payloads on long computer-use turns without losing the plan.  </li>
+<li>Policies work for <strong>filesystem/shell/research</strong> tasks as well as computer-use (fingerprints are tool-agnostic).</li>
+</ol>
+<h3 id="non-goals-v1-of-this-adr">Non-goals (v1 of this ADR)</h3>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Perfect intent classification / ML thrash detector</td>
+<td>Rule-based fingerprints first</td>
+</tr>
+<tr>
+<td>Replacing model judgment entirely</td>
+<td>Harness only blocks <em>obvious</em> no-progress</td>
+</tr>
+<tr>
+<td>Auto-clicking money/OTP without confirm</td>
+<td>Safety unchanged (ADR-0020 KD12)</td>
+</tr>
+<tr>
+<td>Guaranteeing Play Console automation</td>
+<td>Product UIs remain hard; escalation is the exit</td>
+</tr>
+<tr>
+<td>Changing max iters / hard wall defaults again</td>
+<td>Orthogonal; already operator-tunable</td>
+</tr>
+<tr>
+<td>Multi-peer / multi-monitor</td>
+<td>Still ADR-0020 scope</td>
+</tr>
+</tbody>
+</table>
+<h2 id="priority-bands-implementation-contract">Priority bands (implementation contract)</h2>
+<h3 id="p0-must-ship-first-stop-bleeding">P0 — Must ship first (stop bleeding)</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Change</th>
+<th>Owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P0.1</strong></td>
+<td><strong>Anti-repeat:</strong> if same tool fingerprint succeeds or fails <strong>N</strong> times in a sliding window (or consecutive) with no state delta, return hard tool error</td>
+<td>Harness <code>tools.Registry</code> / turn context</td>
+</tr>
+<tr>
+<td><strong>P0.2</strong></td>
+<td><strong>Stuck→escalate:</strong> after <strong>K</strong> computer-use failures of the same class (or anti-repeat trip), inject mandatory advisory: call <code>computer_confirm</code> or ask user one step; optionally <strong>block</strong> further identical desktop/browser clicks until confirm or different action class</td>
+<td>Harness loop + tools</td>
+</tr>
+<tr>
+<td><strong>P0.3</strong></td>
+<td><strong>Strategy break at auto-continue:</strong> when near max-iters or hard-wall auto-continue fires, require summary + forbidden-retry list in continuation prompt (not only “resume”)</td>
+<td>Harness <code>autoStopAndContinue</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="p1-high-roi-next">P1 — High ROI next</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Change</th>
+<th>Owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P1.1</strong></td>
+<td><strong>Sleep-only shell:</strong> detect <code>command</code> that is only <code>sleep</code> / <code>timeout</code>; return error or strong rewrite hint → use <code>browser_act wait</code> / structured poll</td>
+<td>Harness shell tool</td>
+</tr>
+<tr>
+<td><strong>P1.2</strong></td>
+<td><strong>Promote wait / set_input_files / click_text</strong> in specs + ephemeral advisories when model uses eval/sleep for those jobs</td>
+<td>Specs + loop advisories</td>
+</tr>
+<tr>
+<td><strong>P1.3</strong></td>
+<td><strong>Rich auto-continue payload:</strong> last N tool names, last URL (if any), last error, fingerprint ban list, optional checklist blob from turn context</td>
+<td>Harness</td>
+</tr>
+<tr>
+<td><strong>P1.4</strong></td>
+<td><strong>Action success criteria</strong> on browser/desktop results: URL before/after, primary button disabled?, mini snapshot already partial—standardize</td>
+<td>Peer + harness pass-through</td>
+</tr>
+</tbody>
+</table>
+<h3 id="p2-environmental-defaults">P2 — Environmental &amp; defaults</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Change</th>
+<th>Owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P2.1</strong></td>
+<td><strong>Dismiss host overlays once</strong> (Chrome restore, “Not now”, peer confirm noise) on browser open / ensure</td>
+<td>Peer</td>
+</tr>
+<tr>
+<td><strong>P2.2</strong></td>
+<td><strong>Eval demotion:</strong> <code>eval</code> allowed; if used for click/type when <code>click_text</code>/<code>type</code> would do, return soft warning + count toward thrash class</td>
+<td>Harness and/or peer</td>
+</tr>
+<tr>
+<td><strong>P2.3</strong></td>
+<td><strong>Screenshot/wait budgets:</strong> cap consecutive pure screenshots or pure waits per turn; force decision/confirm/user update</td>
+<td>Harness</td>
+</tr>
+</tbody>
+</table>
+<h3 id="p3-structure-learning">P3 — Structure &amp; learning</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Change</th>
+<th>Owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P3.1</strong></td>
+<td><strong>Checklist artifact</strong> for multi-step turns: create/update <code>$MEMORY</code> or session-scoped checklist; inject into advisories / auto-continue</td>
+<td>Harness tools or convention + soul</td>
+</tr>
+<tr>
+<td><strong>P3.2</strong></td>
+<td><strong>Definition of done = user-visible</strong> when user stated one; verification step before “done” celebration</td>
+<td>Prompt / soul + optional tool</td>
+</tr>
+<tr>
+<td><strong>P3.3</strong></td>
+<td><strong>Tool-blob compact:</strong> auto or aggressive compact of old tool results / images on long computer-use turns</td>
+<td>Loop (extends ADR-0005 auto-compact)</td>
+</tr>
+<tr>
+<td><strong>P3.4</strong></td>
+<td><strong>Skill pack</strong> “enterprise SPA / form wizards / file inputs via CDP”</td>
+<td>Skills tree + docs</td>
+</tr>
+</tbody>
+</table>
+<h2 id="key-decisions-locked-0022-answersjson-2026-08-02t012300354z">Key Decisions (locked — <code>0022-answers.json</code> 2026-08-02T01:23:00.354Z)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>KD1</strong></td>
+<td>Fingerprint anti-repeat <strong>opt-in</strong> (<code>--anti-repeat-n=0</code> default). Q1 originally preferred on; post-ship experience (polls of agent/URL/file size) showed false positives — <strong>default off</strong> (2026-08-02 amendment). Escalate/sleep/eval rails remain on.</td>
+<td><strong>Q1</strong> (amended)</td>
+</tr>
+<tr>
+<td><strong>KD2</strong></td>
+<td>Threshold <strong>N = 3 consecutive</strong> identical fingerprints (windowed 3-in-8 optional later)</td>
+<td><strong>Q2</strong></td>
+</tr>
+<tr>
+<td><strong>KD3</strong></td>
+<td>On trip: <strong>hard tool error</strong> (not silent skip); message names next allowed moves</td>
+<td>Fixed</td>
+</tr>
+<tr>
+<td><strong>KD4</strong></td>
+<td><strong>K = 3</strong> consecutive <code>computer_*</code> failures (timeout, not_found, anti-repeat, requires screenshot) → escalate lock; anti-repeat trip on computer_* may escalate immediately</td>
+<td><strong>Q3</strong></td>
+</tr>
+<tr>
+<td><strong>KD5</strong></td>
+<td>While <code>EscalateLock</code>: <strong>hard-block</strong> further desktop click / browser click*; allow confirm, snapshot, screenshot, open, shell/API, different class</td>
+<td><strong>Q4</strong></td>
+</tr>
+<tr>
+<td><strong>KD6</strong></td>
+<td>Sleep-only shell: <strong>hard reject</strong>; hint <code>browser_act wait</code>. Escape: <code>--block-sleep-shell=false</code></td>
+<td><strong>Q5</strong></td>
+</tr>
+<tr>
+<td><strong>KD7</strong></td>
+<td>Eval mutations: <strong>warn</strong>, then <strong>hard error after M=5</strong> mutate-evals in last 20 tools; suggest <code>click_text</code> / <code>type</code> / <code>set_input_files</code></td>
+<td><strong>Q6</strong></td>
+</tr>
+<tr>
+<td><strong>KD8</strong></td>
+<td>Auto-continue always carries <strong>state packet</strong> (checklist, URL, tools, ban list) when Cont available</td>
+<td>Fixed</td>
+</tr>
+<tr>
+<td><strong>KD9</strong></td>
+<td>Peer overlay dismiss: <strong>on by default</strong>, best-effort <strong>once per <code>browser_open</code></strong>, <code>overlays_dismissed</code> meta, no loop</td>
+<td><strong>Q7</strong></td>
+</tr>
+<tr>
+<td><strong>KD10</strong></td>
+<td>Checklist v1: <strong>convention + soft advisory</strong> (file/memory); no new tool/schema yet</td>
+<td><strong>Q8</strong></td>
+</tr>
+<tr>
+<td><strong>KD11</strong></td>
+<td>Anti-repeat applies to <strong>all tools</strong>; escalate lock is <strong>computer*-centric</strong></td>
+<td><strong>Q9</strong></td>
+</tr>
+<tr>
+<td><strong>KD12</strong></td>
+<td>v1 CLI + settings read-only: <code>--anti-repeat-n</code>, <code>--block-sleep-shell</code>, <code>--stuck-escalate-k</code>, <code>--eval-mutate-max</code></td>
+<td><strong>Q10</strong></td>
+</tr>
+<tr>
+<td><strong>KD13</strong></td>
+<td>Extra auto-compact when toolRounds high <strong>and ≥50% of last 20 tools are computer*</strong>; keep checklist + last L</td>
+<td><strong>Q11</strong></td>
+</tr>
+<tr>
+<td><strong>KD14</strong></td>
+<td>Anti-repeat counts <strong>identical successful calls</strong> (e.g. re-open same URL 3×); different args / real state change OK</td>
+<td><strong>Q12</strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="proposed-design">Proposed Design</h2>
+<h3 id="1-turn-scoped-thrash-state-toolsturncontext">1. Turn-scoped thrash state (<code>tools.TurnContext</code>)</h3>
+<pre><code class="language-text">TurnContext {
+  ...
+  Fingerprints []FingerprintEvent  // ring buffer, e.g. last 32
+  ThrashScore  int
+  EscalateLock bool   // when true, only confirm / non-repeat / different class
+  Checklist    string // optional markdown/json blob
+  LastURL      string
+  LastFailure  string
+  BanList      []string // fingerprints forbidden until approach change
+}
+</code></pre>
+<p><strong>Fingerprint</strong> (canonical string):</p>
+<pre><code class="language-text">tool_name + &quot;\0&quot; + normalized_args_json
+</code></pre>
+<p>Normalization:</p>
+<ul>
+<li>Drop volatile keys (<code>computer_id</code> optional keep for multi-peer)  </li>
+<li>For <code>shell_execute</code>: collapse whitespace; treat pure sleep specially  </li>
+<li>For <code>computer_desktop_act</code> click: <code>click|x|y|button</code>  </li>
+<li>For <code>computer_browser_act</code>: <code>action|target|text_prefix(80)|x|y</code>  </li>
+<li>Cap JSON length (e.g. 512) with stable hash of overflow  </li>
+</ul>
+<p><strong>v1 rule (KD2, KD14):</strong> <strong>consecutive identical fingerprints only</strong>, including <strong>successful</strong> identical calls. Different args that imply real state change do not match. Optional later: clear consecutive counter on explicit state-delta fields (<code>url</code> / <code>title</code> / exit code) when those differ.</p>
+<h3 id="2-anti-repeat-algorithm-p01-locked-n3-all-tools-successes-count">2. Anti-repeat algorithm (P0.1) — locked N=3, all tools, successes count</h3>
+<p>On each <code>Registry.Execute</code> <strong>before</strong> running the tool:</p>
+<ol>
+<li>Compute fingerprint F.  </li>
+<li>If F ∈ BanList → error with ban reason.  </li>
+<li>Count <strong>consecutive trailing</strong> events with fingerprint == F (success or failure).  </li>
+<li>If count ≥ <strong>N=3</strong> (<code>--anti-repeat-n</code>, 0 disables) → do <strong>not</strong> call peer/shell; return:</li>
+</ol>
+<pre><code class="language-text">error: anti-repeat: tool X with same args used N times without progress.
+NEXT (pick one): (1) different action class (2) computer_confirm / ask user one step
+(3) API/script path (4) session_compact + re-plan. Forbidden: retry identical args.
+</code></pre>
+<ol start="5">
+<li>Else run tool; append FingerprintEvent{F, ok, summary}.</li>
+</ol>
+<p><strong>UI:</strong> harness advisory chip once per trip (not every model call).<br />
+<strong>Events:</strong> <code>session_events.kind = harness_advisory</code> or <code>tool_result</code> with error (prefer tool_result so the model sees it as tool output).</p>
+<h3 id="3-stuck-escalate-p02-locked-k3-hard-block-clicks">3. Stuck → escalate (P0.2) — locked K=3, hard-block clicks</h3>
+<p><strong>Triggers (any):</strong></p>
+<ul>
+<li>Anti-repeat trip on <code>computer_*</code> (immediate stuck)  </li>
+<li><strong>K=3</strong> consecutive <code>computer_*</code> failures (timeout, not_found, anti-repeat, requires screenshot, etc.) — <strong>KD4 / Q3</strong>  </li>
+<li>ThrashScore ≥ threshold (implementation detail; optional)</li>
+</ul>
+<p><strong>Effects (KD5 / Q4):</strong></p>
+<ol>
+<li>Set <code>EscalateLock</code> until: successful <code>computer_confirm</code>, user message arrives (new turn clears), or model uses a <strong>different action class</strong> (e.g. shell API script vs desktop click).  </li>
+<li>Inject system advisory every model call while locked.  </li>
+<li><strong>Hard-block</strong> further <code>computer_desktop_act</code> <strong>click</strong> and <code>computer_browser_act</code> click* (<code>click</code>, <code>click_text</code>, and mutate-<code>eval</code> if classified as click).  </li>
+<li><strong>Still allowed:</strong> <code>computer_confirm</code>, <code>computer_screenshot</code>, <code>computer_browser_snapshot</code>, <code>computer_browser_open</code> / tabs / ensure, shell/API, type/key when not same-class thrash, non-computer tools.</li>
+</ol>
+<p><strong>Never auto-accept confirm.</strong> Timeout deny remains ADR-0020.</p>
+<h3 id="4-strategy-break-rich-auto-continue-p03-p13">4. Strategy break + rich auto-continue (P0.3 / P1.3)</h3>
+<p>When <code>autoStopAndContinue</code> runs, build prompt:</p>
+<pre><code class="language-text">[harness auto-continuation]
+Why: &lt;reason&gt;
+Progress checklist:
+&lt;Checklist or &quot;(none — create one)&quot;&gt;
+Last URL: ...
+Last tools: t1, t2, ...
+Last failure: ...
+Ban (do not retry): fingerprint1, ...
+Rules: Do not restart completed steps. Do not retry ban list.
+Prefer API/script over GUI. If UI stuck → computer_confirm one step.
+When user-visible DoD met → final summary to user.
+</code></pre>
+<p>Also write a short <strong>assistant</strong> forced-end message (already partially implemented) noting continuation id.</p>
+<h3 id="5-sleep-only-shell-p11-hard-reject-kd6-q5">5. Sleep-only shell (P1.1) — hard reject (KD6 / Q5)</h3>
+<p>If <code>shell_execute</code> command matches:</p>
+<pre><code class="language-regex">^\s*(sleep|timeout)\s+\d+(\.\d+)?\s*$
+</code></pre>
+<p>(or only pure-delay variants) → <strong>hard reject</strong>:</p>
+<pre><code class="language-text">error: sleep-only shell is blocked. Use computer_browser_act action=wait
+(text=…, target=…, x=timeout_ms) or poll a real condition.
+</code></pre>
+<p>Escape: <code>--block-sleep-shell=false</code> (<strong>KD12 / Q10</strong>). Real scripts that embed sleep among other commands remain allowed.</p>
+<h3 id="6-eval-demotion-p22-warn-then-hard-at-m5-20-kd7-q6">6. Eval demotion (P2.2) — warn then hard at M=5 / 20 (KD7 / Q6)</h3>
+<p>If <code>browser_act</code> action is <code>eval</code> and expression matches mutation heuristics (<code>.click(</code>, <code>dispatchEvent</code>, <code>insertText</code>, setting <code>.value</code>) →  </p>
+<ul>
+<li>Always append warning + count as <code>eval_mutate</code>  </li>
+<li>If <strong>≥ M=5</strong> mutate-evals in <strong>last 20 tools</strong> → hard error suggesting <code>click_text</code> / <code>type</code> / <code>set_input_files</code>  </li>
+<li><code>--eval-mutate-max=0</code> = warn only  </li>
+</ul>
+<p>Read-only eval stays allowed; prefer <code>browser_snapshot</code> when enough.</p>
+<h3 id="7-peer-overlay-dismiss-p21-on-by-default-kd9-q7">7. Peer overlay dismiss (P2.1) — on by default (KD9 / Q7)</h3>
+<p>On <code>browser_open</code> (and optionally ensure):</p>
+<ol>
+<li>Best-effort dismiss known strings: “Restore”, “Not now”, “Close” on chrome restore UI <strong>once</strong>.  </li>
+<li>Do not loop. Return <code>overlays_dismissed: [...]</code> in meta.  </li>
+<li>Desktop path: optional single Escape only if lock screen not active.  </li>
+<li>Peer flag to disable if needed.</li>
+</ol>
+<h3 id="8-checklist-dod-p31p32-convention-only-in-v1-kd10-q8">8. Checklist / DoD (P3.1–P3.2) — convention only in v1 (KD10 / Q8)</h3>
+<ul>
+<li>Agent should <code>file_write</code> or <code>memory_*</code> a checklist when task has ≥3 independent steps.  </li>
+<li>Harness may inject soft advisory if toolRounds ≥ soft/2 and no checklist in TurnContext: “create a short checklist now.”  </li>
+<li><strong>No</strong> <code>task_checklist_*</code> tool/schema in v1; add later if convention fails.</li>
+</ul>
+<p><strong>DoD:</strong> system/soul line:</p>
+<blockquote>
+<p>Prefer verifying the <strong>user-stated success condition</strong> (e.g. tester sees app) over provider-internal “completed” alone.</p>
+</blockquote>
+<h3 id="9-tool-blob-compact-p33-computer-heavy-path-kd13-q11">9. Tool-blob compact (P3.3) — computer-heavy path (KD13 / Q11)</h3>
+<p>Extend auto-compact triggers:</p>
+<ul>
+<li>Existing: usage ≥ 85% × 3 rounds  </li>
+<li><strong>New:</strong> toolRounds high <strong>and ≥50% of last 20 tools are <code>computer_*</code></strong> → compact earlier, keep <strong>checklist + last L</strong> messages  </li>
+</ul>
+<h3 id="10-kill-switches-flags-kd12-q10">10. Kill switches / flags (KD12 / Q10)</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--anti-repeat-n</code></td>
+<td><strong>3</strong></td>
+<td>0 disables P0.1 / anti-repeat</td>
+</tr>
+<tr>
+<td><code>--stuck-escalate-k</code></td>
+<td><strong>3</strong></td>
+<td>computer failures before escalate lock</td>
+</tr>
+<tr>
+<td><code>--block-sleep-shell</code></td>
+<td><strong>true</strong></td>
+<td>P1.1 hard reject pure sleep</td>
+</tr>
+<tr>
+<td><code>--eval-mutate-max</code></td>
+<td><strong>5</strong></td>
+<td>hard after M mutate-evals in last 20; 0 = warn only</td>
+</tr>
+<tr>
+<td><code>--auto-continue-reserve</code></td>
+<td>10</td>
+<td>existing</td>
+</tr>
+</tbody>
+</table>
+<p>Settings → runtime <strong>read-only</strong> display (like soft/hard wall).</p>
+<h2 id="interaction-with-existing-loop-policies">Interaction with existing loop policies</h2>
+<table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>Interaction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Soft tool-round advisory</td>
+<td>Keep; add “anti-repeat active; escalate if stuck”</td>
+</tr>
+<tr>
+<td>Auto-continue near max iters</td>
+<td>Keep; <strong>must</strong> use rich state packet</td>
+</tr>
+<tr>
+<td>Hard wall timeout auto-continue</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>Operator Stop</td>
+<td><strong>No</strong> auto-continue (existing); clear escalate lock on next user turn</td>
+</tr>
+<tr>
+<td>computer_confirm 120s deny</td>
+<td>Unchanged</td>
+</tr>
+<tr>
+<td>Screenshot-gated desktop click</td>
+<td>Unchanged; anti-repeat still applies to identical coords</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security-safety">Security &amp; safety</h2>
+<ul>
+<li>Anti-repeat must <strong>not</strong> auto-click through paywalls or confirms.  </li>
+<li>Escalate prefers <strong>human</strong> gates, not bypass.  </li>
+<li>Ban list is turn-scoped (memory of bad moves), not a global denylist of domains.  </li>
+<li>Sleep block must not break legitimate long <code>sleep</code> <strong>inside</strong> real scripts (only pure sleep commands).</li>
+</ul>
+<h2 id="observability">Observability</h2>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Anti-repeat trip</td>
+<td>tool_result error + optional harness_advisory</td>
+</tr>
+<tr>
+<td>Escalate lock on/off</td>
+<td>harness_advisory; turn progress message</td>
+</tr>
+<tr>
+<td>Sleep block</td>
+<td>tool_result error</td>
+</tr>
+<tr>
+<td>Overlay dismiss</td>
+<td>peer meta / browser_act text</td>
+</tr>
+<tr>
+<td>Auto-continue state size</td>
+<td>log line in harness</td>
+</tr>
+</tbody>
+</table>
+<p>Metrics (optional later): trips per session, mean tools-to-done for computer-bound sessions.</p>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Why not first</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Only raise max iters</td>
+<td>Observed: more thrash, not more done</td>
+</tr>
+<tr>
+<td>Only better prompts</td>
+<td>Helps; models still sleep/eval; need hard rails</td>
+</tr>
+<tr>
+<td>ML progress detector</td>
+<td>Overkill for v1</td>
+</tr>
+<tr>
+<td>Kill computer-use for hard sites</td>
+<td>Too absolute; confirm is the valve</td>
+</tr>
+<tr>
+<td>Always force confirm every N clicks</td>
+<td>Noisy; use stuck detection</td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-plan-pr-sized">Implementation plan (PR-sized)</h2>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Scope</th>
+<th>Band</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>L0</strong></td>
+<td>TurnContext fingerprints + anti-repeat N + tests</td>
+<td>P0.1</td>
+</tr>
+<tr>
+<td><strong>L1</strong></td>
+<td>Escalate lock + advisories + optional click block</td>
+<td>P0.2</td>
+</tr>
+<tr>
+<td><strong>L2</strong></td>
+<td>Rich auto-continue prompt + ban list</td>
+<td>P0.3 / P1.3</td>
+</tr>
+<tr>
+<td><strong>L3</strong></td>
+<td>Sleep-only shell block + flags + settings display</td>
+<td>P1.1</td>
+</tr>
+<tr>
+<td><strong>L4</strong></td>
+<td>Spec/advisory eval demotion + eval_mutate counter</td>
+<td>P1.2 / P2.2</td>
+</tr>
+<tr>
+<td><strong>L5</strong></td>
+<td>Peer overlay dismiss once + success meta</td>
+<td>P1.4 / P2.1</td>
+</tr>
+<tr>
+<td><strong>L6</strong></td>
+<td>Screenshot/wait budgets</td>
+<td>P2.3</td>
+</tr>
+<tr>
+<td><strong>L7</strong></td>
+<td>Checklist advisory + soul DoD line + skill stub</td>
+<td>P3.1–P3.2, P3.4</td>
+</tr>
+<tr>
+<td><strong>L8</strong></td>
+<td>Tool-blob compact trigger</td>
+<td>P3.3</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Suggested ship order:</strong> L0 → L1 → L2 → L3, then L5, then L4/L6/L7/L8.</p>
+<p><strong>Repos:</strong> harness + peer as noted; no monorepo merge of peer sources.</p>
+<h2 id="locked-questions-q1q12">Locked questions (Q1–Q12)</h2>
+<p>All answered 2026-08-02T01:23:00.354Z — see <code>adr/0022-answers.json</code> and KD table above. No open questions remain for v1 of this ADR.</p>
+<h2 id="success-metrics-post-implement">Success metrics (post-implement)</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Target (directional)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sleep-only shell calls / long computer session</td>
+<td>Near zero</td>
+</tr>
+<tr>
+<td>Max consecutive identical fingerprint</td>
+<td>≤ N−1</td>
+</tr>
+<tr>
+<td><code>computer_confirm</code> usage when stuck &gt;5 min wall</td>
+<td>Non-zero when UI stuck</td>
+</tr>
+<tr>
+<td>User “Continue” after silent death</td>
+<td>Down (auto-continue + forced end already help)</td>
+</tr>
+<tr>
+<td>Tools-to-checklist-complete for multi-step ops</td>
+<td>Down vs <code>0wc5p9dwyv</code>-class sessions</td>
+</tr>
+</tbody>
+</table>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-08-01</td>
+<td>Proposed from session <code>0wc5p9dwyv</code> analysis; P0–P3 bands; review UI for decisions</td>
+</tr>
+<tr>
+<td>2026-08-02</td>
+<td><strong>Accepted</strong> — all Q1–Q12 locked from review (<code>0022-answers.json</code>); KD1–KD14 written; ready to implement L0→L8</td>
+</tr>
+<tr>
+<td>2026-08-02</td>
+<td><strong>Amendment:</strong> default <code>--anti-repeat-n=0</code> (off). Identical-arg thrash rails too crude for legitimate monitoring/poll loops; keep escalate K, sleep-block, eval-mutate.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0005 tool loop soft/hard controls  </li>
+<li>ADR-0020 / 0021 computer-use peer  </li>
+<li>Session evidence: <code>~/.marble/session/0wc5p9dwyv.md</code>, <code>session_events</code> for <code>0wc5p9dwyv</code>  </li>
+<li>Live flags (informational): <code>--soft-wall</code>, <code>--hard-wall</code>, <code>--max-tool-iters</code>, <code>--auto-continue-reserve</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0022-long-turn-efficiency.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

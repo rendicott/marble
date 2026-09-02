@@ -173,6 +173,8 @@
           <button type="button" data-sec="runtime" class="sel">Runtime</button>
           <button type="button" data-sec="models">Models</button>
           <button type="button" data-sec="computers">Computers</button>
+          <button type="button" data-sec="secrets">Secrets</button>
+          <button type="button" data-sec="tts">TTS</button>
           <button type="button" data-sec="memory">Memory &amp; DB</button>
           <button type="button" data-sec="shell">Shell</button>
           <button type="button" data-sec="agent">Agent</button>
@@ -263,22 +265,46 @@
               <option value="">Process default</option>
             </select>
           </label>
+          <button type="button" id="btn-toggle-tools" class="icon-btn density-toggle" title="Expand tool results" aria-label="Toggle tool expansion" aria-pressed="false" disabled>🔧</button>
+          <div class="brain-wrap">
+            <button type="button" id="btn-toggle-thinking" class="icon-btn density-toggle" title="Expand thinking · right-click / long-press for reasoning level" aria-label="Toggle thinking expansion" aria-pressed="false" disabled>🧠</button>
+            <div id="reasoning-popover" class="reasoning-popover" hidden role="dialog" aria-label="Reasoning effort">
+              <div class="reasoning-pop-title">Reasoning</div>
+              <input type="range" id="reasoning-slider" class="reasoning-slider" min="0" max="3" step="1" value="0" />
+              <div class="reasoning-labels">
+                <span data-v="0">none</span>
+                <span data-v="1">low</span>
+                <span data-v="2">med</span>
+                <span data-v="3">high</span>
+              </div>
+              <div id="reasoning-value" class="reasoning-value muted">none</div>
+            </div>
+          </div>
           <button type="button" id="btn-session-info" class="icon-btn" title="Session info" aria-label="Session info" disabled>ⓘ</button>
           <div id="status-pill" class="pill idle">idle</div>
         </div>
       </header>
       <div id="transcript"></div>
+      <!-- Live thinking line (ADR-0026); JS places above turn card while busy -->
+      <div id="thinking-live" class="thinking-live" hidden aria-live="polite"></div>
       <!-- Host only: JS injects into #transcript after the user message for that turn -->
       <div id="turn-progress" class="turn-progress tp-parked" hidden>
         <div class="tp-bar">
           <div class="tp-title" id="tp-title">Turn</div>
           <div class="tp-actions">
-            <button type="button" id="tp-expand" class="icon-btn" hidden title="Expand steps">▸</button>
             <button type="button" id="tp-stop" class="tp-stop" title="Stop turn">■ Stop</button>
           </div>
         </div>
-        <div class="tp-body" id="tp-body"></div>
-        <div class="tp-steps" id="tp-steps" hidden></div>
+        <div class="tp-detail" id="tp-detail">
+          <div class="tp-body" id="tp-body"></div>
+          <div class="tp-steps" id="tp-steps" hidden></div>
+        </div>
+        <!-- Always at the bottom of the card (stable hit target while content updates) -->
+        <button type="button" id="tp-rollup" class="tp-rollup" hidden
+                aria-expanded="true"
+                title="Roll up turn card to see tools and thinking above">
+          ▴ Roll up
+        </button>
       </div>
       <form id="composer">
         <div id="attach-stage" class="attach-stage" hidden></div>
@@ -289,7 +315,7 @@
             <label class="attach-btn icon-btn" title="Attach image or document">
               📎
               <input type="file" id="attach-input" hidden multiple
-                accept="image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,text/csv,application/json,text/html,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,.html,.log" />
+                accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,text/plain,text/markdown,text/csv,application/json,text/html,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,.svg,.html,.log" />
             </label>
             <button id="btn-send" type="submit" disabled>Send</button>
           </div>

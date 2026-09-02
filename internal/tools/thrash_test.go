@@ -103,6 +103,36 @@ func TestFingerprintDesktopClick(t *testing.T) {
 	}
 }
 
+func TestNearDupDesktopClick(t *testing.T) {
+	r := &Registry{Thrash: DefaultThrashPolicy(), ThrashSet: true}
+	tc := &TurnContext{
+		ReadPaths:  map[string]bool{},
+		LastClickX: 695, LastClickY: 158, LastClickSet: true,
+		Thrash: &ThrashState{
+			Events: []FingerprintEvent{
+				{FP: "click|695|158|1", Name: "computer_desktop_act", OK: true},
+				{FP: "click|700|155|1", Name: "computer_desktop_act", OK: true},
+			},
+		},
+	}
+	err := r.preflightThrash("computer_desktop_act", `{"action":"click","x":685,"y":156,"button":"1"}`, tc)
+	if err == nil {
+		t.Fatal("expected near-dup block")
+	}
+	if !strings.Contains(err.Error(), "near-duplicate") {
+		t.Fatalf("got %v", err)
+	}
+	if !tc.Thrash.EscalateLock {
+		t.Fatal("expected escalate lock")
+	}
+}
+
+func TestIsComputerFailUIUnchanged(t *testing.T) {
+	if !isComputerFailResult(`{"ok":false,"ui_unchanged":true}`) {
+		t.Fatal("ui_unchanged should count as computer fail")
+	}
+}
+
 func TestContinuePacket(t *testing.T) {
 	tc := &TurnContext{Thrash: &ThrashState{
 		LastURL:     "https://example.com",

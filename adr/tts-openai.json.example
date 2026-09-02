@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "provider": "openai",
+  "api_key_env": "OPENAI_API_KEY",
+  "default_voice": "alloy",
+  "default_model": "gpt-4o-mini-tts",
+  "format": "mp3",
+  "cache": true,
+  "max_chars_per_request": 4000,
+  "max_concurrent": 2,
+  "eager_on_wonderstand_turn": false
+}

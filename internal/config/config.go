@@ -22,6 +22,9 @@ type Config struct {
 	MemoryCreated bool
 	PersistEvery  time.Duration
 	Addr          string
+	// PublicURL is the browser-reachable origin for this harness (e.g. Tailscale
+	// http://rinux.tail….ts.net:8080). Used for computer_confirm links. Empty = derive.
+	PublicURL string
 	// MaxToolIters is the hard stop for tool rounds per user turn (ADR-0005 Q1/Q30).
 	MaxToolIters int
 	// ToolRoundSoft is the soft advisory threshold (ADR-0005 Q1).
@@ -31,6 +34,9 @@ type Config struct {
 	// HardWall is the absolute turn deadline (context timeout). Long computer-use /
 	// Play Console turns often exceed 15m; soft wall is advisory only.
 	HardWall time.Duration
+	// ModelTimeout is the HTTP client timeout for a single chat/completions call
+	// (await headers + body). Independent of HardWall (whole turn). Default 30m.
+	ModelTimeout time.Duration
 	// AutoContinueReserve: when max-tool-iters remaining ≤ this, hard-stop the turn
 	// and schedule_continuation so work resumes automatically (0 = disabled).
 	AutoContinueReserve int
@@ -58,6 +64,9 @@ type Config struct {
 	MCPConfig  string // --mcp-config path (empty → $MEMORY/mcp.json)
 	MCPDisable bool
 	MCPTimeout time.Duration
+	// TTS (ADR-0027)
+	TTSConfig  string // --tts-config path (empty → $MEMORY/tts.json)
+	TTSDisable bool   // --tts-disable force off
 	// APIKeyEnv is the raw --api-key-env flag (comma-separated env var names). ADR-0016.
 	APIKeyEnv string
 	// APIKey is the resolved secret at launch (never log). Empty → no model Authorization.
@@ -112,6 +121,7 @@ func ParseFlags(args []string) (Config, error) {
 	fs.StringVar(&cfg.Memory, "memory", defaultMemory, "Memory leaf root (session/ and daily/ live here; may be outside workspace)")
 	fs.DurationVar(&cfg.PersistEvery, "persist-interval", 5*time.Minute, "Background session persist interval")
 	fs.StringVar(&cfg.Addr, "addr", ":8080", "HTTP listen address")
+	fs.StringVar(&cfg.PublicURL, "public-url", "", "Browser-reachable harness origin for confirm links (e.g. http://rinux.tailXXXX.ts.net:8080). Prefer Tailscale hostname so Accept works remotely")
 	// Computer-use / Play Console turns routinely exceed 80 model rounds (screenshot↔click loops).
 	fs.IntVar(&cfg.MaxToolIters, "max-tool-iters", 200, "Hard max model rounds (with tools) per user turn")
 	fs.IntVar(&cfg.ToolRoundSoft, "tool-round-soft", 150, "Soft advisory tool-round threshold")
@@ -119,6 +129,8 @@ func ParseFlags(args []string) (Config, error) {
 	fs.DurationVar(&cfg.SoftWall, "soft-wall", 20*time.Minute, "Soft wall-clock for continuous tool rounds before first advisory (not a hard stop)")
 	// 2h default: long computer-use turns routinely ran past 15m/45m with no final assistant message.
 	fs.DurationVar(&cfg.HardWall, "hard-wall", 2*time.Hour, "Hard wall-clock deadline for an entire user turn (context timeout; ends turn)")
+	// 30m default: thinking models can block past 10m on headers alone (session 0wcsrng8j8).
+	fs.DurationVar(&cfg.ModelTimeout, "model-timeout", 30*time.Minute, "HTTP timeout for a single model chat/completions request (headers + body); not the whole-turn hard-wall")
 	// Stop a few rounds before the hard max and auto-schedule a continuation so long turns don't die mid-work.
 	fs.IntVar(&cfg.AutoContinueReserve, "auto-continue-reserve", 10, "When remaining max-tool-iters ≤ this, hard-stop turn and schedule auto-continuation (0 disables)")
 	// ADR-0022: identical-arg anti-repeat is OPT-IN (default off).
@@ -135,6 +147,8 @@ func ParseFlags(args []string) (Config, error) {
 	fs.StringVar(&cfg.MCPConfig, "mcp-config", "", "Path to mcp.json (default: $MEMORY/mcp.json)")
 	fs.BoolVar(&cfg.MCPDisable, "mcp-disable", false, "Disable MCP client entirely")
 	fs.DurationVar(&cfg.MCPTimeout, "mcp-timeout", 60*time.Second, "Default timeout for MCP tool/resource/prompt calls")
+	fs.StringVar(&cfg.TTSConfig, "tts-config", "", "Path to tts.json (default: $MEMORY/tts.json); ADR-0027")
+	fs.BoolVar(&cfg.TTSDisable, "tts-disable", false, "Disable server-side TTS entirely (ADR-0027)")
 
 	// ADR-0017 Google OAuth
 	fs.StringVar(&cfg.OAuthClientID, "oauth-client-id", "", "Google OAuth client ID (enables google auth mode when fully configured)")
@@ -163,6 +177,9 @@ func ParseFlags(args []string) (Config, error) {
 	}
 	if cfg.PersistEvery <= 0 {
 		return Config{}, fmt.Errorf("persist-interval must be positive")
+	}
+	if cfg.ModelTimeout <= 0 {
+		return Config{}, fmt.Errorf("model-timeout must be positive")
 	}
 	if cfg.MaxToolIters < 1 {
 		return Config{}, fmt.Errorf("max-tool-iters must be positive")

@@ -1,0 +1,1497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0018</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0018</span>
+      <span class="status accepted">Accepted (ready to implement)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0018-selectable-models.md">Markdown</a>
+      <a href="0018-review.html">Review</a>
+      <a href="0018-answers.json">Answers</a>
+      <a href="0017-doc.html">← 0017</a>
+      <a href="0019-doc.html">0019 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0018-selectable-models-settings-catalog-per-session-cron">ADR-0018: Selectable Models (Settings Catalog + Per-Session + Cron)</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-25</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>model, catalog, settings, session, cron, budget, multi-endpoint</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (inner loop / model client), ADR-0003 (SQLite schema), ADR-0007 (Settings UI), ADR-0008 (session info), ADR-0015 (cron jobs), ADR-0016 (API key auth)</td>
+</tr>
+<tr>
+<td><strong>Supersedes (partial)</strong></td>
+<td>ADR-0016 Q8 deferred multi-provider key map — <strong>only for catalog entries</strong> (per-entry <code>api_key_env</code> + base URL). Process CLI remains single <code>--api-key-env</code>.</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0018-answers.json</code> (<code>2026-07-25T11:28:57.601Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="overview">Overview</h2>
+<p>Marble today binds the entire harness to a <strong>single</strong> OpenAI-compatible model configured at launch (<code>--base-url</code>, <code>--model</code>, <code>--context-limit</code>, <code>--max-output</code>, <code>--context-reserve</code>, <code>--api-key-env</code>). Every session turn, compact path, health probe, and Settings “Runtime” panel uses that one process-wide <code>model.Client</code> and <code>config.Config</code> budget.</p>
+<p>Operators need a <strong>catalog of models</strong> they can manage from Settings, <strong>select per chat session</strong> for the next turn, and <strong>optionally pin on cron jobs</strong>—while the CLI-launched model remains a permanent <strong>failsafe fallback</strong>. Mid-session switches must recompute context budgets against the <strong>active</strong> model’s limits and degrade gracefully when capabilities differ (e.g. smaller context window, no image support later).</p>
+<p>This ADR proposes: a durable <strong>model catalog</strong> (SQLite), an <strong>effective-model resolver</strong> (cron pin → session override → process fallback) with <strong>normative turn-option plumbing</strong> from cron fire into <code>runTurn</code>, multi-endpoint <strong>client construction</strong> with env-only secrets (expanding ADR-0016’s deferred multi-key map for catalog rows only), dual-field session persistence (<code>model_id</code> vs <code>model</code>), Settings + session + cron UI/API surfaces, and loop integration so <code>trimHistory</code>, usage ratios, and compact always use active limits.</p>
+<h2 id="background-motivation">Background &amp; Motivation</h2>
+<h3 id="current-state-verified">Current state (verified)</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Config</td>
+<td>Single <code>Config.Model</code>, <code>BaseURL</code>, <code>ContextLimit</code>, <code>MaxOutput</code>, <code>ContextReserve</code>, <code>Budget()</code> in <a href="internal/config/config.go"><code>internal/config/config.go</code></a></td>
+</tr>
+<tr>
+<td>Client</td>
+<td>One <code>*model.Client</code> in <code>main</code> → <code>session.Runner.Client</code>; <code>Chat</code> always sends <code>c.Model</code> (<a href="internal/model/client.go"><code>internal/model/client.go</code></a>)</td>
+</tr>
+<tr>
+<td>Loop</td>
+<td><code>budget := r.Cfg.Budget()</code>; <code>trimHistory(hist, budget, toolEst)</code>; <code>r.Client.Chat</code> (<a href="internal/session/loop.go"><code>internal/session/loop.go</code></a>). <code>PostCron</code> / <code>postMessage</code> → <code>go r.runTurn(s)</code> with <strong>no turn options</strong></td>
+</tr>
+<tr>
+<td>Turn state</td>
+<td><code>turnControl</code> holds cancel + progress only (<a href="internal/session/turn.go"><code>internal/session/turn.go</code></a>)</td>
+</tr>
+<tr>
+<td>Compact</td>
+<td><code>compactSession</code> uses process client; middle-history prompt is <strong>not</strong> budget-trimmed before Chat (<a href="internal/session/loop.go"><code>loop.go</code></a> ~490+)</td>
+</tr>
+<tr>
+<td>Session row</td>
+<td><code>sessions.model</code> stores <strong>process</strong> model name via <code>Registry.model</code> on every <code>syncSessionRow</code> (<a href="internal/session/persist.go"><code>internal/session/persist.go</code></a>); MD frontmatter <code>model:</code> same (<a href="internal/memory/session_md.go"><code>internal/memory/session_md.go</code></a>)</td>
+</tr>
+<tr>
+<td>Events</td>
+<td><code>session_events.model</code> + <code>meta_json</code> columns exist (<a href="internal/db/events.go"><code>internal/db/events.go</code></a>); <code>logEvent</code> always sets <code>Model: r.model</code> and <strong>never</strong> sets <code>MetaJSON</code> (<a href="internal/session/persist.go"><code>persist.go</code></a> ~39–66)</td>
+</tr>
+<tr>
+<td>Settings</td>
+<td>Runtime model/base URL/auth <strong>read-only CLI</strong> (ADR-0007 / 0016); <a href="internal/api/settings.go"><code>internal/api/settings.go</code></a>, <a href="internal/web/static/settings.js"><code>internal/web/static/settings.js</code></a></td>
+</tr>
+<tr>
+<td>Cron</td>
+<td>Jobs: prompt + session_id, <strong>no model</strong>; <code>FireFunc(jobID, jobName, sessionID, prompt string)</code> (<a href="internal/cron/manager.go"><code>internal/cron/manager.go</code></a>, <a href="internal/db/cron.go"><code>internal/db/cron.go</code></a>)</td>
+</tr>
+<tr>
+<td>Schema</td>
+<td><code>CurrentSchemaVersion = 2</code> (v2 = cron); stepwise upgrade; <strong>failed migrate aborts <code>Open</code></strong> (not limp) (<a href="internal/db/db.go"><code>internal/db/db.go</code></a>)</td>
+</tr>
+<tr>
+<td>Wire</td>
+<td><code>model.Message.Content</code> is <strong>string</strong> (text-only); <code>attach_file</code> is UI-only, not re-injected into model history</td>
+</tr>
+<tr>
+<td>Busy HTTP</td>
+<td>Message post / stop already return <strong>409</strong> when busy (<a href="internal/api/server.go"><code>internal/api/server.go</code></a>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pain-points">Pain points</h3>
+<ol>
+<li>Switching providers or model sizes requires <strong>restart</strong> with new CLI flags.  </li>
+<li>Operators cannot use a cheap/fast model for cron hygiene and a large-context model for coding in the same harness.  </li>
+<li>Context usage % and auto-compact thresholds are meaningless if the session “thinks” it still has the process window after the operator intended a smaller model.  </li>
+<li>Cost metadata has nowhere to live for a future spend ADR.</li>
+</ol>
+<h2 id="goals-non-goals">Goals &amp; Non-Goals</h2>
+<h3 id="goals">Goals</h3>
+<ol>
+<li><strong>Process CLI model is always the failsafe fallback</strong> (default when nothing selected; recovery when catalog entry missing/disabled/unhealthy).  </li>
+<li><strong>Catalog of extra models</strong> editable in Settings ⚙ (extending ADR-0007), with identity, endpoint, auth-env, costs, capabilities, context limits, enabled/sort/notes.  </li>
+<li><strong>Per-session model selection</strong> for the next turn (UI picker + API).  </li>
+<li><strong>Mid-session switch</strong> recomputes budget/trim/compact against the <strong>active</strong> model; unsupported content stripped when caps known, else clear harness error.  </li>
+<li><strong>Cron</strong> optional <code>model_id</code> on create/update/fire (tools + UI + HTTP), plumbed into the turn goroutine.  </li>
+<li><strong>Store cost fields now</strong>; session cost tracking deferred.  </li>
+<li>Secrets remain <strong>env-only</strong> (ADR-0016); catalog stores env var <strong>names</strong>, never key material. Never write resolved keys to SQLite.  </li>
+<li>Observability: which model ran a turn (<code>session_events.model</code> + <code>meta_json</code>); health for process + (on demand) catalog entries.</li>
+</ol>
+<h3 id="non-goals-v1">Non-goals (v1)</h3>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session cost tracking / spend dashboards</td>
+<td>Future ADR; store prices only</td>
+</tr>
+<tr>
+<td>Multi-agent multi-model routing / automatic model selection by task</td>
+<td>Operator/explicit selection only</td>
+</tr>
+<tr>
+<td>Streaming token accounting</td>
+<td>Unchanged non-streaming Chat path</td>
+</tr>
+<tr>
+<td>Multimodal wire (image/voice parts)</td>
+<td>Design caps flags only; Content stays string until a later ADR</td>
+</tr>
+<tr>
+<td>Literal API keys in Settings/DB/CLI</td>
+<td>ADR-0016 stands</td>
+</tr>
+<tr>
+<td>Hot-reload of process CLI flags without restart</td>
+<td>Catalog is the hot path; process remains launch-time</td>
+</tr>
+<tr>
+<td>Provider-specific non-OpenAI protocols</td>
+<td>Still OpenAI-compatible Chat Completions</td>
+</tr>
+</tbody>
+</table>
+<h2 id="key-decisions">Key Decisions</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>KD1</strong></td>
+<td>Catalog stored in <strong>SQLite</strong> table <code>model_catalog</code> (schema <strong>v3</strong>), not a JSON file</td>
+<td>Matches cron durability pattern; transactional CRUD; limp-aware; no second config file format. Process fallback is <strong>not</strong> a row—always synthesized from CLI.</td>
+</tr>
+<tr>
+<td><strong>KD2</strong></td>
+<td><strong>Multiple base URLs / providers in v1</strong> via optional per-entry <code>base_url</code> + <code>api_key_env</code> (inherit process when empty)</td>
+<td>Operators mix local vLLM + hosted gateways; still one wire protocol. <strong>Partially supersedes</strong> ADR-0016 Q8 (multi-key map) for catalog only; process CLI stays single <code>--api-key-env</code>.</td>
+</tr>
+<tr>
+<td><strong>KD3</strong></td>
+<td><strong>Effective model resolution (per turn):</strong> (1) <strong>cron fire pin</strong> if turn opts carry <code>CronModelID</code>; (2) <strong>session <code>model_id</code></strong> if set and enabled; (3) <strong>process CLI fallback</strong></td>
+<td>Cron pin is intentional for scheduled work; session override for interactive; process always last-resort. Pin does <strong>not</strong> rewrite session preference.</td>
+</tr>
+<tr>
+<td><strong>KD4</strong></td>
+<td>New sessions default to <strong>no catalog override</strong> (empty <code>model_id</code> → process). Cron jobs default <strong>unset</strong></td>
+<td>Predictable; no silent binding to a slug that may be deleted.</td>
+</tr>
+<tr>
+<td><strong>KD5</strong></td>
+<td><code>session.Runner</code> resolves a <strong>turn-scoped</strong> <code>EffectiveModel</code> at the start of <code>runTurn</code> (and compact) instead of always using <code>r.Cfg</code> / single <code>r.Client</code></td>
+<td>Minimal pivot: loop/budget/usage/compact read active limits; clients from cache.</td>
+</tr>
+<tr>
+<td><strong>KD6</strong></td>
+<td>On switch to smaller context: <strong>no durable history rewrite on PATCH</strong>; next turn uses active budget for trim + auto-compact. Auto-compact cascade after shrink is <strong>intentional</strong>. <strong>In-turn compact</strong> (auto-compact and <code>session_compact</code> tool) always uses the <strong>current turn’s already-resolved <code>em</code></strong> (including cron pin)—never re-resolves interactive-only. Compact source text is trimmed to <strong>80% of <code>em.Budget()</code></strong> before summary Chat</td>
+<td>Transcript remains source of truth until compact runs; compact budget/client must match the turn’s Chat so a small pin cannot re-inflate via a larger session/process window.</td>
+</tr>
+<tr>
+<td><strong>KD7</strong></td>
+<td>Capabilities: structured flags. <strong><code>cap_tools=false</code> → omit tools array</strong> from Chat + one harness advisory. Image/voice strip when known (no-op while text-only). Provider errors → harness message</td>
+<td>Operator-flagged tools=false must be honored; such models are unsuitable for normal Marble agent turns.</td>
+</tr>
+<tr>
+<td><strong>KD8</strong></td>
+<td>Agent <strong>may</strong> list catalog + set/clear session model via tools; <strong>may not</strong> invent catalog entries or read secrets</td>
+<td>Symmetric with cron tools; operator owns catalog via Settings.</td>
+</tr>
+<tr>
+<td><strong>KD9</strong></td>
+<td>Health: process model remains <code>/api/health</code> <code>model_ok</code>; catalog entries <strong>on-demand</strong> only</td>
+<td>Avoid multi-second health endpoints.</td>
+</tr>
+<tr>
+<td><strong>KD10</strong></td>
+<td>Auth per entry: <code>api_key_env</code> string (comma-list, ADR-0016 resolve); empty = inherit process; <code>"none"</code> = omit Authorization. Named env all empty → <strong>no Authorization</strong> + advisory (same as process WARN), never fall back to process key</td>
+<td>Covers local open endpoints beside cloud keys without storing secrets.</td>
+</tr>
+<tr>
+<td><strong>KD11</strong></td>
+<td><strong>Turn options lifetime:</strong> cron pin and other turn-scoped fields live on <code>Session.turn</code> (or <code>pendingTurnOpts</code>) set in <code>postMessage</code>/<code>PostCron</code>, read once at <code>runTurn</code> start, cleared in <code>endTurn</code>. Interactive / continuation paths pass empty <code>CronModelID</code></td>
+<td>Makes KD3 implementable without globals or races across concurrent sessions.</td>
+</tr>
+<tr>
+<td><strong>KD12</strong></td>
+<td><strong>Dual field contract:</strong> <code>model_id</code> = durable catalog slug (or <code>""</code>); <code>model</code> / MD <code>model:</code> / <code>sessions.model</code> = <strong>last effective provider model string</strong> (updated on successful resolve for a turn or on PATCH). API also exposes resolved <code>model_effective</code> object for limits/display</td>
+<td>Avoids overloading one column; session-info and list stay readable.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="proposed-design">Proposed Design</h2>
+<h3 id="architecture">Architecture</h3>
+<pre><code class="language-mermaid">flowchart TB
+  subgraph UI
+    Settings[Settings ⚙ Models section]
+    Picker[Session model picker]
+    CronUI[Cron modal model field]
+  end
+
+  subgraph API
+    CatAPI[&quot;/api/models catalog CRUD&quot;]
+    SessAPI[&quot;PATCH session model_id&quot;]
+    CronAPI[&quot;cron jobs + model_id&quot;]
+  end
+
+  subgraph Core
+    Catalog[(model_catalog SQLite)]
+    Resolver[EffectiveModel resolver]
+    ClientCache[mutexed model.Client cache]
+    Loop[session.Runner runTurn]
+    Compact[compactSession]
+    TurnOpts[Session.turn.opts]
+  end
+
+  subgraph Providers
+    ProcessCLI[CLI process model]
+    EP1[Endpoint A]
+    EP2[Endpoint B]
+  end
+
+  Settings --&gt; CatAPI --&gt; Catalog
+  Picker --&gt; SessAPI
+  CronUI --&gt; CronAPI
+  CronAPI --&gt;|FireFunc modelID| TurnOpts
+  Loop --&gt; TurnOpts
+  Loop --&gt; Resolver
+  Compact --&gt; Resolver
+  Resolver --&gt; Catalog
+  Resolver --&gt; ProcessCLI
+  Resolver --&gt; ClientCache
+  ClientCache --&gt; EP1
+  ClientCache --&gt; EP2
+  ProcessCLI --&gt; Loop
+</code></pre>
+<h3 id="turn-options-plumbing-normative-kd11">Turn options plumbing (normative — KD11)</h3>
+<p>Today the fire path cannot carry a model pin:</p>
+<pre><code class="language-text">cron.fireJob → FireFunc(jobID, jobName, sessionID, prompt)
+  → runner.PostCron(s, prompt)
+  → postMessage(s, text, true, nil)
+  → go r.runTurn(s)   // no options
+</code></pre>
+<p><strong>Target plumbing:</strong></p>
+<pre><code class="language-go">// internal/cron
+type FireFunc func(jobID, jobName, sessionID, prompt, modelID string) FireResult
+
+// internal/session
+type TurnOpts struct {
+    CronModelID string // empty for interactive / continuation
+    // reserved for future turn-scoped flags
+}
+
+// turnControl (or Session fields under same mutex as turn)
+//   opts TurnOpts  — set before go runTurn; read at start of runTurn; zeroed in endTurn
+
+func (r *Runner) PostUserMessage(s *Session, text string, actor *Actor) bool {
+    return r.postMessage(s, text, false, actor, TurnOpts{})
+}
+func (r *Runner) PostContinuation(s *Session, text string) bool {
+    // …prefix…
+    return r.postMessage(s, text, true, nil, TurnOpts{})
+}
+func (r *Runner) PostCron(s *Session, text, modelID string) bool {
+    return r.postMessage(s, text, true, nil, TurnOpts{CronModelID: strings.TrimSpace(modelID)})
+}
+
+func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *Actor, opts TurnOpts) bool {
+    if !s.tryBeginTurn() { return false }
+    s.setTurnOpts(opts) // stored on turnControl; cleared in endTurn
+    // … append UI + history …
+    go r.runTurn(s)
+    return true
+}
+
+func (r *Runner) runTurn(s *Session) {
+    defer func() { s.endTurn() /* clears opts + busy */ ; … }()
+    opts := s.takeTurnOpts() // copy once at start
+    em := r.resolveEffective(s, opts)
+    // … budget, trim, Chat via clientFor(em) …
+}
+</code></pre>
+<p><strong><code>main</code> FireFunc adapter</strong> (extends ADR-0015 wiring):</p>
+<pre><code class="language-go">cronMgr := cron.New(sqldb, func(jobID, jobName, sessionID, prompt, modelID string) cron.FireResult {
+    // … load/create session …
+    if !runner.PostCron(s, prefixedPrompt, modelID) {
+        return cron.FireResult{Status: &quot;skipped_busy&quot;, …}
+    }
+    return cron.FireResult{Status: &quot;ok&quot;, SessionID: s.ID, …}
+}, …)
+</code></pre>
+<p><code>fireJob</code> / Run-now paths pass <code>job.ModelID</code> into <code>FireFunc</code>. Interactive UI and <code>schedule_continuation</code> never set <code>CronModelID</code>.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+  participant Cron as cron.Manager
+  participant Main as FireFunc adapter
+  participant Runner as session.Runner
+  participant Sess as Session.turn
+  participant Loop as runTurn
+
+  Cron-&gt;&gt;Main: fire(jobID, name, sessionID, prompt, modelID)
+  Main-&gt;&gt;Runner: PostCron(s, prompt, modelID)
+  Runner-&gt;&gt;Sess: setTurnOpts(CronModelID=modelID)
+  Runner-&gt;&gt;Loop: go runTurn(s)
+  Loop-&gt;&gt;Sess: takeTurnOpts()
+  Loop-&gt;&gt;Loop: resolveEffective(s, opts)
+  Loop-&gt;&gt;Loop: Chat with em client/budget
+  Loop-&gt;&gt;Sess: endTurn() clears opts
+</code></pre>
+<h3 id="effective-model-resolution">Effective model resolution</h3>
+<pre><code class="language-mermaid">flowchart TD
+  Start[runTurn start] --&gt; ReadOpts[takeTurnOpts]
+  ReadOpts --&gt; CronQ{opts.CronModelID non-empty?}
+  CronQ --&gt;|yes| Lookup1[Resolve catalog id]
+  CronQ --&gt;|no| SessQ{session.ModelID set?}
+  SessQ --&gt;|yes| Lookup2[Resolve catalog id]
+  SessQ --&gt;|no| Fallback[Process CLI EffectiveModel]
+  Lookup1 --&gt; Valid1{Enabled + resolvable?}
+  Lookup2 --&gt; Valid2{Enabled + resolvable?}
+  Valid1 --&gt;|yes| UseCat[Use catalog entry]
+  Valid1 --&gt;|no| Adv1[Harness advisory + fall through]
+  Valid2 --&gt;|yes| UseCat
+  Valid2 --&gt;|no| Adv2[Harness advisory + fall through]
+  Adv1 --&gt; SessQ
+  Adv2 --&gt; Fallback
+  UseCat --&gt; Budget[Budget via shared helper]
+  Fallback --&gt; Budget
+  Budget --&gt; PersistDisp[Update sessions.model = em.Model if changed]
+  PersistDisp --&gt; Trim[trimHistory + Chat]
+</code></pre>
+<p><strong>Resolution order (normative):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>Source</th>
+<th>When applied</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>opts.CronModelID</code></td>
+<td>Turns started by that job’s fire (including Run now)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>session.ModelID</code></td>
+<td>Interactive / continuation; also cron if pin empty or pin failed</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Process CLI</td>
+<td>Always available failsafe</td>
+</tr>
+</tbody>
+</table>
+<p>If a selected id is <strong>missing, disabled, or unresolvable</strong>: emit harness advisory, fall through to next priority, ultimately process CLI.</p>
+<p><strong>Cron pin does not permanently rewrite <code>session.ModelID</code>.</strong> The fire uses the pin for that turn’s Chat/budget only.</p>
+<h3 id="dual-field-session-semantics-kd12">Dual-field session semantics (KD12)</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Storage</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_id</code></td>
+<td><code>sessions.model_id</code>, MD <code>model_id:</code>, <code>Session.ModelID</code></td>
+<td>Catalog slug override; <code>""</code> = none (process default for interactive resolve)</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>sessions.model</code>, MD <code>model:</code>, historically process name</td>
+<td><strong>Last effective provider model string</strong> (e.g. <code>Qwen/…</code> or <code>gpt-4o-mini</code>) after resolve for a completed turn start, or immediately on PATCH when the chosen entry resolves</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Rules:</strong></p>
+<ol>
+<li>On <code>syncSessionRow</code> / MD encode: write both <code>ModelID</code> and <code>Model</code> from the live <code>Session</code>.  </li>
+<li>On session create: <code>ModelID=""</code>, <code>Model=process model string</code> (same as today).  </li>
+<li>On successful <code>resolveEffective</code> at turn start: if <code>em.Model</code> ≠ <code>s.Model</code>, set <code>s.Model = em.Model</code> and mark dirty (so list/info reflect last used provider id).  </li>
+<li>On PATCH <code>model_id</code>: set <code>Session.ModelID</code>; resolve once (without starting a turn) to set <code>Model</code> to that entry’s provider string (or process if clearing / fallback); publish <code>session_meta</code> event.  </li>
+<li>API <code>model_effective</code> (computed, not a DB column): full public effective snapshot (display_name, catalog_id, source, limits, budget, caps) for the <strong>interactive</strong> resolve path (session → process; <strong>ignore</strong> cron pin so idle UI matches picker).</li>
+</ol>
+<p>Info / list badges:</p>
+<ul>
+<li>Prefer showing <code>model_id</code> badge when set (display name from catalog if known).  </li>
+<li><code>model</code> field remains the provider string for diagnostics (ADR-0008 <code>InfoSession.Model</code>).</li>
+</ul>
+<h3 id="turn-loop-integration">Turn loop integration</h3>
+<p>Today (<a href="internal/session/loop.go"><code>internal/session/loop.go</code></a>):</p>
+<pre><code class="language-go">budget := r.Cfg.Budget()
+prompt := trimHistory(hist, budget, toolEst)
+result, err := r.Client.Chat(ctx, prompt, toolSpecs)
+</code></pre>
+<p>Proposed:</p>
+<pre><code class="language-go">opts := s.takeTurnOpts()
+em := r.resolveEffective(s, opts)
+budget := em.Budget() // shared helper, floor 1024
+// capture em for GetUsage closure and all Chat sites this turn
+toolSpecs := r.Tools.Specs()
+if !em.Caps.Tools {
+    toolSpecs = nil
+    r.advisory(s, &quot;[harness] model cap_tools=false — tools omitted for this turn&quot;)
+}
+// …
+prompt := trimHistory(hist, budget, toolEst)
+prompt = applyCapabilityFilter(prompt, em.Caps) // pure; no-op for text-only today
+client := r.clientFor(em)
+result, err := client.Chat(ctx, prompt, toolSpecs)
+r.Reg.logModelCall(s, em, …) // see Event logging
+</code></pre>
+<p><strong>Shared budget helper</strong> (package <code>config</code> or <code>model</code>):</p>
+<pre><code class="language-go">func BudgetTokens(contextLimit, maxOutput, contextReserve int) int {
+    b := contextLimit - maxOutput - contextReserve
+    if b &lt; 1024 {
+        return 1024
+    }
+    return b
+}
+func UsageRatio(estPrompt, budget int) float64 { … }
+</code></pre>
+<p><code>Config.Budget()</code> becomes a thin wrapper; <code>EffectiveModel.Budget()</code> uses the same helper.</p>
+<p><code>usageSnapshot</code> / <code>get_context_usage</code> / context warn &amp; auto-compact ratios use <strong><code>em</code> limits</strong> for this turn (closure captures the turn’s <code>em</code>—<strong>never</strong> re-resolve interactive-only while a turn is active).</p>
+<h3 id="in-turn-compact-uses-turn-em-normative">In-turn compact uses turn <code>em</code> (normative)</h3>
+<p>Auto-compact and the <code>session_compact</code> tool both run <strong>inside</strong> an active turn (there is no idle out-of-band compact path today). They <strong>must not</strong> call <code>resolveEffective(target, TurnOpts{})</code>.</p>
+<pre><code class="language-go">// At runTurn start, after opts := takeTurnOpts(); em := resolveEffective(s, opts):
+tc := &amp;tools.TurnContext{
+    // …
+    Compact: func(style string, keepLast int) (string, error) {
+        return r.compactSession(ctx, s, style, keepLast, em) // capture turn em (cron pin included)
+    },
+    GetUsage: func() map[string]interface{} {
+        return r.usageSnapshot(s, toolEst, lastReportedIn, lastReportedOut, em)
+    },
+}
+// Auto-compact path in the loop:
+if highUsageStreak &gt;= r.Cfg.ContextAutoCompactRounds {
+    _, err := r.compactSession(ctx, s, &quot;auto&quot;, 12, em)
+    // re-trim with same em.Budget()
+}
+
+// Signature
+func (r *Runner) compactSession(ctx context.Context, target *Session, style string, keepLast int, em EffectiveModel) (string, error)
+</code></pre>
+<p><strong>Rules:</strong></p>
+<ol>
+<li><strong>Pass the turn’s already-resolved <code>em</code></strong> into every <code>compactSession</code> / <code>TurnContext.Compact</code> invocation for that turn (includes cron pin when present).  </li>
+<li><strong>Source trim:</strong> truncate middle-history source text to <strong>80% of <code>em.Budget()</code></strong> (token estimate) before building the summary user message. Fixed fraction avoids under-spec “approximately.”  </li>
+<li>Summary <strong><code>Chat</code> uses <code>clientFor(em)</code> and <code>em.MaxOutput</code></strong> — same client/limits as the turn’s agent Chat.  </li>
+<li>System compact child session may still be titled/created as today; its <strong>Chat</strong> uses the passed <code>em</code>, not a fresh interactive resolve.  </li>
+<li>Do <strong>not</strong> invent a separate “compact model” or fall back to process for summary while the turn is pinned smaller.</li>
+</ol>
+<h3 id="mid-session-model-switch">Mid-session model switch</h3>
+<ol>
+<li>Operator (or agent tool) sets <code>session.model_id</code> via API while session <strong>not busy</strong> → <strong>409</strong> if busy (<code>session.IsBusy</code> / existing busy pattern).  </li>
+<li><strong>Closed sessions:</strong> reject PATCH with <strong>400</strong> (or 409); model selection is only for active sessions. Clearing is not special-cased.  </li>
+<li>Persist dual fields (KD12) to SQLite + MD (<code>session_md</code> encode/decode <code>model_id</code> + <code>model</code>).  </li>
+<li>Publish SSE <code>session_meta</code> (see below).  </li>
+<li><strong>Next turn:</strong> new budget; <code>trimHistory</code> may drop more of history if window shrinks.  </li>
+<li>Durable history is <strong>not</strong> rewritten on PATCH alone.  </li>
+<li><strong>Expected cascade (intentional, KD6):</strong> if estimated history ≫ new budget, the next turn’s first usage ratio will often be ≥ 0.85 immediately → <strong>auto-compact after <code>ContextAutoCompactRounds</code> consecutive high rounds</strong> (default 3) rewrites middle history via <code>compactSession</code>. This is desired recovery, not a bug.  </li>
+<li><strong>Switch-time advisory (normative):</strong> on PATCH, if <code>estimateAll(history)+toolEst &gt; em.Budget()</code>, publish harness advisory:<br />
+<code>"[harness] selected model budget is smaller than current history estimate; next turn will trim and may auto-compact. Prefer session_compact now."</code><br />
+   v1 does <strong>not</strong> auto-run compact on PATCH (avoids surprise rewrite while idle); operator/agent may compact proactively.  </li>
+<li>If switch target is disabled/deleted between select and turn: fall through per resolver + advisory.</li>
+</ol>
+<h3 id="capability-unsupported-content">Capability / unsupported content</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Text-only transcript (today)</td>
+<td>No change</td>
+</tr>
+<tr>
+<td>Future image parts + <code>cap_images=false</code></td>
+<td><strong>Strip</strong> image parts from <strong>outbound</strong> prompt only; harness advisory once per turn</td>
+</tr>
+<tr>
+<td>Unknown failure (provider rejects content)</td>
+<td>Surface model HTTP error as today + suggest switching model</td>
+</tr>
+<tr>
+<td><strong><code>cap_tools=false</code> (locked)</strong></td>
+<td><strong>Omit</strong> <code>tools</code> / <code>tool_choice</code> from Chat request; inject one harness advisory; do not execute a tool loop that cannot start</td>
+</tr>
+</tbody>
+</table>
+<p>Settings helper text: “Disable tools only for non-agent / completion-only endpoints. Normal Marble sessions need tools.”</p>
+<p><code>applyCapabilityFilter(messages, caps)</code> is a <strong>pure function</strong> with unit tests: identity/no-op on today’s string-only messages; structured-part strip when multimodal lands later. Keep out of the main PR3 review surface if stubbed.</p>
+<h3 id="client-construction-cache">Client construction &amp; cache</h3>
+<pre><code class="language-go">type EffectiveModel struct {
+    Source         string // &quot;process&quot; | &quot;catalog&quot;
+    CatalogID      string // empty if process
+    DisplayName    string
+    Model          string // provider model id
+    BaseURL        string
+    APIKey         string // resolved secret; never log / never JSON
+    APIKeyEnvUsed  string
+    ContextLimit   int
+    MaxOutput      int
+    ContextReserve int
+    Caps           Capabilities
+    Cost           CostMeta
+}
+
+func (e EffectiveModel) Budget() int {
+    return BudgetTokens(e.ContextLimit, e.MaxOutput, e.ContextReserve)
+}
+</code></pre>
+<p><strong>Cache (normative):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Key</td>
+<td><code>(baseURL, model, maxOutput, apiKeyFingerprint)</code> where fingerprint is <code>apiKeyEnvUsed</code> or <code>"none"</code> — <strong>not</strong> the secret. Optionally include catalog <code>updated_at</code> or a monotonic generation.</td>
+</tr>
+<tr>
+<td>Concurrency</td>
+<td><code>sync.Mutex</code> around map get-or-create (prefer over bare <code>sync.Map</code> for multi-field updates). Safe under MaxConcurrentFires=3 + interactive.</td>
+</tr>
+<tr>
+<td>Process client</td>
+<td>The <code>main</code>-built <code>*model.Client</code> is <strong>not</strong> stored in the catalog cache; <code>clientFor(process EM)</code> returns <code>r.Client</code> / process pointer.</td>
+</tr>
+<tr>
+<td>Invalidation</td>
+<td>On catalog <strong>PUT/DELETE</strong>: drop all cache entries whose key matches that entry’s baseURL/model (or wipe entire cache — max 32, cheap). On harness restart: empty.</td>
+</tr>
+<tr>
+<td>Stale MaxTokens</td>
+<td>After catalog changes <code>max_output</code>, invalidation ensures next <code>clientFor</code> builds a new client with correct <code>MaxTokens</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="process-fallback-synthesis">Process fallback synthesis</h3>
+<p>Always available, not stored in <code>model_catalog</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>From</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model</td>
+<td><code>--model</code></td>
+</tr>
+<tr>
+<td>BaseURL</td>
+<td><code>--base-url</code></td>
+</tr>
+<tr>
+<td>Limits</td>
+<td><code>--context-limit</code>, <code>--max-output</code>, <code>--context-reserve</code></td>
+</tr>
+<tr>
+<td>Auth</td>
+<td>resolved <code>--api-key-env</code></td>
+</tr>
+<tr>
+<td>Caps</td>
+<td><code>tools=true</code>, <code>images=false</code>, <code>voice=false</code>, <code>reasoning=false</code> (conservative until multimodal)</td>
+</tr>
+<tr>
+<td>Display</td>
+<td><code>Process default (CLI)</code></td>
+</tr>
+</tbody>
+</table>
+<p>Settings Runtime section continues to show CLI process fields <strong>read-only</strong>. Catalog is a new editable section.</p>
+<h3 id="inheritance-rules-limits-auth">Inheritance rules (limits &amp; auth)</h3>
+<table>
+<thead>
+<tr>
+<th>Catalog field</th>
+<th>Empty / 0 meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>base_url</code></td>
+<td>Inherit process <code>--base-url</code></td>
+</tr>
+<tr>
+<td><code>api_key_env</code></td>
+<td>Inherit process key resolution</td>
+</tr>
+<tr>
+<td><code>api_key_env = "none"</code></td>
+<td>Force no Authorization</td>
+</tr>
+<tr>
+<td><code>api_key_env = "NAME,…"</code></td>
+<td>Resolve those names only; if all empty → no Authorization + advisory (<strong>do not</strong> fall back to process key)</td>
+</tr>
+<tr>
+<td><strong><code>context_reserve = 0</code></strong></td>
+<td><strong>Inherit process <code>Cfg.ContextReserve</code></strong> (operator CLI, default 8192). Only values <strong>&gt; 0</strong> override.</td>
+</tr>
+<tr>
+<td><code>context_limit</code> / <code>max_output</code></td>
+<td>Required &gt; 0 on catalog rows (no inherit)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="data-model-changes">Data Model Changes</h2>
+<h3 id="schema-v3-migration">Schema v3 migration</h3>
+<p><code>CurrentSchemaVersion = 3</code>.</p>
+<pre><code class="language-sql">-- migrateV2toV3 (single transaction; failure → Open returns error, process exits)
+CREATE TABLE IF NOT EXISTS model_catalog (
+  id              TEXT PRIMARY KEY,          -- slug, e.g. &quot;qwen-local&quot;
+  display_name    TEXT NOT NULL,
+  model           TEXT NOT NULL,             -- provider model id
+  base_url        TEXT NOT NULL DEFAULT '',  -- '' = inherit process
+  api_key_env     TEXT NOT NULL DEFAULT '',  -- '' = inherit; 'none' = no auth
+  cost_input_per_1m   REAL,
+  cost_output_per_1m  REAL,
+  cost_notes      TEXT NOT NULL DEFAULT '',
+  cap_reasoning   INTEGER NOT NULL DEFAULT 0,
+  cap_images      INTEGER NOT NULL DEFAULT 0,
+  cap_voice       INTEGER NOT NULL DEFAULT 0,
+  cap_tools       INTEGER NOT NULL DEFAULT 1,
+  context_limit   INTEGER NOT NULL,
+  max_output      INTEGER NOT NULL,
+  context_reserve INTEGER NOT NULL DEFAULT 0, -- 0 = inherit process ContextReserve
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  sort_order      INTEGER NOT NULL DEFAULT 0,
+  notes           TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_catalog_sort
+  ON model_catalog(enabled, sort_order, display_name);
+
+ALTER TABLE sessions ADD COLUMN model_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE cron_jobs ADD COLUMN model_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE cron_runs ADD COLUMN model_id TEXT NOT NULL DEFAULT '';
+</code></pre>
+<p><strong>Failure mode (normative):</strong> if <code>migrateV2toV3</code> returns error, <code>db.Open</code> fails and <strong>the process does not start</strong> (same as today’s upgrade path — not limp). Operator restores <code>marble.db</code> backup. Newer schema on older binary → limp (existing rule).</p>
+<p>Fresh installs: keep stepwise (v1 create → upgrade to Current). Existing sessions/cron rows get <code>model_id=''</code>.</p>
+<p>Limp (unwritable DB): catalog empty; only process model; Settings Models Save disabled.</p>
+<p><strong>PR1 must update every explicit <code>SELECT</code>/<code>Scan</code>/<code>INSERT</code> for sessions and cron</strong> (easy to miss half of <a href="internal/db/cron.go"><code>cron.go</code></a>, <a href="internal/db/sessions.go"><code>sessions.go</code></a>, <a href="internal/db/session_info.go"><code>session_info.go</code></a>).</p>
+<p><strong>Tests:</strong> <code>db_test.go</code> open v2 fixture → assert v3 tables/columns; default <code>model_id=''</code> on existing rows.</p>
+<h3 id="go-structs">Go structs</h3>
+<pre><code class="language-go">// internal/db/models.go (new)
+type ModelCatalogRow struct {
+    ID               string
+    DisplayName      string
+    Model            string
+    BaseURL          string
+    APIKeyEnv        string
+    CostInputPer1M   *float64
+    CostOutputPer1M  *float64
+    CostNotes        string
+    CapReasoning     bool
+    CapImages        bool
+    CapVoice         bool
+    CapTools         bool
+    ContextLimit     int
+    MaxOutput        int
+    ContextReserve   int // 0 = inherit process at resolve time
+    Enabled          bool
+    SortOrder        int
+    Notes            string
+    CreatedAt        string
+    UpdatedAt        string
+}
+
+// db.SessionRow adds:
+ModelID string // catalog slug
+
+// db.CronJobRow / CronRunRow add:
+ModelID string
+</code></pre>
+<pre><code class="language-go">// session.Session
+ModelID string // catalog id or &quot;&quot;
+// Model string already via persist path — keep last effective provider id on Session
+// (add field if not present; today only Registry.model process name is written)
+
+// cron.Job / CreateInput / UpdateInput
+ModelID string
+
+// FireFunc as above
+</code></pre>
+<p>Session MD (<code>memory.SessionMeta</code> / encode):</p>
+<pre><code class="language-text">model: &quot;provider-id-string&quot;    # last effective (KD12)
+model_id: &quot;catalog-slug&quot;       # optional; omit or &quot;&quot; when unset
+</code></pre>
+<h3 id="validation-rules-createupdate-catalog">Validation rules (create/update catalog)</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td><code>[a-z0-9][a-z0-9_-]{0,63}</code>, unique; reserved: <code>process</code>, <code>__process__</code>, empty</td>
+</tr>
+<tr>
+<td><code>display_name</code></td>
+<td>required, max 80</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>required, max 256</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td>empty or absolute <code>http(s)://…</code></td>
+</tr>
+<tr>
+<td><code>api_key_env</code></td>
+<td>empty, <code>none</code>, or comma-separated env <strong>names</strong> (no <code>=</code> secrets)</td>
+</tr>
+<tr>
+<td><code>context_limit</code>, <code>max_output</code></td>
+<td>&gt; 0; <code>BudgetTokens(limit, maxOut, effectiveReserve) ≥ 1024</code></td>
+</tr>
+<tr>
+<td><code>context_reserve</code></td>
+<td>≥ 0; <strong>0 means inherit</strong> (not “zero reserve”)</td>
+</tr>
+<tr>
+<td>costs</td>
+<td>≥ 0 if set</td>
+</tr>
+<tr>
+<td>Max catalog entries</td>
+<td><strong>32</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Delete: hard delete; sessions/cron keeping stale <code>model_id</code> fall back at resolve time. Optional Settings “clear references” later.</p>
+<h2 id="api-interface-changes">API / Interface Changes</h2>
+<h3 id="catalog">Catalog</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/models</code></td>
+<td>List enabled+disabled; synthetic <code>process</code> entry first</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/models/{id}</code></td>
+<td>One entry; process id always works</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/models</code></td>
+<td>Create; 503 limp; 400 validation; invalidate client cache</td>
+</tr>
+<tr>
+<td><code>PUT</code></td>
+<td><code>/api/models/{id}</code></td>
+<td>Update; <strong>no id rename</strong> in v1; invalidate cache</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/api/models/{id}</code></td>
+<td>Cannot delete process; invalidate cache</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/models/{id}/health</code></td>
+<td>On-demand <code>GET {base}/models</code>; never returns secret</td>
+</tr>
+</tbody>
+</table>
+<p><code>GET /api/settings</code> gains summary <code>{ models: { count, enabled_count } }</code>. Full list via dedicated <code>/api/models</code> (like cron).</p>
+<p>Public list item (never secrets): same shape as rev1 (<code>base_url_effective</code>, <code>api_key_mode</code>, <code>api_key_configured</code>, capabilities, budget, <code>source</code>).</p>
+<p>For process synthetic entry: <code>id: "process"</code>, <code>source: "process"</code>, limits from CLI.</p>
+<h3 id="session-model">Session model</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PATCH</code></td>
+<td><code>/api/sessions/{id}</code></td>
+<td>Body <code>{ "model_id": "slug" \| "" }</code>. Prefer this over a one-off <code>/{id}/model</code> unless routing is cleaner.</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/sessions/{id}</code> and <code>…/info</code></td>
+<td>Include <code>model_id</code>, <code>model</code> (provider string), <code>model_effective</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>409</strong> if busy. <strong>400</strong> if closed / not found as appropriate.</p>
+<p>List/summary: optional <code>model_id</code> for badge.</p>
+<h3 id="sse-idle-usage-issue-7">SSE / idle usage (Issue 7)</h3>
+<p>On successful PATCH (and after turn start when effective model changes):</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;session_meta&quot;,
+  &quot;session_id&quot;: &quot;…&quot;,
+  &quot;model_id&quot;: &quot;qwen-local&quot;,
+  &quot;model&quot;: &quot;Qwen/…&quot;,
+  &quot;model_effective&quot;: {
+    &quot;source&quot;: &quot;catalog&quot;,
+    &quot;catalog_id&quot;: &quot;qwen-local&quot;,
+    &quot;display_name&quot;: &quot;Qwen local large&quot;,
+    &quot;model&quot;: &quot;Qwen/…&quot;,
+    &quot;context_limit&quot;: 500000,
+    &quot;max_output&quot;: 32768,
+    &quot;context_reserve&quot;: 8192,
+    &quot;budget&quot;: 459200,
+    &quot;capabilities&quot;: { &quot;tools&quot;: true, &quot;images&quot;: false, &quot;voice&quot;: false, &quot;reasoning&quot;: true }
+  },
+  &quot;at&quot;: &quot;…&quot;
+}
+</code></pre>
+<p><strong>UI (PR6):</strong> on picker change, PATCH then either consume <code>session_meta</code> or <strong>refetch GET session/info</strong> and recompute the context chip from <code>model_effective.budget</code> + last known estimate (or call existing usage if available). Do not leave the chip showing the previous model’s window while idle.</p>
+<h3 id="cron">Cron</h3>
+<p>Create/update/run payloads:</p>
+<pre><code class="language-json">{ &quot;model_id&quot;: &quot;cheap-mini&quot; }
+</code></pre>
+<p>Empty/omitted = no pin. Tools <code>cron_create</code> / <code>cron_update</code> optional <code>model_id</code>.</p>
+<p><strong><code>cron_runs.model_id</code> (v1 write semantics — requested pin, not post-fallthrough):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Fact</th>
+<th>Implication</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FireFunc</code> → <code>PostCron</code> → <code>go runTurn</code> returns <strong>before</strong> <code>resolveEffective</code></td>
+<td>Fallthrough (disabled pin → session → process) is <strong>unknown</strong> when <code>fireJob</code> inserts the run row</td>
+</tr>
+<tr>
+<td>v1 choice <strong>(A)</strong></td>
+<td>Store <strong><code>job.ModelID</code> as requested</strong> at insert time (empty string if job has no pin)</td>
+</tr>
+<tr>
+<td>Not stored on run row</td>
+<td>Post-fallthrough effective catalog id / provider string</td>
+</tr>
+<tr>
+<td>Where fallthrough is visible</td>
+<td><code>model_call</code> events via <code>logModelCall</code> <code>meta_json</code> (<code>catalog_id</code>, <code>source</code>) on the session</td>
+</tr>
+</tbody>
+</table>
+<p>Do <strong>not</strong> claim <code>cron_runs.model_id</code> is the resolved effective model in v1. Optional later: async update or <code>FireResult.UsedModelID</code> pre-resolve (rejected for v1 complexity).</p>
+<h3 id="agent-tools">Agent tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_list</code></td>
+<td>Enabled catalog + process synthetic</td>
+</tr>
+<tr>
+<td><code>session_set_model</code></td>
+<td><code>{ "model_id": "…" \| "" }</code> for <strong>current</strong> session; same busy/closed rules as PATCH</td>
+</tr>
+<tr>
+<td><em>(no)</em> <code>model_create</code></td>
+<td>Catalog mutation stays Settings/HTTP</td>
+</tr>
+</tbody>
+</table>
+<h3 id="health">Health</h3>
+<p><code>GET /api/health</code> (authenticated full):</p>
+<ul>
+<li>Keep process <code>model_ok</code> / <code>model</code> / <code>base_url</code>.  </li>
+<li>Add <code>model_catalog_count</code>, <code>model_catalog_enabled</code>.  </li>
+<li>Never probe all catalog endpoints.</li>
+</ul>
+<h3 id="event-logging-normative-issue-3">Event logging (normative — Issue 3)</h3>
+<p>Columns already exist; writers must change.</p>
+<p><strong>Choice:</strong> extend logging with a dedicated helper for model calls; other kinds keep process model string unless noted.</p>
+<pre><code class="language-go">// Registry
+func (r *Registry) logEvent(…) // existing; Model: r.model (process), MetaJSON empty
+
+func (r *Registry) logModelCall(s *Session, em EffectiveModel, role, content string,
+    usageIn, usageOut, estIn, estOut, latency *int, finish, errStr string) {
+    // Event.Model = em.Model  (provider string, not process-only)
+    // Event.MetaJSON = json{
+    //   &quot;catalog_id&quot;: em.CatalogID,
+    //   &quot;source&quot;: em.Source,
+    //   &quot;display_name&quot;: em.DisplayName,
+    //   &quot;context_limit&quot;: em.ContextLimit,
+    //   &quot;budget&quot;: em.Budget(),
+    // }
+    // Kind: &quot;model_call&quot;
+}
+</code></pre>
+<p><code>runTurn</code> model_call and compact summary Chat use <code>logModelCall</code>. User/tool/harness events keep <code>logEvent</code> with process <code>r.model</code> (cheap; avoids resolving on every tool line). Document in PR3.</p>
+<h2 id="ui">UI</h2>
+<h3 id="settings-models-section-sketch">Settings — Models section (sketch)</h3>
+<pre><code>┌ Settings ────────────────────────────────────────── [×] ┐
+│ Runtime │ Models │ Memory │ Shell │ Agent │ MCP │ …    │
+│                                                         │
+│ Models (catalog)                                        │
+│ Process default is always available (CLI — restart to   │
+│ change). Catalog entries are selectable per session.    │
+│ Cost fields are for future tracking — Marble does not   │
+│ bill.                                                   │
+│                                                         │
+│ ● Process default (CLI)     Qwen/…   262k  [read-only]  │
+│ ● Qwen local large          …122B    1M    [Edit][…]    │
+│ ○ Mini cloud                gpt-…    128k  disabled     │
+│                                                         │
+│ [+ Add model]                                           │
+│                                                         │
+│ ── Edit: Qwen local large ──────────────────────────── │
+│ Id (slug)     [qwen-local        ]                      │
+│ Display name  [Qwen local large  ]                      │
+│ Model string  [Qwen/Qwen3.5-…    ]                      │
+│ Base URL      [ (inherit process) ]  ☑ inherit          │
+│ API key env   [ (inherit) | none | NAME ]               │
+│ Context limit [ 1048576 ]  Max out [ 32768 ]            │
+│ Reserve       [ 0 = inherit process ]                   │
+│ Caps  ☑ tools  ☑ reasoning  ☐ images  ☐ voice           │
+│         (uncheck tools only for non-agent endpoints)    │
+│ Cost  in $/1M [ 0.15 ]  out $/1M [ 0.60 ]  notes […]   │
+│ Enabled ☑   Sort [10]   Notes […]                       │
+│ [Test health]  [Save]  [Delete]                         │
+└─────────────────────────────────────────────────────────┘
+</code></pre>
+<p>Nav order: <strong>Models after Runtime</strong>.</p>
+<h3 id="session-header-composer-picker">Session header / composer picker</h3>
+<pre><code>┌ Session: feature work          model: [ Qwen local large ▾ ] ┐
+│ … transcript …                                               │
+│ Context ~58% of 500k · tools ·  [Send]                       │
+└──────────────────────────────────────────────────────────────┘
+</code></pre>
+<ul>
+<li>Dropdown: enabled catalog + Process default.  </li>
+<li>On change: PATCH → handle <code>session_meta</code> or refetch info; update chip.  </li>
+<li>Disabled while busy; hide disabled catalog entries.  </li>
+<li>Cap badges optional.</li>
+</ul>
+<h3 id="cron-modal">Cron modal</h3>
+<p>Optional <strong>Model</strong> select; show pin on list row; Run now uses job pin.</p>
+<h2 id="alternatives-considered">Alternatives Considered</h2>
+<h3 id="a1-json-file-memorymodelsjson-like-mcpjson">A1. JSON file <code>$MEMORY/models.json</code> (like <code>mcp.json</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Easy hand-edit</td>
+<td>Second format; concurrent UI writes; limp unclear</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Rejected</strong> for SQLite.</p>
+<h3 id="a2-single-endpoint-many-model-ids-only">A2. Single endpoint, many model ids only</h3>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Simpler cache</td>
+<td>Blocks local+cloud without a proxy</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Rejected</strong> (product intent needs multi-base).</p>
+<h3 id="a3-multiple-harness-processes">A3. Multiple harness processes</h3>
+<p><strong>Rejected</strong> (lock/port conflicts; no shared sessions).</p>
+<h3 id="a4-mutate-sessionmodel_id-on-every-cron-fire">A4. Mutate <code>session.model_id</code> on every cron fire</h3>
+<p><strong>Rejected</strong> (pollutes interactive preference).</p>
+<h3 id="a5-catalog-as-a-single-settings-json-blob-key">A5. Catalog as a single <code>settings</code> JSON blob key</h3>
+<table>
+<thead>
+<tr>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Avoids schema v3</td>
+<td>Weak querying; large blob PUT races; worse than typed table for CRUD; still needs session/cron columns for pins</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Rejected</strong> — typed <code>model_catalog</code> table is clearer and matches cron pattern.</p>
+<h2 id="security-privacy-considerations">Security &amp; Privacy Considerations</h2>
+<table>
+<thead>
+<tr>
+<th>Threat</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>API key in catalog / Settings / logs</td>
+<td><strong>Forbidden</strong>; env names only; resolve at use; never persist resolved key</td>
+</tr>
+<tr>
+<td>ADR-0016 multi-provider expansion</td>
+<td>Catalog-only multi <code>api_key_env</code>; process CLI single flag; document supersession of 0016 Q8 for catalog</td>
+</tr>
+<tr>
+<td>SSRF via <code>base_url</code></td>
+<td>Single-operator trust; server-side fetch only</td>
+</tr>
+<tr>
+<td>Agent catalog write</td>
+<td>Not in v1</td>
+</tr>
+<tr>
+<td>Health/Test echoes secret</td>
+<td>Public DTOs omit <code>APIKey</code></td>
+</tr>
+<tr>
+<td>Limp</td>
+<td>Process fallback only</td>
+</tr>
+</tbody>
+</table>
+<h2 id="observability">Observability</h2>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Startup</td>
+<td>Process model line; <code>model catalog: N entries (M enabled)</code></td>
+</tr>
+<tr>
+<td><code>/api/health</code></td>
+<td>Process <code>model_ok</code>; catalog counts</td>
+</tr>
+<tr>
+<td>Settings</td>
+<td>Per-entry Test health; auth configured bool</td>
+</tr>
+<tr>
+<td><code>model_call</code> events</td>
+<td><code>Event.Model</code> = provider string; <code>meta_json</code> catalog_id/source/limits</td>
+</tr>
+<tr>
+<td>Harness advisories</td>
+<td>Fallback, strip, tools omitted, switch-time small budget</td>
+</tr>
+<tr>
+<td><code>cron_runs.model_id</code></td>
+<td><strong>Requested</strong> job pin at fire insert (<code>job.ModelID</code>, or <code>""</code> if unset)—not post-fallthrough effective id</td>
+</tr>
+<tr>
+<td>Session info</td>
+<td><code>model_id</code> + <code>model</code> + <code>model_effective</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="risks-mitigations">Risks &amp; Mitigations</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Severity</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Smaller context → aggressive trim + auto-compact</td>
+<td>Medium</td>
+<td>Document as intentional; switch-time advisory; compact source trimmed to budget</td>
+</tr>
+<tr>
+<td>Wrong catalog <code>context_limit</code> → provider 400</td>
+<td>Medium</td>
+<td>Test health; surface error; no mid-Chat auto-fallback</td>
+</tr>
+<tr>
+<td>Stale client MaxTokens after PUT</td>
+<td>Medium</td>
+<td>Cache invalidation on catalog write (mutexed)</td>
+</tr>
+<tr>
+<td>Concurrent cache races</td>
+<td>Low</td>
+<td>Mutex get-or-create</td>
+</tr>
+<tr>
+<td>Migration failure</td>
+<td>High</td>
+<td>Abort start; backup note; db_test v2→v3</td>
+</tr>
+<tr>
+<td>Cron pin vs session confusion</td>
+<td>Low</td>
+<td>UI labels; pin not written to session</td>
+</tr>
+<tr>
+<td>Cost fields as “billing”</td>
+<td>Low</td>
+<td>UI disclaimer</td>
+</tr>
+<tr>
+<td><code>cap_tools=false</code> breaks agent loop</td>
+<td>Medium</td>
+<td>Settings warning; one advisory; intentional</td>
+</tr>
+</tbody>
+</table>
+<h2 id="rollout-plan">Rollout Plan</h2>
+<ol>
+<li>Schema + DB CRUD (empty catalog ≡ legacy).  </li>
+<li>Resolver + client cache (no loop wire required for merge).  </li>
+<li>Loop / compact / logging / dual-field persist.  </li>
+<li>HTTP catalog + session PATCH + health counts + info.  </li>
+<li>Settings Models UI.  </li>
+<li>Session picker + <code>session_meta</code> handling.  </li>
+<li>Cron pin end-to-end.  </li>
+<li>Agent tools + README.</li>
+</ol>
+<p><strong>Rollback:</strong> older binary + v3 DB → limp. Backup <code>marble.db</code> before upgrade.</p>
+<p><strong>Feature flag:</strong> not required.</p>
+<p><strong>Manual verification after PR3 (before UI):</strong> set <code>sessions.model_id</code> via sqlite or temporary debug hook; send a message; confirm Chat model string + event meta + budget differ from process.</p>
+<h2 id="decisions-locked-q1q17">Decisions locked (Q1–Q17)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>SQLite <code>model_catalog</code> schema <strong>v3</strong>; process fallback <strong>not</strong> a row</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Multi base URL + per-entry <code>api_key_env</code> inherit / <code>none</code></td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Empty <code>model_id</code> → process CLI for new sessions and cron</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Keep stored <code>model_id</code>; resolve-time fallthrough + advisory</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Strip when cap says unsupported; else fail-closed; text-only v1 strip is no-op</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Settings Models section + session header picker + cron pin field</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td><code>model_list</code> + <code>session_set_model</code> tools; <strong>no</strong> agent catalog writes</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>On-demand health only for catalog entries</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td><code>migrateV2toV3</code> stepwise; failure <strong>aborts</strong> process start</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Cron pin wins for that fire only via TurnOpts; does <strong>not</strong> write <code>session.model_id</code></td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>PATCH <strong>409</strong> if busy; <strong>400</strong> if closed; UI disables picker while busy</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>In-turn compact uses turn <code>EffectiveModel</code> incl. cron pin; <strong>80%</strong> budget source trim</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>Soft cap <strong>32</strong> catalog entries</td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td><strong>Defer</strong> session cost tracking; store cost fields only</td>
+</tr>
+<tr>
+<td><strong>Q15</strong></td>
+<td>empty = inherit process; <code>none</code> = omit auth; named env <strong>never</strong> fall back to process key</td>
+</tr>
+<tr>
+<td><strong>Q16</strong></td>
+<td>Dual fields: <code>model_id</code> slug + <code>model</code> last provider string; API <code>model_effective</code></td>
+</tr>
+<tr>
+<td><strong>Q17</strong></td>
+<td>Advisory only on PATCH if history &gt; new budget; <strong>no</strong> auto-compact on PATCH</td>
+</tr>
+</tbody>
+</table>
+<h3 id="q15-api_key_env-inherit-normative-detail">Q15 — <code>api_key_env</code> inherit (normative detail)</h3>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>empty</td>
+<td>Inherit process key resolution</td>
+</tr>
+<tr>
+<td><code>none</code></td>
+<td>No Authorization header</td>
+</tr>
+<tr>
+<td>non-empty names</td>
+<td>Resolve those env vars only; first non-empty wins; if all empty → <strong>no Authorization</strong> + advisory; <strong>never</strong> fall back to process key</td>
+</tr>
+</tbody>
+</table>
+<h2 id="pr-plan">PR Plan</h2>
+<p>Ordered, independently reviewable. <strong>Empty catalog ≡ legacy behavior is a required acceptance criterion on PR1–PR3.</strong></p>
+<h3 id="pr1-schema-v3-catalog-db-layer">PR1 — Schema v3 + catalog DB layer</h3>
+<ul>
+<li><strong>Title:</strong> <code>db: schema v3 model_catalog + model_id columns</code></li>
+<li><strong>Files:</strong> <a href="internal/db/db.go"><code>internal/db/db.go</code></a>, new <code>internal/db/models.go</code>, <a href="internal/db/cron.go"><code>internal/db/cron.go</code></a> (all Scan/Insert including <strong>cron_runs.model_id</strong>), <a href="internal/db/sessions.go"><code>internal/db/sessions.go</code></a>, <a href="internal/db/session_info.go"><code>internal/db/session_info.go</code></a>, <code>db_test.go</code> (v2→v3 fixture)</li>
+<li><strong>Dependencies:</strong> none</li>
+<li><strong>Description:</strong> migrateV2toV3; CRUD catalog; validation; failure aborts Open. No HTTP.</li>
+</ul>
+<h3 id="pr2-effectivemodel-resolver-mutexed-client-cache">PR2 — EffectiveModel resolver + mutexed client cache</h3>
+<ul>
+<li><strong>Title:</strong> <code>model/session: EffectiveModel resolution and client cache</code></li>
+<li><strong>Files:</strong> <code>internal/session/model_resolve.go</code> (or <code>internal/model/effective.go</code>), shared <code>BudgetTokens</code>/<code>UsageRatio</code>, unit tests (resolve order, inherit reserve/base/auth, cache invalidation)</li>
+<li><strong>Dependencies:</strong> PR1</li>
+<li><strong>Description:</strong> Pure resolve + process synthesis; mutexed cache; process client bypass. No loop wire required.</li>
+</ul>
+<h3 id="pr3-turn-opts-loop-compact-dual-field-persist-logging">PR3 — Turn opts, loop, compact, dual-field persist, logging</h3>
+<ul>
+<li><strong>Title:</strong> <code>session: turn opts + effective model in loop/compact/events</code></li>
+<li><strong>Files:</strong> <a href="internal/session/loop.go"><code>internal/session/loop.go</code></a>, <a href="internal/session/turn.go"><code>internal/session/turn.go</code></a>, <a href="internal/session/session.go"><code>internal/session/session.go</code></a>, <a href="internal/session/persist.go"><code>internal/session/persist.go</code></a> (<code>logModelCall</code>, <code>syncSessionRow</code> model_id+model), <a href="internal/session/budget.go"><code>internal/session/budget.go</code></a> if needed, <a href="internal/memory/session_md.go"><code>internal/memory/session_md.go</code></a> encode/decode <code>model_id</code>, <a href="cmd/marble-harness/main.go"><code>cmd/marble-harness/main.go</code></a> wire catalog into Runner (FireFunc signature can stay stubbed with <code>""</code> until PR7 <strong>or</strong> accept modelID and pass through immediately)</li>
+<li><strong>Dependencies:</strong> PR2</li>
+<li><strong>Description checklist (blast radius):</strong>
+  1. <code>TurnOpts</code> / <code>setTurnOpts</code> / <code>takeTurnOpts</code> / clear in <code>endTurn</code>
+  2. <code>PostCron(s, text, modelID)</code>, <code>postMessage(…, opts)</code>, interactive empty pin
+  3. <code>runTurn</code>: resolve <code>em</code> once; <strong>all</strong> <code>Budget</code>/<code>UsageRatio</code>/warn/auto-compact use <code>em</code>
+  4. Post-auto-compact re-trim uses <code>em.Budget()</code>
+  5. <code>usageSnapshot</code> + <code>TurnContext.GetUsage</code> closure capture turn <code>em</code>
+  6. <code>compactSession(…, em)</code>: <strong>pass turn <code>em</code></strong> (cron pin included); <strong>no</strong> interactive re-resolve; trim source to <strong>80% of <code>em.Budget()</code></strong>; <code>clientFor(em)</code>; wire <code>TurnContext.Compact</code> + auto-compact call sites to same <code>em</code>
+  7. <code>cap_tools=false</code> omits tools + advisory
+  8. <code>applyCapabilityFilter</code> pure no-op stub + test
+  9. <code>logModelCall</code> for model_call; dual-field Session persist
+  10. Manual verify: force <code>model_id</code> via SQL → different budget/events; optional: cron pin + force compact uses pin budget</li>
+<li><strong>Acceptance:</strong> empty catalog / empty model_id ≡ pre-ADR behavior.</li>
+</ul>
+<h3 id="pr4a-http-catalog-api-health-counts">PR4a — HTTP catalog API + health counts</h3>
+<ul>
+<li><strong>Title:</strong> <code>api: /api/models CRUD + health probe</code></li>
+<li><strong>Files:</strong> <code>internal/api/models.go</code> (new), <a href="internal/api/server.go"><code>internal/api/server.go</code></a>, health handler, settings summary snippet</li>
+<li><strong>Dependencies:</strong> PR1–PR2 (PR3 optional but preferred for clientFor health)</li>
+<li><strong>Description:</strong> REST + on-demand health; cache invalidation on write; limp 503.</li>
+</ul>
+<h3 id="pr4b-session-patch-model_id-infosse">PR4b — Session PATCH model_id + info/SSE</h3>
+<ul>
+<li><strong>Title:</strong> <code>api: session model_id PATCH + model_effective + session_meta</code></li>
+<li><strong>Files:</strong> session handlers, <a href="internal/session/info.go"><code>internal/session/info.go</code></a>, Event type for <code>session_meta</code>, busy/closed rules</li>
+<li><strong>Dependencies:</strong> PR3 (resolve + dual fields)</li>
+<li><strong>Description:</strong> PATCH 409 busy / 400 closed; publish <code>session_meta</code>; GET/info expose fields.</li>
+</ul>
+<p><em>(PR4a + PR4b may land as one PR if review load allows; split recommended.)</em></p>
+<h3 id="pr5-settings-ui-models-section">PR5 — Settings UI Models section</h3>
+<ul>
+<li><strong>Title:</strong> <code>web: Settings Models catalog section</code></li>
+<li><strong>Files:</strong> <a href="internal/web/static/settings.js"><code>internal/web/static/settings.js</code></a>, CSS, index if needed</li>
+<li><strong>Dependencies:</strong> PR4a</li>
+<li><strong>Description:</strong> CRUD UI; inherit toggles; reserve 0 = inherit label; tools cap warning; Test health.</li>
+</ul>
+<h3 id="pr6-session-picker-chrome">PR6 — Session picker chrome</h3>
+<ul>
+<li><strong>Title:</strong> <code>web: per-session model picker</code></li>
+<li><strong>Files:</strong> <a href="internal/web/static/app.js"><code>internal/web/static/app.js</code></a>, CSS</li>
+<li><strong>Dependencies:</strong> PR4b (<strong>PR5 not required</strong> — operators can create catalog via curl/<code>POST /api/models</code>)</li>
+<li><strong>Description:</strong> Dropdown; PATCH; handle <code>session_meta</code> or refetch info; update context chip from <code>model_effective</code>; disable while busy.</li>
+</ul>
+<h3 id="pr7-cron-model_id-end-to-end">PR7 — Cron model_id end-to-end</h3>
+<ul>
+<li><strong>Title:</strong> <code>cron: optional model_id pin on jobs and fires</code></li>
+<li><strong>Files:</strong> <a href="internal/cron/manager.go"><code>internal/cron/manager.go</code></a> (<code>FireFunc</code>, Create/Update, fireJob writes <code>cron_runs.model_id</code>), <a href="internal/api/cron.go"><code>internal/api/cron.go</code></a>, <a href="internal/tools/cron.go"><code>internal/tools/cron.go</code></a>, specs, <a href="cmd/marble-harness/main.go"><code>cmd/marble-harness/main.go</code></a> adapter, <a href="internal/web/static/cron.js"><code>internal/web/static/cron.js</code></a></li>
+<li><strong>Dependencies:</strong> PR3 (turn opts + <code>PostCron</code> modelID), PR1 columns</li>
+<li><strong>Description:</strong> Create/update/fire pass pin into turn opts; <strong><code>cron_runs.model_id</code> = requested <code>job.ModelID</code></strong> (empty if unset) at insert—not post-fallthrough; UI select.</li>
+</ul>
+<h3 id="pr8-agent-model-tools-docs">PR8 — Agent model tools + docs</h3>
+<ul>
+<li><strong>Title:</strong> <code>tools: model_list + session_set_model; README multi-model</code></li>
+<li><strong>Files:</strong> tools package, README, optional AGENTS.md</li>
+<li><strong>Dependencies:</strong> PR4b (session set path)</li>
+<li><strong>Description:</strong> Agent list/set; document resolve order, turn opts, dual fields, ADR-0016 expansion, non-goals.</li>
+</ul>
+<h2 id="acceptance-criteria-implementation">Acceptance Criteria (implementation)</h2>
+<ul>
+<li>[ ] Empty catalog: behavior identical to pre-ADR.  </li>
+<li>[ ] Catalog entry with different <code>context_limit</code>; session select; usage % and trim use new budget.  </li>
+<li>[ ] Mid-session shrink: advisory on PATCH if history large; next turn trims; auto-compact may rewrite history.  </li>
+<li>[ ] Compact source trimmed to 80% of turn <code>em.Budget()</code>; in-turn compact uses same <code>em</code> as Chat (including cron pin).  </li>
+<li>[ ] Cron job <code>model_id</code> fires with that model via turn opts; session picker unchanged.  </li>
+<li>[ ] <code>cron_runs.model_id</code> stores <strong>requested</strong> <code>job.ModelID</code> (may be empty); fallthrough visible only in session <code>model_call</code> meta.  </li>
+<li>[ ] <code>logModelCall</code> writes provider model + meta_json.  </li>
+<li>[ ] <code>sessions.model</code> = last effective provider string; <code>model_id</code> = slug.  </li>
+<li>[ ] Deleted catalog id → process fallback + advisory.  </li>
+<li>[ ] No API key material in DB, Settings JSON, logs, or health.  </li>
+<li>[ ] Limp: no catalog writes; process works.  </li>
+<li>[ ] Schema v2→v3 upgrade; failed migrate aborts start.  </li>
+<li>[ ] <code>cap_tools=false</code> omits tools.  </li>
+<li>[ ] Client cache safe under concurrent turns; invalidated on catalog update.</li>
+</ul>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Multi-model workflows without multi-process hacks.  </li>
+<li>Cron can pin cheap models; interactive sessions use large-context models.  </li>
+<li>Cost metadata ready for a future spend ADR.  </li>
+<li>Failsafe CLI model preserves reliability.  </li>
+<li>Catalog multi-key/env expands hosted+local use while keeping secrets out of SQLite.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>More moving parts (turn opts, resolver, cache, migration, dual fields).  </li>
+<li>Operator must set correct context limits per entry.  </li>
+<li>Downgrade to pre-v3 harness limps on new DBs.  </li>
+<li>ADR-0016 “one process one key” deferred item is deliberately expanded for catalog rows.</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><a href="0001-doc.html"><code>adr/0001-harness-inner-loop.md</code></a> — model client, budget  </li>
+<li><a href="0003-doc.html"><code>adr/0003-sqlite-memory-db.md</code></a> — schema / limp  </li>
+<li><a href="0007-doc.html"><code>adr/0007-settings-ui.md</code></a> — Settings modal tiers  </li>
+<li><a href="0008-doc.html"><code>adr/0008-session-info.md</code></a> — session diagnostics  </li>
+<li><a href="0015-doc.html"><code>adr/0015-cron-jobs.md</code></a> — durable jobs / FireFunc  </li>
+<li><a href="0016-doc.html"><code>adr/0016-model-api-key-auth.md</code></a> — env-only keys (Q8 partially superseded for catalog)  </li>
+<li>Code: <a href="../internal/config/config.go"><code>internal/config/config.go</code></a>, <a href="../internal/model/client.go"><code>internal/model/client.go</code></a>, <a href="../internal/session/loop.go"><code>internal/session/loop.go</code></a>, <a href="../internal/session/turn.go"><code>internal/session/turn.go</code></a>, <a href="../internal/session/persist.go"><code>internal/session/persist.go</code></a>, <a href="../internal/session/budget.go"><code>internal/session/budget.go</code></a>, <a href="../internal/memory/session_md.go"><code>internal/memory/session_md.go</code></a>, <a href="../internal/db/db.go"><code>internal/db/db.go</code></a>, <a href="../internal/db/events.go"><code>internal/db/events.go</code></a>, <a href="../internal/cron/manager.go"><code>internal/cron/manager.go</code></a>, <a href="../internal/api/settings.go"><code>internal/api/settings.go</code></a></li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-25</td>
+<td>Draft / Proposed — initial design for review</td>
+</tr>
+<tr>
+<td>2026-07-25</td>
+<td>Rev 2 — address design review: turn-opts plumbing (KD11), dual-field model/model_id (KD12), logModelCall, switch/auto-compact policy, context_reserve inherit, client cache concurrency, session_meta SSE, cap_tools locked, cron_runs.model_id in v3, PR blast radius + PR4 split, migration abort semantics, ADR-0016 supersession, A5, Q15–Q17</td>
+</tr>
+<tr>
+<td>2026-07-25</td>
+<td>Rev 3 — in-turn compact uses turn <code>em</code> (incl. cron pin), 80% budget source trim; <code>cron_runs.model_id</code> = requested job pin at insert (not post-fallthrough); Q12/KD6/PR3/PR7/acceptance aligned</td>
+</tr>
+<tr>
+<td>2026-07-25</td>
+<td><strong>Accepted</strong> — Q1–Q17 locked from <code>0018-answers.json</code> (<code>2026-07-25T11:28:57.601Z</code>); ready to implement</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0018-selectable-models.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

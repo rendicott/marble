@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/rendicott/marble/internal/model"
 )
 
 func TestHeuristicNeedsUser(t *testing.T) {
@@ -132,6 +134,27 @@ func TestParseSumOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	if out.Summary != "x" {
+		t.Fatalf("%+v", out)
+	}
+	// Nested braces in earlier prose must not steal the final dashboard object.
+	out = sumOut{}
+	nested := `notes {"not":"dashboard"} then final {"summary":"shipped APK","needs_user":false,"action_items":[]}`
+	if err := parseSumOut(nested, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Summary != "shipped APK" {
+		t.Fatalf("%+v", out)
+	}
+	// Prefer content with JSON over empty; reasoning-only via parseSumOutFromMessage.
+	out = sumOut{}
+	msg := model.Message{
+		Content:   model.ContentFromText("I should summarize."),
+		Reasoning: `{"summary":"from reasoning","needs_user":false,"action_items":[]}`,
+	}
+	if err := parseSumOutFromMessage(msg, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Summary != "from reasoning" {
 		t.Fatalf("%+v", out)
 	}
 }

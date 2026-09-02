@@ -31,6 +31,7 @@ import (
 	"github.com/rendicott/marble/internal/session"
 	"github.com/rendicott/marble/internal/shellpolicy"
 	"github.com/rendicott/marble/internal/tools"
+	"github.com/rendicott/marble/internal/tts"
 	"github.com/rendicott/marble/internal/workspacefs"
 )
 
@@ -61,7 +62,7 @@ func main() {
 			cfg.Memory, cfg.Memory, cfg.Memory)
 	}
 
-	// Catalog api_key_env re-reads $MEMORY/env + ~/.config/marble/env without restart.
+	// Catalog api_key_env re-reads $MEMORY/env without restart (process env still wins).
 	config.SetMemoryDirForEnv(cfg.Memory)
 
 	// Ensure knowledge/skills/mpub dirs exist
@@ -114,6 +115,23 @@ func main() {
 	}
 	defer mcpMgr.Close()
 
+	// TTS (ADR-0027) — optional; off by default when tts.json missing
+	ttsPath := tts.ResolveConfigPath(cfg.TTSConfig, cfg.Memory)
+	ttsCfg, err := tts.Load(ttsPath)
+	if err != nil {
+		log.Printf("WARNING: tts config %s: %v (TTS disabled)", ttsPath, err)
+		ttsCfg = tts.DefaultConfig()
+	}
+	if cfg.TTSDisable {
+		log.Printf("tts: DISABLED (--tts-disable)")
+	} else if ttsCfg.Enabled {
+		log.Printf("tts: enabled provider=%s config=%s", ttsCfg.Provider, ttsPath)
+	} else {
+		log.Printf("tts: off (enable via %s)", ttsPath)
+	}
+	ttsMgr := tts.NewManager(ttsCfg, sqldb, cfg.Memory, cfg.TTSDisable)
+	ttsMgr.SetConfigPath(ttsPath)
+
 	mpubStore, err := mpub.New(cfg.Memory)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: mpub: %v\n", err)
@@ -126,7 +144,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	client := model.New(cfg.BaseURL, cfg.Model, cfg.MaxOutput, cfg.APIKey)
+	client := model.New(cfg.BaseURL, cfg.Model, cfg.MaxOutput, cfg.APIKey, cfg.ModelTimeout)
 	if strings.TrimSpace(cfg.APIKeyEnv) == "" {
 		log.Printf("model auth: none")
 	} else if cfg.APIKeyEnvConfigured {
@@ -161,6 +179,7 @@ func main() {
 	}
 	reg := session.NewRegistry(runner, store, sqldb, cfg.Workspace, cfg.Model)
 	runner.Reg = reg
+	runner.BindEagerTTS(ttsMgr)
 	toolReg.ProcessContextReserve = cfg.ContextReserve
 	toolReg.ListModels = func() ([]map[string]interface{}, error) {
 		out := []map[string]interface{}{runner.ProcessPublic()}
@@ -465,9 +484,13 @@ func main() {
 	toolReg.SetSessionComputerID = func(sessionID, computerID string) error {
 		return reg.SetComputerID(sessionID, computerID)
 	}
+	toolReg.SetLastPeerAction = func(sessionID, summary string) {
+		reg.SetLastPeerAction(sessionID, summary)
+	}
 
 	srv := api.New(cfg, client, reg, daemon, wsfs)
 	srv.MCP = mcpMgr
+	srv.TTS = ttsMgr
 	srv.Policy = policy
 	srv.Tools = toolReg
 	srv.Mpub = mpubStore
@@ -477,6 +500,24 @@ func main() {
 	srv.Clerk = clerkMgr
 	if authMgr != nil {
 		authMgr.RegisterRoutes(srv.Mux)
+	}
+	// Tailscale-reachable confirm links for peer notifications + tool payloads.
+	toolReg.PublicBaseURL = func() string {
+		return srv.PublicOrigin(nil)
+	}
+	toolReg.ListPendingConfirms = func(sessionID string) []map[string]interface{} {
+		if peerHub == nil {
+			return nil
+		}
+		list := peerHub.ListConfirms(sessionID)
+		out := make([]map[string]interface{}, 0, len(list))
+		for _, p := range list {
+			out = append(out, map[string]interface{}{
+				"id": p.ID, "session_id": p.SessionID, "computer_id": p.ComputerID,
+				"prompt": p.Prompt, "risk": p.Risk, "url": p.URL, "expired": p.Expired,
+			})
+		}
+		return out
 	}
 
 	httpSrv := &http.Server{
@@ -517,8 +558,8 @@ func main() {
 		log.Printf("workspace=%s", cfg.Workspace)
 		log.Printf("memory=%s mode=%s", cfg.Memory, sqldb.Mode)
 		log.Printf("persist every %s", cfg.PersistEvery)
-		log.Printf("model=%s base=%s ctx=%d max_out=%d budget=%d max_tool_iters=%d",
-			cfg.Model, cfg.BaseURL, cfg.ContextLimit, cfg.MaxOutput, cfg.Budget(), cfg.MaxToolIters)
+		log.Printf("model=%s base=%s ctx=%d max_out=%d budget=%d max_tool_iters=%d model_timeout=%s",
+			cfg.Model, cfg.BaseURL, cfg.ContextLimit, cfg.MaxOutput, cfg.Budget(), cfg.MaxToolIters, cfg.ModelTimeout)
 		if cfg.DisableShell {
 			log.Printf("shell: DISABLED (--disable-shell)")
 		} else {
@@ -541,6 +582,13 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Printf("shutting down…")
+	// Lazy kill of session children (shell BG + call_agent_process): signal now,
+	// do not wait — escalate to SIGKILL in background so restart is not blocked.
+	nBG := bg.KillAllRunning()
+	nAg := agents.KillAllRunning()
+	if nBG+nAg > 0 {
+		log.Printf("signaled children to exit: background_tasks=%d agent_processes=%d (async)", nBG, nAg)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)

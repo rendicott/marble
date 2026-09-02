@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0012</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0012</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0012-web-fetch-tool.md">Markdown</a>
+      <a href="0012-review.html">Review</a>
+      <a href="0012-answers.json">Answers</a>
+      <a href="0011-doc.html">← 0011</a>
+      <a href="0013-doc.html">0013 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0012-native-web_fetch-tool-url-retrieval-after-search">ADR-0012: Native <code>web_fetch</code> Tool (URL retrieval after search)</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-18</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tools, http, web, tavily, mcp, research</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0005 (tool suite), ADR-0006 (MCP / Tavily recipe), ADR-0011 (multi-provider search — deferred)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0012-answers.json</code> (<code>2026-07-18T14:03:35.491Z</code>)</td>
+</tr>
+<tr>
+<td><strong>Related</strong></td>
+<td>Operators already use <code>mcp_tavily_tavily_search</code> (returns titles + <strong>URLs</strong>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<h3 id="how-research-works-today-in-marble">How research works today in Marble</h3>
+<ol>
+<li><strong>Search</strong> via MCP (typically Tavily): <code>mcp_tavily_tavily_search</code> returns structured hits including <strong>Title</strong> and <strong>URL</strong>.  </li>
+<li><strong>Deeper retrieval</strong> often goes back through Tavily: <code>tavily_extract</code>, <code>tavily_crawl</code>, <code>tavily_map</code>, <code>tavily_research</code> — vendor-side fetch/summarize, extra latency/cost, timeouts.  </li>
+<li>Marble has <strong>no first-class HTTP fetch</strong> of an arbitrary URL.</li>
+</ol>
+<h3 id="desired-pattern">Desired pattern</h3>
+<pre><code>search (Tavily/Brave/…)  →  list of real URLs + snippets
+        ↓
+web_fetch(url)           →  harness GETs page → markdown (or raw JSON)
+        ↓
+model reasons / cites URL
+</code></pre>
+<p><strong>Search:</strong> discovery + ranked URLs.<br />
+<strong><code>web_fetch</code>:</strong> direct retrieval for grounding; Tavily extract/crawl only as fallback.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li>Built-in <strong><code>web_fetch</code></strong> — one URL per call (<strong>Q1</strong>, <strong>Q2</strong>).  </li>
+<li><strong>HTML/text → markdown</strong> for the model (<strong>Q3</strong>); <strong>JSON content-type → raw body</strong> (<strong>Q4</strong>).  </li>
+<li>System prompt: use web search if available, then <strong><code>web_fetch</code> for deeper analysis</strong> (<strong>Q8</strong>).  </li>
+<li>Soft-discourage Tavily extract when fetch works; still allow on failure (<strong>Q9</strong>).  </li>
+<li><strong>Allow LAN/private</strong> fetches for home lab (<strong>Q5</strong>); still block cloud metadata / dangerous link-local.  </li>
+<li>Max <strong>5 redirects</strong>, re-validate each hop (<strong>Q7</strong>). No custom headers/cookies v1 (<strong>Q6</strong>).</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>Full headless browser / Playwright  </li>
+<li>Native <code>web_search</code> normalizer (<strong>Q10</strong> deferred)  </li>
+<li>Session URL cache (<strong>Q11</strong> deferred)  </li>
+<li>Custom headers/cookies (<strong>Q6</strong>)  </li>
+<li>Special mpub import path (<strong>Q12</strong> — fetch then <code>mpub_publish</code>)  </li>
+<li>Multi-provider search policy (ADR-0011 deferred)</li>
+</ul>
+<h2 id="decision">Decision</h2>
+<ol>
+<li><strong>Tool name:</strong> <code>web_fetch</code> (<strong>Q1</strong>).  </li>
+<li><strong>Arity:</strong> single <code>url</code> per call; model loops for more (<strong>Q2</strong>).  </li>
+<li><strong>Extraction:</strong>
+   - HTML / text-like → <strong>render as markdown</strong> for the model (<strong>Q3</strong>).<br />
+   - <code>application/json</code> (and <code>+json</code>) → <strong>raw</strong> body (truncated by <code>max_tool_result</code>) (<strong>Q4</strong>).<br />
+   - Other binary → short error / skip body.  </li>
+<li><strong>Safety:</strong>
+   - Schemes: <code>http</code> / <code>https</code> only.<br />
+   - <strong>Allow private/LAN</strong> (RFC1918, etc.) for lab use (<strong>Q5</strong>).<br />
+   - <strong>Still block</strong> cloud metadata and obvious SSRF sinks (e.g. <code>169.254.169.254</code>, AWS/GCP/Azure metadata hostnames) even when LAN is allowed.<br />
+   - Redirects: max <strong>5</strong>; re-check scheme/host policy each hop (<strong>Q7</strong>).<br />
+   - No custom Authorization/cookies (<strong>Q6</strong>).<br />
+   - Timeout ~15–30s; honor turn cancel context (ADR-0010).<br />
+   - Download byte cap; return truncated to max tool result with notice.  </li>
+<li><strong>Prompt policy (</strong>Q8<strong>, </strong>Q9<strong>):</strong><br />
+   - System prompt: <em>use web search if available, then use <code>web_fetch</code> native tool for deeper analysis if needed</em>.<br />
+   - Prefer fetch over Tavily extract when fetch works; extract/crawl/research still allowed on failure or multi-page needs.  </li>
+<li><strong>Defer:</strong> native <code>web_search</code> wrapper (<strong>Q10</strong>), fetch cache (<strong>Q11</strong>), mpub special-case (<strong>Q12</strong>).  </li>
+<li>Prefer <code>web_fetch</code> over shell <code>curl</code> for model-driven retrieval.</li>
+</ol>
+<h2 id="decisions-locked-q1q12">Decisions locked (Q1–Q12)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Tool name: <strong><code>web_fetch</code></strong></td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Single URL per call; model loops</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Fetch and <strong>render as markdown</strong> (HTML/text)</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td><strong>JSON comes back raw</strong> (not markdownized)</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td><strong>Allow LAN</strong> / private network fetch</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Defer custom headers/cookies</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Max <strong>5</strong> redirects; re-validate host each hop</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>System prompt: web search if available, then <strong><code>web_fetch</code> for deeper analysis</strong></td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Soft discourage extract when fetch works; allow on failure</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Defer native <code>web_search</code> normalizer</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>Defer session URL cache</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>No mpub special case — fetch then <code>mpub_publish</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="tool-schema">Tool schema</h2>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;web_fetch&quot;,
+  &quot;description&quot;: &quot;HTTP(S) GET a URL. HTML/text is returned as markdown; JSON is returned raw. Prefer after web search returns real URLs. Do not invent URLs. Use Tavily extract/crawl only when fetch fails or multi-page crawl is needed.&quot;,
+  &quot;parameters&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;url&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Absolute http or https URL&quot; },
+      &quot;max_bytes&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;Optional download cap&quot; }
+    },
+    &quot;required&quot;: [&quot;url&quot;]
+  }
+}
+</code></pre>
+<h3 id="output-shape-illustrative">Output shape (illustrative)</h3>
+<pre><code class="language-text">url: https://example.com/page
+final_url: https://example.com/page
+status: 200
+content_type: text/html
+format: markdown
+chars: 12040 (truncated from …)
+---
+# Title
+…markdown body…
+</code></pre>
+<p>For JSON:</p>
+<pre><code class="language-text">…
+content_type: application/json
+format: raw
+---
+{&quot;key&quot;: ...}
+</code></pre>
+<h2 id="implementation-sketch">Implementation sketch</h2>
+<ol>
+<li><code>internal/tools/webfetch.go</code> — validate URL, LAN-allow + metadata block, redirects, <code>http.Client</code> + turn <code>ctx</code>.  </li>
+<li>HTML → markdown (light dependency or stdlib-assisted).  </li>
+<li>JSON path: pass through raw bytes as string (utf-8), truncate.  </li>
+<li>Register in <code>specs.go</code> + <code>Execute</code>.  </li>
+<li>System prompt line per <strong>Q8</strong>.  </li>
+<li>Tests: public URL httptest; metadata IP blocked; private IP <strong>allowed</strong>; redirect chain; JSON raw.</li>
+</ol>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Search discovers URLs; fetch grounds answers without vendor extract by default.  </li>
+<li>LAN allow supports home-lab docs/APIs.  </li>
+<li>Clear JSON vs document handling.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>LAN allow increases SSRF surface vs public-only (mitigate with metadata blocklist).  </li>
+<li>Markdown quality varies by site HTML.  </li>
+<li>No browser JS execution.</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SSRF to cloud metadata</td>
+<td>Explicit blocklist independent of LAN allow</td>
+</tr>
+<tr>
+<td>Huge pages / JSON</td>
+<td>Byte + char caps</td>
+</tr>
+<tr>
+<td>Prompt injection in page text</td>
+<td>Same as any tool output</td>
+</tr>
+</tbody>
+</table>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Open questions answered (<code>0012-answers.json</code>)  </li>
+<li>[x] LAN allow + JSON raw + markdown HTML locked  </li>
+<li>[x] <code>web_fetch</code> implemented with tests  </li>
+<li>[x] System prompt updated (<strong>Q8</strong>)  </li>
+<li>[x] Implemented  </li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><code>adr/0012-answers.json</code>  </li>
+<li>ADR-0006 MCP / Tavily  </li>
+<li>ADR-0010 turn cancel  </li>
+<li>ADR-0011 multi-provider search (deferred)  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0012-web-fetch-tool.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

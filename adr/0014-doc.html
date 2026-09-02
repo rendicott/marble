@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0014</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0014</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0014-call-agent-process.md">Markdown</a>
+      <a href="0014-review.html">Review</a>
+      <a href="0014-answers.json">Answers</a>
+      <a href="0013-doc.html">← 0013</a>
+      <a href="0015-doc.html">0015 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0014-call_agent_process-drive-external-agent-harnesses">ADR-0014: <code>call_agent_process</code> — Drive External Agent Harnesses</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-18</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tools, subprocess, agents, claude-code, grok-build, orchestration</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0005 (tools / shell / BG), ADR-0010 (turn cancel / timeouts), ADR-0001 (inner loop)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0014-answers.json</code> (<code>2026-07-19T00:36:16.626Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Marble is strong at <strong>ergonomics</strong> (sessions, memory, soul, MCP, progress UI). External harnesses (<strong>Claude Code</strong>, <strong>Grok Build</strong>) are strong at <strong>deep coding loops</strong>. Operators want both: stay in Marble while delegating hard work to a headless external agent, then fold results back.</p>
+<p>Headless entry points (illustrative):</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>Headless</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Grok Build</strong></td>
+<td><code>grok -p "…" --output-format json</code></td>
+</tr>
+<tr>
+<td><strong>Claude Code</strong></td>
+<td><code>claude -p "…"</code> (verify flags at implement)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="goals">Goals</h2>
+<ol>
+<li>Tool <strong><code>call_agent_process</code></strong> with <strong><code>format</code></strong>: <code>grok</code> | <code>claude</code> (<strong>Q1</strong>, <strong>Q2</strong>).  </li>
+<li>Both drivers in v1 if binary resolves (<strong>Q3</strong>).  </li>
+<li>Prefer <strong>json</strong> output when supported (<strong>Q4</strong>).  </li>
+<li><strong>Auto-approve</strong> by default — never block on interactive permission prompts (<strong>Q6</strong>).  </li>
+<li><strong>High timeouts</strong>; tool designed for <strong>background-task</strong> usage; system prompt nudges <code>start_background_task</code> for long runs (<strong>Q5</strong>).  </li>
+<li>Cap <strong>10</strong> concurrent/tracked external agents per session (<strong>Q7</strong>).  </li>
+<li>Turn <strong>Stop</strong> kills process group (<strong>Q8</strong>).  </li>
+<li><strong>No OS sandbox</strong>; easy <strong>dedicated directory</strong> under workspace for the child (<strong>Q9</strong>).  </li>
+<li>Config: <code>$MEMORY/agent_process.json</code> (<strong>Q11</strong>).</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>Resume/continue external sessions (<strong>Q10</strong> deferred)  </li>
+<li>Dedicated git worktree flag (<strong>Q14</strong> — use <code>extra_args</code> / grok <code>--worktree</code>)  </li>
+<li>Settings UI for agent_process (<strong>Q11</strong> later)  </li>
+<li>Streaming child stdout into turn steps (wait for exit)  </li>
+<li>Arbitrary shell exec  </li>
+</ul>
+<h2 id="decision">Decision</h2>
+<h3 id="tool">Tool</h3>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;call_agent_process&quot;,
+  &quot;parameters&quot;: {
+    &quot;format&quot;: { &quot;enum&quot;: [&quot;grok&quot;, &quot;claude&quot;] },
+    &quot;prompt&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;cwd&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Rel path under workspace; default root&quot; },
+    &quot;workdir&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;description&quot;: &quot;Optional dedicated subdir under workspace created if missing (easy isolation — Q9)&quot;
+    },
+    &quot;output_format&quot;: { &quot;enum&quot;: [&quot;plain&quot;, &quot;json&quot;] },
+    &quot;timeout_sec&quot;: { &quot;type&quot;: &quot;integer&quot; },
+    &quot;model&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;extra_args&quot;: { &quot;type&quot;: &quot;array&quot;, &quot;items&quot;: { &quot;type&quot;: &quot;string&quot; } },
+    &quot;background&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;,
+      &quot;description&quot;: &quot;If true, spawn via background-task style and return task id immediately (preferred for long runs — Q5)&quot;
+    }
+  },
+  &quot;required&quot;: [&quot;format&quot;, &quot;prompt&quot;]
+}
+</code></pre>
+<p><strong>Rec implementation note for Q5:</strong><br />
+- Tool supports <strong>sync wait</strong> (default for short probes) <strong>and</strong> <strong><code>background: true</code></strong> (or always recommend BG) that uses the existing BG task machinery / same process group tracking.<br />
+- <strong>Default timeout</strong> high (e.g. <strong>15–30 minutes</strong>); max higher (e.g. <strong>2 hours</strong>) via config.<br />
+- System prompt: <em>for non-trivial external agent work, call with background=true (or start_background_task wrapping) so Marble turn is not blocked for half an hour.</em></p>
+<h3 id="drivers">Drivers</h3>
+<ul>
+<li><strong>grok</strong> + <strong>claude</strong> adapters; enable if <code>command</code> resolves on PATH (<strong>Q3</strong>).  </li>
+<li>Default argv includes <strong>auto-approve / non-interactive permission</strong> flags so the child never waits on TTY (<strong>Q6</strong>).  </li>
+<li>Grok: e.g. <code>--always-approve</code> and/or <code>--permission-mode bypassPermissions</code> (confirm best non-blocking combo at implement).  </li>
+<li>Claude: equivalent print/non-interactive permission flags (verify at implement).  </li>
+<li>Default <code>output_format</code>: <strong>json</strong> if driver supports, else <strong>plain</strong> (<strong>Q4</strong>).  </li>
+<li>Optional <strong><code>model</code></strong> field or allowlisted <strong><code>extra_args</code></strong> (<strong>Q13</strong>).  </li>
+<li><strong>No resume</strong> — always new headless run (<strong>Q10</strong>).</li>
+</ul>
+<h3 id="dedicated-directory-q9">Dedicated directory (Q9)</h3>
+<ul>
+<li>No OS sandbox.  </li>
+<li>First-class <strong><code>workdir</code></strong> (or <code>dedicated_dir</code>) argument: resolve under workspace, <strong>mkdir -p</strong>, set child <strong>cwd</strong> there.  </li>
+<li>Makes “give the agent its own folder” one field without inventing shell mkdir steps.  </li>
+<li>Still no dedicated git worktree flag (<strong>Q14</strong> deferred).</li>
+</ul>
+<h3 id="concurrency-cancel">Concurrency &amp; cancel</h3>
+<ul>
+<li><strong>Max 10</strong> external agent processes per Marble session (<strong>Q7</strong>).  </li>
+<li>Marble turn <strong>Stop</strong> → SIGTERM/SIGKILL process group (<strong>Q8</strong>).  </li>
+<li>BG mode: <code>KillSession</code> / existing BG kill paths also terminate children.</li>
+</ul>
+<h3 id="config-memoryagent_processjson">Config (<code>$MEMORY/agent_process.json</code>)</h3>
+<pre><code class="language-json">{
+  &quot;drivers&quot;: {
+    &quot;grok&quot;: {
+      &quot;enabled&quot;: true,
+      &quot;command&quot;: &quot;grok&quot;,
+      &quot;default_output_format&quot;: &quot;json&quot;,
+      &quot;default_args&quot;: [&quot;--always-approve&quot;],
+      &quot;auto_approve&quot;: true
+    },
+    &quot;claude&quot;: {
+      &quot;enabled&quot;: true,
+      &quot;command&quot;: &quot;claude&quot;,
+      &quot;default_output_format&quot;: &quot;json&quot;,
+      &quot;default_args&quot;: [],
+      &quot;auto_approve&quot;: true
+    }
+  },
+  &quot;default_timeout_sec&quot;: 1800,
+  &quot;max_timeout_sec&quot;: 7200,
+  &quot;max_per_session&quot;: 10,
+  &quot;max_output_bytes&quot;: 1048576,
+  &quot;system_agents_enabled&quot;: false
+}
+</code></pre>
+<p>System agents: tool available on <strong>user</strong> sessions; <strong>optional disable</strong> for system agents via config (<strong>Q12</strong> — default off for system).</p>
+<h3 id="system-prompt-nudge">System prompt nudge</h3>
+<pre><code class="language-text">External agents: use call_agent_process(format=grok|claude, prompt=…) for large multi-file coding.
+For long runs set background=true (or use start_background_task) — do not block the Marble turn on multi-minute jobs.
+Use workdir for a dedicated subfolder under the workspace. Prefer Marble tools for simple edits.
+Auto-approve is on for the child; scope the prompt and workdir carefully.
+</code></pre>
+<h2 id="decisions-locked-q1q14">Decisions locked (Q1–Q14)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Tool name: <strong><code>call_agent_process</code></strong></td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Driver key: <strong><code>format</code></strong> (<code>grok</code> | <code>claude</code>)</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Both drivers in v1 if binary resolves</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Prefer <strong>json</strong>, else plain</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Wait-capable tool; <strong>BG is the normal path</strong> — high timeouts + prompt nudge to use as bgtask / <code>background=true</code></td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td><strong>Default auto-approve</strong> (non-blocking)</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Cap <strong>10</strong> per session</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Stop kills process group</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td><strong>No sandbox</strong>; easy <strong>dedicated directory</strong> (<code>workdir</code>)</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Defer resume/continue</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td><code>$MEMORY/agent_process.json</code>; Settings later</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>User sessions yes; system agents optional (default off)</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>Optional <code>model</code> / allowlisted <code>extra_args</code></td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td>Defer worktree flag; <code>extra_args</code> for grok <code>--worktree</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-sketch">Implementation sketch</h2>
+<ol>
+<li><code>internal/agentproc/</code> — Driver interface, config, exec + PGroup kill.  </li>
+<li>grok + claude drivers with auto-approve defaults.  </li>
+<li><code>call_agent_process</code> tool: sync + <code>background</code> path; <code>workdir</code> mkdir; session concurrency counter (max 10).  </li>
+<li>Wire kill to turn Stop / session close.  </li>
+<li>Example config + system prompt.  </li>
+<li>Tests: mock driver, cwd jail, workdir create, timeout kill, cap enforcement.</li>
+</ol>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Marble cockpit + external horsepower.  </li>
+<li>Non-blocking operator experience via BG + auto-approve.  </li>
+<li>Easy isolation via <code>workdir</code> without full sandbox complexity.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Auto-approve is powerful — prompt/workdir discipline required.  </li>
+<li>High timeouts mean resource use; concurrency cap 10.  </li>
+<li>CLI flag drift needs driver updates.</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Child hangs on auth/TTY</td>
+<td>Auto-approve flags; timeout; kill</td>
+</tr>
+<tr>
+<td>Workspace damage</td>
+<td>workdir isolation; clear prompts</td>
+</tr>
+<tr>
+<td>Too many parallel agents</td>
+<td>max 10 / session</td>
+</tr>
+</tbody>
+</table>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Open questions answered (<code>0014-answers.json</code>)  </li>
+<li>[x] BG/timeouts/auto-approve/workdir/cap locked  </li>
+<li>[x] Implemented (<code>call_agent_process</code>, drivers, agent_process.json)  </li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><code>adr/0014-answers.json</code>  </li>
+<li>Grok CLI: <code>-p/--single</code>, <code>--output-format</code>, <code>--always-approve</code>  </li>
+<li>Claude Code: <code>-p</code> / print mode (verify at implement)  </li>
+<li>ADR-0005 BG tasks; ADR-0010 Stop / PGroup kill  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0014-call-agent-process.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

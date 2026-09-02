@@ -264,7 +264,11 @@ func (r *Runner) clientFor(em EffectiveModel) *model.Client {
 	if c, ok := r.clientCache[key]; ok {
 		return c
 	}
-	c := model.New(em.BaseURL, em.Model, em.MaxOutput, em.APIKey)
+	httpTO := model.DefaultHTTPTimeout
+	if r.Cfg.ModelTimeout > 0 {
+		httpTO = r.Cfg.ModelTimeout
+	}
+	c := model.New(em.BaseURL, em.Model, em.MaxOutput, em.APIKey, httpTO)
 	r.clientCache[key] = c
 	return c
 }

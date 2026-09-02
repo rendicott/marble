@@ -1,0 +1,88 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0027",
+  "title": "Server-side TTS — neural narration",
+  "updated_at": "2026-08-20T20:30:32.189Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "First provider ElevenLabs; Provider interface ready for OpenAI (or others) as second implementation without API redesign.",
+      "notes": "",
+      "question": "Which TTS provider ships first?",
+      "rec": "First provider ElevenLabs; Provider interface ready for OpenAI (or others) as second implementation without API redesign."
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "p1 = on-demand POST /api/sessions/{id}/tts plus client prefetch of next phase; eager_on_wonderstand_turn defaults false.",
+      "notes": "",
+      "question": "Synth trigger in p1: on-demand only vs eager at end of turn?",
+      "rec": "p1 = on-demand POST /api/sessions/{id}/tts plus client prefetch of next phase; eager_on_wonderstand_turn defaults false."
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "p1 config via JSON file and/or process flags (plus env secret); Settings UI toggle/status can follow once core works.",
+      "notes": "",
+      "question": "Config surface for p1?",
+      "rec": "p1 config via JSON file and/or process flags (plus env secret); Settings UI toggle/status can follow once core works."
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Do not fill phase.audio on turn complete by default; optional config eager_on_wonderstand_turn for Wonderstand sessions later (M4).",
+      "notes": "",
+      "question": "Should harness eagerly write phase.audio after assistant presentation is ready?",
+      "rec": "Do not fill phase.audio on turn complete by default; optional config eager_on_wonderstand_turn for Wonderstand sessions later (M4)."
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Allow TTS while session busy — synthesize does not start an agent turn; concurrent with tools/model.",
+      "notes": "",
+      "question": "Allow POST …/tts while session is busy?",
+      "rec": "Allow TTS while session busy — synthesize does not start an agent turn; concurrent with tools/model."
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Attachment GET serves audio/* inline (playable); extend ADR-0019 safe GET allowlist for audio/mpeg, wav, ogg, mp4, webm.",
+      "notes": "",
+      "question": "How should attachment GET treat audio MIME?",
+      "rec": "Attachment GET serves audio/* inline (playable); extend ADR-0019 safe GET allowlist for audio/mpeg, wav, ogg, mp4, webm."
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No presentation protocol_version bump for phase.audio — additive optional field; old clients ignore unknown keys; speech_text remains required.",
+      "notes": "",
+      "question": "Bump ADR-0025 protocol_version for phase.audio?",
+      "rec": "No presentation protocol_version bump for phase.audio — additive optional field; old clients ignore unknown keys; speech_text remains required."
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Cache: content hash → session attachment; optional global $MEMORY/tts-cache for cross-session reuse of same hash.",
+      "notes": "",
+      "question": "TTS cache scope?",
+      "rec": "Cache: content hash → session attachment; optional global $MEMORY/tts-cache for cross-session reuse of same hash."
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Default ElevenLabs model tier = Flash (low latency) for immersion; allow Quality/multilingual model + voice override in config.",
+      "notes": "",
+      "question": "ElevenLabs default model tier (Flash vs higher quality)?",
+      "rec": "Default ElevenLabs model tier = Flash (low latency) for immersion; allow Quality/multilingual model + voice override in config."
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Any authenticated session client may call POST …/tts; Wonderstand is primary UX but API is not wonderstand-only.",
+      "notes": "",
+      "question": "Who may call the TTS API?",
+      "rec": "Any authenticated session client may call POST …/tts; Wonderstand is primary UX but API is not wonderstand-only."
+    }
+  }
+}

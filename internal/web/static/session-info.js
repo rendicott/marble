@@ -105,6 +105,23 @@
     return `<button type="button" class="si-copy" data-copy="${esc(text)}" title="Copy ${esc(label)}">Copy</button>`;
   }
 
+  function titleEditorHtml(s) {
+    const pinned = !!s.title_custom;
+    const hint = pinned
+      ? "Pinned — will not follow new messages"
+      : "Auto — follows latest user message until renamed";
+    return `<div class="si-title-edit">
+      <div class="si-title-row">
+        <input type="text" id="si-title-input" class="si-title-input" maxlength="120"
+          value="${esc(s.title || "")}"
+          placeholder="Session title"
+          aria-label="Session title" />
+        <button type="button" class="si-copy si-rename-btn" id="si-title-save" title="Rename session (permanent pin)">Rename</button>
+      </div>
+      <div class="si-title-hint ${pinned ? "si-title-pinned" : ""}">${esc(hint)}</div>
+    </div>`;
+  }
+
   function availableToolsHtml(list) {
     const tools = list || [];
     if (!tools.length) {
@@ -217,11 +234,66 @@
         .join("")}</div>`;
     }
 
+    const tts = data.tts || {};
+    const art = tts.last_artifact || null;
+    function fmtBytes(n) {
+      const x = Number(n) || 0;
+      if (x < 1024) return x + " B";
+      if (x < 1024 * 1024) return (x / 1024).toFixed(1) + " KB";
+      return (x / (1024 * 1024)).toFixed(2) + " MB";
+    }
+    const ttsStatusBits = [];
+    if (tts.enabled) ttsStatusBits.push("enabled");
+    else ttsStatusBits.push("off");
+    if (tts.ready) ttsStatusBits.push("ready");
+    else if (tts.enabled) ttsStatusBits.push("not ready");
+    if (tts.provider) ttsStatusBits.push(tts.provider);
+    let ttsHtml = `
+      ${row("Process", esc(ttsStatusBits.join(" · ") || "—"))}
+      ${tts.default_voice ? row("Default voice", `<code>${esc(tts.default_voice)}</code>`) : ""}
+      ${tts.default_model ? row("Default model", `<code>${esc(tts.default_model)}</code>`) : ""}
+      ${row("Session audio", esc(String(tts.artifact_count ?? 0) + " artifact(s)"))}
+      ${tts.ready_hint ? row("Hint", `<span class="si-err">${esc(tts.ready_hint)}</span>`) : ""}
+      ${tts.last_error ? row("Last synth error", `<span class="si-err">${esc(tts.last_error)}</span>`) : ""}
+      ${row("Synth ok / err", esc(`${tts.synth_calls ?? 0} / ${tts.synth_errors ?? 0}`))}
+    `;
+    if (art && art.id) {
+      const fmt = (art.mime || "").replace(/^audio\//, "") || "—";
+      ttsHtml += `
+        <div class="si-sec-h" style="margin-top:0.75rem">Last audio artifact</div>
+        ${row("Provider", esc(art.provider || tts.provider || "—"))}
+        ${row("Format", esc(fmt + (art.mime ? ` (${art.mime})` : "")))}
+        ${row("Size", esc(fmtBytes(art.bytes)))}
+        ${art.voice ? row("Voice", `<code>${esc(art.voice)}</code>`) : ""}
+        ${art.model ? row("Model", `<code>${esc(art.model)}</code>`) : ""}
+        ${art.phase_id ? row("Phase", `<code>${esc(art.phase_id)}</code>`) : ""}
+        ${row("Created", esc(fmtTime(art.created_at)))}
+        ${row("Id", `<code>${esc(art.id)}</code>`, copyBtn("att", art.id))}
+        ${
+          art.url
+            ? row(
+                "Play",
+                `<audio controls preload="none" src="${esc(art.url)}?inline=1" style="max-width:100%;height:2rem"></audio>`
+              )
+            : ""
+        }
+      `;
+    } else {
+      ttsHtml += `<div class="si-muted" style="margin-top:0.5rem">No TTS audio in this session yet.</div>`;
+    }
+
     const scrollTop = els.body.scrollTop;
+    const titleFocused =
+      document.activeElement && document.activeElement.id === "si-title-input";
+    const titleDraft = titleFocused ? document.activeElement.value : null;
 
     els.body.innerHTML = `
       <section class="si-sec">
-        ${row("Title", (s.cron ? `<span class="cron-badge" title="Cron job session">🕐</span> ` : "") + esc(s.title || "—"))}
+        ${row(
+          "Title",
+          (s.cron ? `<span class="cron-badge" title="Cron job session">🕐</span> ` : "") +
+            titleEditorHtml(s)
+        )}
         ${row("Id", `<code>${esc(s.id || "")}</code>`, copyBtn("id", s.id))}
         ${row("Status", esc(statusBits.join(" · ")))}
         ${s.cron ? row("Cron", esc(Array.isArray(s.cron_jobs) && s.cron_jobs.length ? s.cron_jobs.join(", ") : "yes — durable schedule target")) : ""}
@@ -229,6 +301,15 @@
         ${row("Updated", esc(fmtTime(s.updated_at)))}
         ${row("Closed", esc(fmtTime(s.closed_at)))}
         ${row("Model", esc(s.model || "—"))}
+        ${
+          s.last_peer_action
+            ? row(
+                "Last peer action",
+                esc(s.last_peer_action) +
+                  (s.last_peer_action_at ? ` <span class="si-muted">· ${esc(fmtTime(s.last_peer_action_at))}</span>` : ""),
+              )
+            : ""
+        }
         ${row("Workspace", `<code class="si-path">${esc(s.workspace || "—")}</code>`)}
         ${row(
           "Markdown",
@@ -238,6 +319,10 @@
         ${s.md_path_abs ? row("MD abs", `<code class="si-path">${esc(s.md_path_abs)}</code>`, copyBtn("abs", s.md_path_abs)) : ""}
         ${row("Messages", esc(String(s.message_count ?? 0)))}
         ${row("Source", esc((data.source || "?") + (data.partial ? " · partial" : "")))}
+      </section>
+      <section class="si-sec">
+        <div class="si-sec-h">TTS / narration</div>
+        ${ttsHtml}
       </section>
       <section class="si-sec">
         <div class="si-sec-h">Available tools</div>
@@ -273,6 +358,72 @@
 
     // Restore scroll so background refresh doesn't jump the panel
     els.body.scrollTop = scrollTop;
+
+    // Keep in-progress title edits across silent refresh
+    const titleInput = document.getElementById("si-title-input");
+    if (titleInput && titleDraft != null) {
+      titleInput.value = titleDraft;
+      titleInput.focus();
+      try {
+        const len = titleInput.value.length;
+        titleInput.setSelectionRange(len, len);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  async function renameFromInfo() {
+    if (!openId) return;
+    const input = document.getElementById("si-title-input");
+    const btn = document.getElementById("si-title-save");
+    if (!input) return;
+    const title = String(input.value || "").trim();
+    if (!title) {
+      alert("Title cannot be empty.");
+      input.focus();
+      return;
+    }
+    const cur = (lastData && lastData.session && lastData.session.title) || "";
+    if (title === String(cur).trim() && lastData && lastData.session && lastData.session.title_custom) {
+      // Already pinned with same title — no-op
+      return;
+    }
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "…";
+    }
+    try {
+      const res = await api(`/api/sessions/${encodeURIComponent(openId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title }),
+      });
+      const sum = (res && res.session) || res || {};
+      const newTitle = sum.title || title;
+      if (lastData && lastData.session) {
+        lastData.session.title = newTitle;
+        lastData.session.title_custom = true;
+      }
+      window.dispatchEvent(
+        new CustomEvent("marble:session-renamed", {
+          detail: {
+            id: openId,
+            title: newTitle,
+            title_custom: true,
+            session: sum,
+          },
+        })
+      );
+      // Refresh info so hint / fields match server
+      await load(openId, { silent: true, force: true });
+    } catch (err) {
+      alert(err.message || String(err));
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Rename";
+      }
+    }
   }
 
   /**
@@ -378,6 +529,11 @@
   }
 
   els.body.addEventListener("click", (e) => {
+    const renameBtn = e.target.closest("#si-title-save");
+    if (renameBtn) {
+      renameFromInfo().catch((err) => alert(err.message || String(err)));
+      return;
+    }
     const btn = e.target.closest("button[data-copy]");
     if (!btn) return;
     copyText(btn.getAttribute("data-copy"));
@@ -385,6 +541,13 @@
     setTimeout(() => {
       btn.textContent = "Copy";
     }, 800);
+  });
+
+  els.body.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    if (!e.target || e.target.id !== "si-title-input") return;
+    e.preventDefault();
+    renameFromInfo().catch((err) => alert(err.message || String(err)));
   });
 
   if (els.close) els.close.addEventListener("click", close);

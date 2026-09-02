@@ -16,6 +16,7 @@ const DefaultRecentEvents = 30
 type InfoSession struct {
 	ID           string     `json:"id"`
 	Title        string     `json:"title"`
+	TitleCustom  bool       `json:"title_custom,omitempty"` // operator rename — not auto from messages
 	Status       string     `json:"status"`
 	Busy         bool       `json:"busy"`
 	Dirty        bool       `json:"dirty"`
@@ -31,9 +32,43 @@ type InfoSession struct {
 	MDPathAbs    string     `json:"md_path_abs"`
 	MessageCount int        `json:"message_count"`
 	System       bool       `json:"system"`
+	// LastPeerAction is the latest computer_* blurb (in-memory; empty if never used).
+	LastPeerAction   string  `json:"last_peer_action,omitempty"`
+	LastPeerActionAt *string `json:"last_peer_action_at,omitempty"`
 	// Cron marks sessions used by durable cron jobs (ADR-0015); set by API.
 	Cron     bool     `json:"cron,omitempty"`
 	CronJobs []string `json:"cron_jobs,omitempty"`
+}
+
+// InfoTTSArtifact is one session audio attachment produced by TTS (ADR-0027).
+type InfoTTSArtifact struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	MIME      string `json:"mime,omitempty"`
+	Bytes     int64  `json:"bytes"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Voice     string `json:"voice,omitempty"`
+	PhaseID   string `json:"phase_id,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
+// InfoTTS is process TTS status plus this session's latest audio artifact.
+type InfoTTS struct {
+	Enabled       bool             `json:"enabled"`
+	Ready         bool             `json:"ready"`
+	Configured    bool             `json:"configured"`
+	Provider      string           `json:"provider,omitempty"`
+	DefaultVoice  string           `json:"default_voice,omitempty"`
+	DefaultModel  string           `json:"default_model,omitempty"`
+	ReadyHint     string           `json:"ready_hint,omitempty"`
+	LastError     string           `json:"last_error,omitempty"`
+	SynthCalls    int64            `json:"synth_calls,omitempty"`
+	SynthErrors   int64            `json:"synth_errors,omitempty"`
+	ArtifactCount int              `json:"artifact_count"`
+	LastArtifact  *InfoTTSArtifact `json:"last_artifact,omitempty"`
 }
 
 // InfoResponse is GET /api/sessions/{id}/info (ADR-0008).
@@ -43,6 +78,7 @@ type InfoResponse struct {
 	Tools           []db.ToolStat        `json:"tools"` // usage histogram (calls this session)
 	AvailableTools  []tools.CatalogEntry `json:"available_tools"`
 	RecentEvents    []db.EventSummary    `json:"recent_events"`
+	TTS             *InfoTTS             `json:"tts,omitempty"`
 	Source          string               `json:"source"` // db | memory | markdown
 	Partial         bool                 `json:"partial"`
 }
@@ -77,9 +113,11 @@ func (r *Registry) Info(id string) (*InfoResponse, error) {
 	var diskClosed *time.Time
 	var diskMsgs int
 	var diskKind, diskParent string
+	var diskTitleCustom bool
 	r.mu.RLock()
 	if m, ok := r.diskIndex[id]; ok {
 		diskTitle = m.Title
+		diskTitleCustom = m.TitleCustom
 		diskStatus = m.Status
 		diskModel = m.Model
 		diskWS = m.Workspace
@@ -96,6 +134,7 @@ func (r *Registry) Info(id string) (*InfoResponse, error) {
 	if diskTitle == "" && r.store != nil && live == nil {
 		if doc, err := r.store.ReadSession(id); err == nil {
 			diskTitle = doc.Title
+			diskTitleCustom = doc.TitleCustom
 			diskStatus = doc.Status
 			diskModel = doc.Model
 			diskWS = doc.Workspace
@@ -121,6 +160,7 @@ func (r *Registry) Info(id string) (*InfoResponse, error) {
 		out.Session = InfoSession{
 			ID:           sum.ID,
 			Title:        sum.Title,
+			TitleCustom:  sum.TitleCustom,
 			Status:       sum.Status,
 			Busy:         sum.Busy,
 			Dirty:        sum.Dirty,
@@ -135,6 +175,11 @@ func (r *Registry) Info(id string) (*InfoResponse, error) {
 			Workspace:    r.workspace,
 			MDPath:       mdRel,
 			MDPathAbs:    mdAbs,
+			LastPeerAction: sum.LastPeerAction,
+		}
+		if sum.LastPeerActionAt != nil {
+			t := sum.LastPeerActionAt.UTC().Format(time.RFC3339)
+			out.Session.LastPeerActionAt = &t
 		}
 		if sum.ClosedAt != nil {
 			c := sum.ClosedAt.UTC().Format(time.RFC3339)
@@ -150,6 +195,7 @@ func (r *Registry) Info(id string) (*InfoResponse, error) {
 		out.Session = InfoSession{
 			ID:           id,
 			Title:        diskTitle,
+			TitleCustom:  diskTitleCustom,
 			Status:       diskStatus,
 			Busy:         false,
 			Dirty:        false,

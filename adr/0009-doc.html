@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0009</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0009</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0009-mpub.md">Markdown</a>
+      <a href="0009-review.html">Review</a>
+      <a href="0009-answers.json">Answers</a>
+      <a href="0008-doc.html">← 0008</a>
+      <a href="0010-doc.html">0010 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0009-mpub-agent-published-documents-on-the-harness-http-server">ADR-0009: mpub — Agent-published documents on the harness HTTP server</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-18</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tools, http, memory, publishing, agent-output</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (tools + HTTP), ADR-0002/0003 (memory leaf), ADR-0005 (tool suite)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0009-answers.json</code> (<code>2026-07-18T08:04:17.322Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Agents often produce <strong>artifacts</strong> meant for humans outside the chat transcript: research notes, runbooks, status pages, incident timelines. Today those either sit in the workspace (mixed with project files) or only in session Markdown.</p>
+<p><strong>mpub</strong> (“Marble publish”) gives every session a first-class tool to <strong>publish content into the harness memory tree</strong> and have it <strong>served immediately</strong> from the same HTTP server as the Marble UI:</p>
+<pre><code>user: Do research on foo and mpub it
+agent: … research …
+agent: mpub(slug=&quot;foo-research&quot;, content=&quot;…&quot;)
+→ http://127.0.0.1:8080/mpub/foo-research
+</code></pre>
+<p>Requirements implied by the product sketch:</p>
+<ol>
+<li><strong>Tool</strong> available to every agent (built-in, not MCP-only).  </li>
+<li><strong>Storage</strong> under <code>--memory</code> (harness-owned, not the workspace jail).  </li>
+<li><strong>HTTP serve</strong> path under the Marble listen address: <code>/mpub/&lt;slug&gt;</code>.  </li>
+<li>Durable across restarts (files on disk).</li>
+</ol>
+<h2 id="decision">Decision</h2>
+<ol>
+<li>Built-in tools: <strong><code>mpub_publish</code></strong>, <strong><code>mpub_list</code></strong>, <strong><code>mpub_get</code></strong>, <strong><code>mpub_unpublish</code></strong> (<strong>Q1</strong>, <strong>Q11</strong>).  </li>
+<li>Store under <code>$MEMORY/mpub/&lt;slug&gt;/</code> (jailed; not workspace).  </li>
+<li><strong>Primary format: HTML</strong>; markdown also supported and <strong>rendered to a simple HTML page</strong> when served (<strong>Q2</strong>, <strong>Q3</strong>).  </li>
+<li>HTTP (before SPA catch-all): <code>GET /mpub</code> index, <code>GET /mpub/{slug}</code>, optional raw (<strong>Q7</strong>, <strong>Q12</strong>).  </li>
+<li>Default <strong>overwrite</strong> on publish; optional <code>if_exists=fail</code>; <strong>no append</strong> (<strong>Q4</strong>, <strong>Q13</strong>).  </li>
+<li>Agent <strong>must supply slug</strong> in the tool call (<strong>Q8</strong>).  </li>
+<li>Max body <strong>2 MiB</strong>; HTML allowed without sanitizer (XSS documented) (<strong>Q5</strong>, <strong>Q6</strong>).  </li>
+<li>Meta records <strong><code>session_id</code></strong> when available (<strong>Q9</strong>).  </li>
+<li>Tool result URL: <code>http://127.0.0.1{port}/mpub/{slug}</code> from <code>--addr</code> (<strong>Q14</strong>).  </li>
+<li>Works in <strong>limp</strong> (disk + HTTP only) (<strong>Q15</strong>). No SPA browser in v1 (<strong>Q10</strong>).  </li>
+<li>Unauthenticated same as UI; document exposure of <code>/mpub/*</code> (<strong>updated</strong>: see visibility — private pages are admin-only when OAuth is on).</li>
+</ol>
+<h3 id="visibility-follow-on-adr-0017-4b">Visibility (follow-on, ADR-0017 §4b)</h3>
+<table>
+<thead>
+<tr>
+<th>Visibility</th>
+<th>Who can read HTTP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>public</strong></td>
+<td>Anyone</td>
+</tr>
+<tr>
+<td><strong>private</strong> (default for new <code>mpub_publish</code>)</td>
+<td>Allowlisted admins when google auth is on; everyone in open mode</td>
+</tr>
+<tr>
+<td>Legacy meta without field</td>
+<td>Treated as <strong>public</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Tools: <code>mpub_publish(visibility=…)</code> (omit on overwrite keeps current); <code>mpub_set_visibility</code> promote/demote.</p>
+<h2 id="decisions-locked-q1q15">Decisions locked (Q1–Q15)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Separate <code>mpub_publish</code> / <code>list</code> / <code>get</code> / <code>unpublish</code></td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td><strong>Primary format HTML</strong>; markdown supported + server HTML render</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Markdown served as simple HTML page for browser reading</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Default overwrite; optional <code>if_exists=fail</code></td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Max body <strong>2 MiB</strong></td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Allow <code>text/html</code>; document XSS; no sanitizer v1</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Simple HTML index at <code>/mpub</code></td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Agent determines <strong>slug</strong> in tool call (required)</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Record <code>session_id</code> in meta when available</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Defer SPA browser; HTTP pages enough v1</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td><code>mpub_unpublish</code> in v1</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Single slug segment only</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>No append — full replace only</td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td>URL <code>http://127.0.0.1{port}/mpub/{slug}</code> from <code>--addr</code></td>
+</tr>
+<tr>
+<td><strong>Q15</strong></td>
+<td>Works in limp mode (disk + HTTP)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="product-framing">Product framing</h2>
+<table>
+<thead>
+<tr>
+<th>Actor</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent</td>
+<td>Persist finished work for the operator without polluting the project tree</td>
+</tr>
+<tr>
+<td>Operator</td>
+<td>Open a stable link, share on the trust network, re-read after session close</td>
+</tr>
+<tr>
+<td>Later</td>
+<td>Index, search, UI browser of pubs (out of scope unless we pull it in)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="architecture">Architecture</h2>
+<pre><code>  Agent loop
+      │ mpub_publish / mpub_list / …
+      ▼
+  internal/mpub  ──write──►  $MEMORY/mpub/&lt;slug&gt;/
+      ▲
+      │ GET /mpub/*
+  HTTP server (marble-harness)
+</code></pre>
+<h3 id="package-sketch">Package sketch</h3>
+<pre><code>internal/
+  mpub/
+    store.go      # path jail, read/write, list, delete
+    slug.go       # validation
+    render.go     # markdown→HTML optional
+  tools/
+    mpub.go       # tool specs + execute
+  api/
+    mpub.go       # HTTP handlers
+</code></pre>
+<h3 id="tool-surface-v1-locked">Tool surface (v1 — locked)</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mpub_publish</code></td>
+<td>Create or update a document by slug</td>
+</tr>
+<tr>
+<td><code>mpub_list</code></td>
+<td>List published slugs (+ titles, times)</td>
+</tr>
+<tr>
+<td><code>mpub_get</code></td>
+<td>Fetch metadata + content for the agent</td>
+</tr>
+<tr>
+<td><code>mpub_unpublish</code></td>
+<td>Delete a slug</td>
+</tr>
+</tbody>
+</table>
+<h3 id="mpub_publish-inputs"><code>mpub_publish</code> inputs</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>slug</code></td>
+<td><strong>Required</strong> URL segment; agent-chosen</td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>Human title</td>
+</tr>
+<tr>
+<td><code>content</code></td>
+<td>Body</td>
+</tr>
+<tr>
+<td><code>content_type</code></td>
+<td>Default <strong><code>text/html</code></strong>; also <code>text/markdown</code>, <code>text/plain</code></td>
+</tr>
+<tr>
+<td><code>if_exists</code></td>
+<td>Default overwrite; <code>fail</code> to refuse if present</td>
+</tr>
+<tr>
+<td><code>tags</code></td>
+<td>Optional string[]</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output:</strong></p>
+<pre><code class="language-json">{
+  &quot;ok&quot;: true,
+  &quot;slug&quot;: &quot;foo-research&quot;,
+  &quot;path&quot;: &quot;/mpub/foo-research&quot;,
+  &quot;url&quot;: &quot;http://127.0.0.1:8080/mpub/foo-research&quot;,
+  &quot;bytes&quot;: 4096
+}
+</code></pre>
+<p><code>url</code> host: derive from request <code>Host</code> when available; for tools use listen addr / <code>127.0.0.1</code> + <code>--addr</code> port (open Q).</p>
+<h3 id="slug-rules-proposed">Slug rules (proposed)</h3>
+<ul>
+<li>Allowed: <code>[a-z0-9]([a-z0-9-]*[a-z0-9])?</code> length 1–64  </li>
+<li>Lowercase; reject <code>..</code>, <code>/</code>, empty, reserved (<code>api</code>, <code>static</code>, <code>.</code>)  </li>
+<li>Collision: <code>overwrite</code> replaces; <code>create</code> fails if exists  </li>
+</ul>
+<h3 id="on-disk-layout-detail">On-disk layout (detail)</h3>
+<pre><code>$MEMORY/mpub/&lt;slug&gt;/
+  meta.json
+  content.html        # primary when content_type=text/html
+  content.md          # when markdown
+  content.txt         # when plain
+</code></pre>
+<p><code>meta.json</code> sketch:</p>
+<pre><code class="language-json">{
+  &quot;slug&quot;: &quot;foo-research&quot;,
+  &quot;title&quot;: &quot;Foo research&quot;,
+  &quot;content_type&quot;: &quot;text/html&quot;,
+  &quot;created_at&quot;: &quot;2026-07-18T12:00:00Z&quot;,
+  &quot;updated_at&quot;: &quot;2026-07-18T12:05:00Z&quot;,
+  &quot;session_id&quot;: &quot;k7m2q9a3f2&quot;,
+  &quot;tags&quot;: [&quot;research&quot;],
+  &quot;bytes&quot;: 4096
+}
+</code></pre>
+<h3 id="http-serving">HTTP serving</h3>
+<table>
+<thead>
+<tr>
+<th>Content type</th>
+<th>Response</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>text/html</code></td>
+<td>Serve as HTML (<strong>no sanitizer v1</strong>; XSS risk documented — local trust)</td>
+</tr>
+<tr>
+<td><code>text/markdown</code></td>
+<td>Render <strong>simple HTML page</strong> (title + styled body) for browser reading</td>
+</tr>
+<tr>
+<td><code>text/plain</code></td>
+<td><code>text/plain; charset=utf-8</code> (or wrap in minimal HTML — implementer)</td>
+</tr>
+</tbody>
+</table>
+<p>Index <code>GET /mpub</code>: simple HTML list (title, slug, updated_at, link).</p>
+<h3 id="security">Security</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Path escape under mpub</td>
+<td>Strict slug + resolve under <code>$MEMORY/mpub</code></td>
+</tr>
+<tr>
+<td>XSS via published HTML</td>
+<td>Open Q: raw HTML only for trusted local; or strip scripts</td>
+</tr>
+<tr>
+<td>Data exfil / open port</td>
+<td>Same as dashboard; document exposure</td>
+</tr>
+<tr>
+<td>Huge pubs</td>
+<td>Max body size (e.g. 2 MiB)</td>
+</tr>
+<tr>
+<td>Secrets in pubs</td>
+<td>Agent responsibility; optional future redaction</td>
+</tr>
+</tbody>
+</table>
+<h3 id="relationship-to-other-surfaces">Relationship to other surfaces</h3>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workspace tools</td>
+<td>Project files the agent <em>edits</em></td>
+</tr>
+<tr>
+<td>Memory knowledge (<code>memory_write</code>)</td>
+<td>Intentional long-term notes for <em>agent</em> recall</td>
+</tr>
+<tr>
+<td><strong>mpub</strong></td>
+<td>Human-facing published pages on the harness web server</td>
+</tr>
+<tr>
+<td>Session MD</td>
+<td>Chat transcript ground truth</td>
+</tr>
+</tbody>
+</table>
+<p>mpub is <strong>not</strong> a substitute for <code>memory_write</code> (agent memory search) or session transcripts.</p>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Clean “share this result as a page” workflow.  </li>
+<li>Artifacts survive session close and process restart.  </li>
+<li>No extra process — reuses marble-harness HTTP.  </li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Publishes on the same unauthenticated port as the UI.  </li>
+<li>Markdown rendering quality is basic unless we pull a library.  </li>
+<li>Naming collisions if many agents use generic slugs.  </li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent overwrites important pub</td>
+<td><code>if_exists=fail</code>; operator unpublish</td>
+</tr>
+<tr>
+<td>Disk fill</td>
+<td>2 MiB cap + list/unpublish</td>
+</tr>
+<tr>
+<td>XSS via published HTML</td>
+<td>Document; local/Tailscale trust only</td>
+</tr>
+<tr>
+<td>Confused with workspace paths</td>
+<td>tool descriptions + <code>$MEMORY/mpub</code> tree</td>
+</tr>
+</tbody>
+</table>
+<h2 id="out-of-scope">Out of scope</h2>
+<ul>
+<li>Multi-user ACLs / signed URLs  </li>
+<li>Version history / diffs of pubs  </li>
+<li>Full site generator / media galleries  </li>
+<li>SPA mpub browser (v1)  </li>
+<li>Nested slugs  </li>
+</ul>
+<h2 id="implementation-order-after-accept">Implementation order (after accept)</h2>
+<ol>
+<li><code>internal/mpub</code> store + slug validation + tests  </li>
+<li>Tools: publish, list, get, unpublish  </li>
+<li>HTTP <code>GET /mpub</code> + <code>GET /mpub/{slug}</code> (HTML primary; MD→HTML)  </li>
+<li>Wire tools into registry; system prompt one-liner  </li>
+<li>Simple MD→HTML template  </li>
+<li>Health/About: mpub count or link  </li>
+<li>Docs + example usage  </li>
+</ol>
+<h2 id="open-questions">Open questions</h2>
+<p><strong>None blocking.</strong> All Q1–Q15 locked — see <strong>Decisions locked</strong>.</p>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Scope (tool + memory store + <code>/mpub</code> HTTP) agreed  </li>
+<li>[x] Layout under <code>$MEMORY/mpub</code> agreed  </li>
+<li>[x] Q1–Q15 locked  </li>
+<li>[x] Ready to implement  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-18</td>
+<td>Initial proposal</td>
+</tr>
+<tr>
+<td>2026-07-18</td>
+<td>Q1–Q15 locked; status → <strong>Accepted</strong>; primary format HTML</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0002 memory leaf  </li>
+<li>ADR-0005 tool suite  </li>
+<li>HTTP SPA host: <code>internal/web</code>, <code>internal/api/server.go</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0009-mpub.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

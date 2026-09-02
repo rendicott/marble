@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0017</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0017</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0017-google-oauth-auth.md">Markdown</a>
+      <a href="0017-review.html">Review</a>
+      <a href="0017-answers.json">Answers</a>
+      <a href="0016-doc.html">← 0016</a>
+      <a href="0018-doc.html">0018 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0017-google-oauth-login-multi-user-identity-tls">ADR-0017: Google OAuth Login, Multi-User Identity &amp; TLS</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-20</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>auth, oauth, google, multi-user, security, sessions, ui, tls, https</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001, ADR-0007, ADR-0009, ADR-0010, ADR-0016</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0017-answers.json</code> (<code>2026-07-20T03:51:19.494Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Marble is open by default (local operator trust). Operators want optional <strong>Sign in with Google</strong>, an <strong>email allowlist</strong> (everyone full admin), <strong>identity on chat history</strong> (not sent to the model), public <strong><code>/mpub</code></strong>, optional <strong>in-process TLS</strong>, and compatibility with <strong>reverse-proxy TLS</strong> (Caddy, ALB, Tailscale Serve).</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li>Optional Google OAuth (authorization code + PKCE + state).  </li>
+<li><strong>open</strong> vs <strong>google</strong> mode from complete CLI config; partial OAuth → fatal.  </li>
+<li>Allowlist = flag ∪ file; exact emails; all full admin.  </li>
+<li>Shared chat sessions; single busy lock.  </li>
+<li>Identity on user messages in UI/MD/events — <strong>never</strong> to the model.  </li>
+<li>mpub: <strong>public</strong> pages stay open; <strong>private</strong> pages admin-only when google mode (see follow-on); health public (account <strong>count</strong> only).  </li>
+<li>Optional TLS via cert/key <strong>files</strong>; reverse proxy without local certs allowed (warn).  </li>
+<li>Attribute Stop / cron Run-now to actor in <strong>log + session events</strong> only.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>Other OAuth providers; RBAC roles  </li>
+<li>Domain wildcards; durable login across restart  </li>
+<li>Automatic Let&rsquo;s Encrypt / ACME  </li>
+<li>mTLS; HTTP→HTTPS :80 redirect listener  </li>
+<li><code>--tls-key-env</code> (defer)  </li>
+</ul>
+<h2 id="decision">Decision</h2>
+<h3 id="1-auth-modes">1. Auth modes</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>When</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>open</strong></td>
+<td>OAuth not fully configured</td>
+<td>No login (today)</td>
+</tr>
+<tr>
+<td><strong>google</strong></td>
+<td>client-id + secret-env (non-empty) + redirect + non-empty allowlist</td>
+<td>Login required for protected routes</td>
+</tr>
+<tr>
+<td><strong>invalid</strong></td>
+<td>Partial OAuth flags</td>
+<td><strong>Fatal</strong> startup</td>
+</tr>
+</tbody>
+</table>
+<p>No separate <code>--auth-required</code> flag.</p>
+<h3 id="2-oauth-launch-flags">2. OAuth launch flags</h3>
+<pre><code class="language-text">--oauth-client-id=….apps.googleusercontent.com
+--oauth-client-secret-env=GOOGLE_OAUTH_CLIENT_SECRET
+--oauth-redirect-url=https://public-host:8080/auth/callback
+--oauth-allow-emails=a@x.com,b@y.com
+--oauth-allow-file=/path/to/allowlist.txt
+</code></pre>
+<ul>
+<li>Secret only via <strong>env var name</strong> (never argv).  </li>
+<li>Allowlist: union of emails + file; lowercase exact match; <code>#</code> comments in file.  </li>
+<li>Redirect URL fully explicit (document Tailscale HTTPS).  </li>
+</ul>
+<h3 id="3-oauth-flow-cookie">3. OAuth flow &amp; cookie</h3>
+<ul>
+<li>Google OIDC: code + <strong>PKCE</strong> + <code>state</code>; scopes <code>openid email profile</code>; require <code>email_verified</code>.  </li>
+<li>Cookie <code>marble_session</code>: HttpOnly, SameSite=Lax, Max-Age <strong>7 days</strong> absolute, in-memory server map.  </li>
+<li><code>Secure</code> cookie unless redirect is <code>http://localhost</code> or <code>http://127.0.0.1</code>.  </li>
+<li>Re-login after harness restart.  </li>
+<li>Routes: <code>/auth/login</code>, <code>/auth/callback</code>, <code>/auth/logout</code>, <code>/auth/me</code>.  </li>
+<li>CSRF: mutating SPA API calls require header <strong><code>X-Marble-Requested-With: fetch</code></strong>.  </li>
+<li>SSE: same-site cookie; UI handles <strong>401</strong> → re-login.</li>
+</ul>
+<h3 id="4-public-vs-protected">4. Public vs protected</h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>google mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/mpub</code>, <code>/mpub/*</code></td>
+<td><strong>Path public at middleware</strong>; handler gates <strong>private</strong> docs (admin cookie). Anonymous private/missing → <strong>uniform 404</strong>. Strict <strong>CSP</strong> (no scripts) on mpub responses</td>
+</tr>
+<tr>
+<td><code>/auth/*</code></td>
+<td><strong>Public</strong> (login rate-limited; pending PKCE capped + GC)</td>
+</tr>
+<tr>
+<td><code>GET /api/health</code></td>
+<td><strong>Public minimal</strong> when anonymous (<code>ok</code>, <code>auth_mode</code>, <code>tls_enabled</code>); full detail when authenticated</td>
+</tr>
+<tr>
+<td>SPA + other <code>/api/*</code></td>
+<td><strong>Protected</strong> + baseline security headers (<code>X-Frame-Options: DENY</code>, etc.)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="4b-mpub-visibility-follow-on-to-adr-0009">4b. mpub visibility (follow-on to ADR-0009)</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>public</strong></td>
+<td>Anyone can <code>GET /mpub/{slug}</code> (and appears on public index)</td>
+</tr>
+<tr>
+<td><strong>private</strong></td>
+<td>Allowlisted signed-in admins only; anonymous → login redirect (browser) or 401 JSON</td>
+</tr>
+<tr>
+<td><strong>Default on <code>mpub_publish</code></strong></td>
+<td><strong>private</strong> unless user explicitly asks for public</td>
+</tr>
+<tr>
+<td><strong>Legacy meta</strong> (no <code>visibility</code> field)</td>
+<td>Treated as <strong>public</strong> (preserve old links)</td>
+</tr>
+<tr>
+<td><strong>Promote / demote</strong></td>
+<td><code>mpub_set_visibility</code> or <code>mpub_publish</code> with <code>visibility=</code></td>
+</tr>
+<tr>
+<td><strong>open auth mode</strong></td>
+<td>No login; all viewers treated as admin (private still readable locally)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="5-multi-user-product">5. Multi-user product</h3>
+<ul>
+<li><strong>Shared</strong> session list for all allowlisted admins.  </li>
+<li>One active turn per session.  </li>
+<li>User messages store <code>user_email</code>, <code>user_name</code>, <code>user_sub</code>.  </li>
+<li><strong>Model history:</strong> plain content only — <strong>no</strong> identity prefix.  </li>
+<li>UI: identity chips on user bubbles; header shows email + logout.  </li>
+<li>Settings (authenticated): show <strong>full allowlist emails</strong> + client id + mode.  </li>
+<li><strong>Stop / cron Run-now:</strong> record acting user in <strong>server log + session events</strong> only (not chat, not model).</li>
+</ul>
+<h3 id="6-tls">6. TLS</h3>
+<pre><code class="language-text">--tls-cert-file=/path/to/fullchain.pem
+--tls-key-file=/path/to/privkey.pem
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Both cert + key set</td>
+<td>HTTPS on <code>--addr</code></td>
+</tr>
+<tr>
+<td>Only one of cert/key</td>
+<td><strong>Fatal</strong></td>
+</tr>
+<tr>
+<td>Neither</td>
+<td>HTTP (today)</td>
+</tr>
+<tr>
+<td>google mode + <code>https://</code> redirect + no TLS files</td>
+<td><strong>Warn</strong> only — reverse proxy / ALB / Caddy / Tailscale Serve OK</td>
+</tr>
+<tr>
+<td>Auto Let&rsquo;s Encrypt</td>
+<td><strong>Deferred</strong> — document file certs + reverse proxy</td>
+</tr>
+<tr>
+<td>:80 redirect / mTLS / key-via-env</td>
+<td><strong>Deferred</strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisions-locked-q1q28b">Decisions locked (Q1–Q28b)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>open when OAuth absent</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>google only when fully configured</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>partial OAuth → fatal</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>allow-emails ∪ allow-file</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>shared sessions</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>single busy lock</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>identity fields on user messages</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>health public</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>PKCE + state</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>7d cookie</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>in-memory sessions</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>CSRF custom header</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td><strong>no</strong> identity to model</td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td>Settings: emails; health: count</td>
+</tr>
+<tr>
+<td><strong>Q15</strong></td>
+<td>exact emails only</td>
+</tr>
+<tr>
+<td><strong>Q16</strong></td>
+<td>no &ndash;auth-required</td>
+</tr>
+<tr>
+<td><strong>Q17</strong></td>
+<td><strong>A+B</strong> log + session events for Stop / cron run-now</td>
+</tr>
+<tr>
+<td><strong>Q18</strong></td>
+<td>SSE cookie; 401 re-login</td>
+</tr>
+<tr>
+<td><strong>Q19</strong></td>
+<td>explicit redirect URL</td>
+</tr>
+<tr>
+<td><strong>Q20</strong></td>
+<td>Secure=false only localhost/127.0.0.1</td>
+</tr>
+<tr>
+<td><strong>Q21</strong></td>
+<td>optional in-process TLS</td>
+</tr>
+<tr>
+<td><strong>Q22</strong></td>
+<td><code>--tls-cert-file</code> + <code>--tls-key-file</code></td>
+</tr>
+<tr>
+<td><strong>Q23</strong></td>
+<td>key file only in v1</td>
+</tr>
+<tr>
+<td><strong>Q24</strong></td>
+<td>defer auto LE</td>
+</tr>
+<tr>
+<td><strong>Q25</strong></td>
+<td>partial TLS → fatal</td>
+</tr>
+<tr>
+<td><strong>Q26</strong></td>
+<td>no :80 redirect</td>
+</tr>
+<tr>
+<td><strong>Q27</strong></td>
+<td>defer mTLS</td>
+</tr>
+<tr>
+<td><strong>Q28</strong></td>
+<td>reverse-proxy TLS without local certs is valid</td>
+</tr>
+<tr>
+<td><strong>Q28b</strong></td>
+<td><strong>warn</strong> if https redirect and no in-process TLS</td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-order">Implementation order</h2>
+<ol>
+<li>Config: OAuth + TLS flags; mode detection; allowlist load; TLS file validation.  </li>
+<li><code>http.Server</code> ListenAndServeTLS when cert/key set; startup warnings for Q28b.  </li>
+<li><code>internal/auth</code>: Google OAuth, PKCE, cookie sessions, middleware, CSRF header.  </li>
+<li>Wire protect SPA + API; public mpub/health/auth.  </li>
+<li>Message identity + MD; UI chips; no model prefix.  </li>
+<li>Attribute Stop / cron run-now in log + events.  </li>
+<li>Settings allowlist list; health account count.  </li>
+<li>Login/logout UI; SSE 401.  </li>
+<li>Tests + README (Google Console, allowlist, cert files, reverse proxy).  </li>
+</ol>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] All open questions answered  </li>
+<li>[x] ADR locked + review HTML updated  </li>
+<li>[x] open/google modes; fail closed on partial OAuth/TLS  </li>
+<li>[x] mpub visibility (public open / private admin) + health public count only  </li>
+<li>[x] Identity on messages; never to model  </li>
+<li>[x] Optional file TLS; warn-only without certs for proxy  </li>
+<li>[x] A+B attribution for Stop / cron run-now  </li>
+<li>[x] Tests  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-20</td>
+<td>Proposed</td>
+</tr>
+<tr>
+<td>2026-07-20</td>
+<td>Round 1 lock Q1–Q16, Q18–Q20</td>
+</tr>
+<tr>
+<td>2026-07-20</td>
+<td>Round 2: Q17 A+B; TLS Q21–Q28b locked; reverse-proxy warn; accepted</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li>Google OAuth 2.0 / OIDC web server apps  </li>
+<li>ADR-0009 mpub; ADR-0016 env secrets  </li>
+<li>OWASP session management / CSRF  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0017-google-oauth-auth.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

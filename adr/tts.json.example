@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "provider": "elevenlabs",
+  "api_key_env": "ELEVENLABS_API_KEY",
+  "default_voice": "REPLACE_WITH_ELEVENLABS_VOICE_ID",
+  "default_model": "eleven_flash_v2_5",
+  "format": "mp3",
+  "cache": true,
+  "max_chars_per_request": 4000,
+  "max_concurrent": 2,
+  "eager_on_wonderstand_turn": false
+}

@@ -25,7 +25,7 @@ Static files under `internal/web/static/` are **embedded at build time**.
 
 - Start a second harness against the same `--memory` directory
 - Commit secrets, machine-specific Tailscale hostnames, or absolute personal home paths
-- Check in `bin/`, `~/.marble`, or `~/.config/marble/env`
+- Check in `bin/` or `~/.marble` (includes `$MEMORY/env` secrets)
 
 ### Module path
 

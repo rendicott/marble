@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0001</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0001</span>
+      <span class="status proposed">Proposed</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0001-harness-inner-loop.md">Markdown</a>
+      <a href="0001-review.html">Review</a>
+      <a href="0002-doc.html">0002 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0001-marble-harness-inner-loop">ADR-0001: Marble Harness Inner Loop</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Proposed</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-16</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>architecture, harness, llm, golang, web</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Existing agent harnesses (Hermes, OpenClaw, and similar) provide useful primitives but ship heavy UX, multi-provider auth surfaces, and complexity that get in the way of a clean coding loop. We want a <strong>small, ownable harness</strong> — written in Go — whose center is:</p>
+<ol>
+<li>A <strong>local OpenAI-compatible model</strong> (no API keys).</li>
+<li>A <strong>tool-calling agent loop</strong> with a minimal first toolset.</li>
+<li>A <strong>web portal</strong> for multi-session chat, not a terminal-in-browser.</li>
+</ol>
+<p>This ADR defines the <strong>inner loop</strong> only: model I/O, tools, session isolation, context budget, CLI launch surface, and the first web UI shell. Outer concerns (auth, remote multi-user, plugins, MCP, messaging gateways) are explicitly out of scope.</p>
+<h3 id="first-model-same-as-opencode">First model (same as OpenCode)</h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Protocol</td>
+<td>OpenAI-compatible Chat Completions (<code>/v1/chat/completions</code>)</td>
+</tr>
+<tr>
+<td>Base URL (default)</td>
+<td><code>http://127.0.0.1:8000/v1</code></td>
+</tr>
+<tr>
+<td>Model ID (default)</td>
+<td><code>Qwen/Qwen3.5-122B-A10B-FP8</code></td>
+</tr>
+<tr>
+<td>Context window (default)</td>
+<td><code>262144</code> tokens</td>
+</tr>
+<tr>
+<td>Max output (default)</td>
+<td><code>32768</code> tokens</td>
+</tr>
+<tr>
+<td>Auth</td>
+<td>None required (empty or dummy <code>Authorization</code> if the client library insists)</td>
+</tr>
+</tbody>
+</table>
+<p>All of the above are <strong>CLI-configurable</strong> so we can retarget another OpenAI-compatible endpoint without code changes.</p>
+<h2 id="decision">Decision</h2>
+<p>Build <strong>Marble</strong> as a single Go binary (<code>marble-harness</code>) that:</p>
+<ol>
+<li>Starts an HTTP server hosting a web portal.</li>
+<li>Owns an in-process <strong>session registry</strong>; each session is an independent goroutine + message history + tool runtime.</li>
+<li>Implements an <strong>agent loop</strong>: user message → model (with tools) → tool calls → tool results → model → … until a final assistant message (or limit hit).</li>
+<li>Ships three filesystem tools first: <code>file_read</code>, <code>file_write</code>, <code>list_files</code>.</li>
+<li>Enforces <strong>context budget</strong> on every model call using configurable token limits and a simple trim policy.</li>
+</ol>
+<h2 id="architecture-center-out">Architecture (center-out)</h2>
+<pre><code>                    ┌─────────────────────────────────────┐
+                    │           Web Portal (UI)            │
+                    │  left: sessions   right: chat + box  │
+                    └───────────────┬─────────────────────┘
+                                    │ HTTP + SSE/WebSocket
+                    ┌───────────────▼─────────────────────┐
+                    │         marble-harness (Go)          │
+                    │  HTTP API · Session Registry · FS    │
+                    └───────────────┬─────────────────────┘
+               ┌────────────────────┼────────────────────┐
+               ▼                    ▼                    ▼
+        ┌────────────┐      ┌────────────┐      ┌────────────┐
+        │ Session A  │      │ Session B  │      │ Session N  │
+        │ history    │      │ history    │      │ history    │
+        │ agent loop │      │ agent loop │      │ agent loop │
+        └─────┬──────┘      └─────┬──────┘      └─────┬──────┘
+              │                   │                   │
+              └───────────────────┼───────────────────┘
+                                  ▼
+                    ┌─────────────────────────────┐
+                    │  Model Client (OpenAI wire) │
+                    │  base-url · model · limits  │
+                    └──────────────┬──────────────┘
+                                   ▼
+                    ┌─────────────────────────────┐
+                    │  Local vLLM (Qwen, no key)  │
+                    └─────────────────────────────┘
+</code></pre>
+<h3 id="package-sketch-implementation-later">Package sketch (implementation later)</h3>
+<pre><code>marble/
+  adr/                          # this document family
+  cmd/marble-harness/           # main, CLI flags
+  internal/
+    config/                     # flag → Config struct
+    model/                      # OpenAI-compatible client
+    session/                    # registry, history, agent loop
+    tools/                      # file_read, file_write, list_files
+    token/                      # budget + trim (approx tokenizer first)
+    api/                        # HTTP handlers, SSE stream
+    web/                        # embedded static UI (embed.FS)
+</code></pre>
+<h2 id="agent-loop-inner-loop">Agent loop (inner loop)</h2>
+<p>For a single user turn in one session:</p>
+<ol>
+<li>Append <code>user</code> message to session history.</li>
+<li><strong>Budget check / trim</strong> history + system + tool schemas so estimated tokens ≤ <code>context_limit - max_output - reserve</code>.</li>
+<li>Call <code>POST {base_url}/chat/completions</code> with:
+   - <code>model</code>
+   - <code>messages</code> (full remaining history)
+   - <code>tools</code> (OpenAI function/tool schema for the three FS tools)
+   - <code>tool_choice: "auto"</code>
+   - <code>max_tokens</code> = configured max output</li>
+<li>Parse response:
+   - If <code>tool_calls</code> present: execute each tool (in order, same turn), append <code>tool</code> role results, go to step 2 (loop).
+   - If final <code>content</code> (and no tool calls): append <code>assistant</code> message, stream/emit to UI, stop turn.</li>
+<li>Safety caps (configurable later; sensible defaults now):
+   - max tool iterations per user turn (e.g. 25)
+   - max concurrent tool calls (serial first version is fine)
+   - per-tool timeouts</li>
+</ol>
+<p>Sessions never share history. They share only:</p>
+<ul>
+<li>process-level config (model endpoint, limits, workspace root)</li>
+<li>tool <em>implementations</em> (same code paths)</li>
+<li>the HTTP server / UI shell</li>
+</ul>
+<h2 id="tools-v1">Tools (v1)</h2>
+<p>All tools operate under a single <strong>workspace root</strong> (CLI flag, default: process CWD). Paths are resolved relative to that root; path escape (<code>..</code> outside root) is rejected.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Inputs</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>file_read</code></td>
+<td>Read a text file</td>
+<td><code>path</code>, optional <code>offset</code>/<code>limit</code> (lines)</td>
+<td>file contents (truncated if huge)</td>
+</tr>
+<tr>
+<td><code>file_write</code></td>
+<td>Create/overwrite a text file</td>
+<td><code>path</code>, <code>content</code></td>
+<td>ack + bytes written</td>
+</tr>
+<tr>
+<td><code>list_files</code></td>
+<td>List directory entries</td>
+<td><code>path</code> (default <code>.</code>), optional recursive bool</td>
+<td>name, type, size</td>
+</tr>
+</tbody>
+</table>
+<p>Tool results are returned as strings to the model. Large reads are truncated with a clear marker so the model can re-request slices.</p>
+<h2 id="context-limits">Context limits</h2>
+<p>Limits are first-class and <strong>CLI-configurable</strong> (not hardcoded to Qwen):</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--base-url</code></td>
+<td><code>http://127.0.0.1:8000/v1</code></td>
+<td>OpenAI-compatible API root</td>
+</tr>
+<tr>
+<td><code>--model</code></td>
+<td><code>Qwen/Qwen3.5-122B-A10B-FP8</code></td>
+<td>Model id</td>
+</tr>
+<tr>
+<td><code>--context-limit</code></td>
+<td><code>262144</code></td>
+<td>Total context window (input+output budget frame)</td>
+</tr>
+<tr>
+<td><code>--max-output</code></td>
+<td><code>32768</code></td>
+<td>Max generation tokens per model call</td>
+</tr>
+<tr>
+<td><code>--context-reserve</code></td>
+<td><code>8192</code></td>
+<td>Headroom reserved for tool schemas + formatting</td>
+</tr>
+<tr>
+<td><code>--workspace</code></td>
+<td><code>.</code></td>
+<td>Filesystem root for tools</td>
+</tr>
+<tr>
+<td><code>--addr</code></td>
+<td><code>:8080</code></td>
+<td>Web + API listen address</td>
+</tr>
+</tbody>
+</table>
+<h3 id="budget-policy-v1-simple">Budget policy (v1, simple)</h3>
+<p>Let <code>budget = context_limit - max_output - context_reserve</code>.</p>
+<p>Before each model call:</p>
+<ol>
+<li>Estimate tokens for system prompt + tool JSON schemas + messages (approximation OK in v1: e.g. <code>chars/4</code> or a lightweight tokenizer).</li>
+<li>If over budget, drop <strong>oldest non-system messages</strong> first (FIFO trim), never drop the latest user message.</li>
+<li>Optionally compress oversized single tool results (truncate middle).</li>
+</ol>
+<p>No automatic summarization in v1 (can be a later ADR). The loop must <strong>fail closed</strong> with a clear UI error if even the latest turn alone exceeds budget.</p>
+<h2 id="concurrency-model">Concurrency model</h2>
+<ul>
+<li><strong>Session registry</strong>: mutex-protected map <code>sessionID → *Session</code>.</li>
+<li><strong>Session</strong>: owns <code>[]Message</code>, a <code>sync.Mutex</code> for history, and at most one <strong>in-flight agent turn</strong> (channel or <code>atomic</code> busy flag). Concurrent user posts while busy return <code>409</code> or queue (v1: reject with busy).</li>
+<li><strong>Agent turn</strong>: runs in a goroutine; streams events to subscribers (SSE).</li>
+<li>Sessions are independent: no shared conversation memory, no cross-session tool state.</li>
+</ul>
+<h2 id="web-portal-primary-ui">Web portal (primary UI)</h2>
+<p>Single-page app (static files embedded in the binary):</p>
+<pre><code>┌──────────────────┬────────────────────────────────────────┐
+│  Marble          │  Session title / id                     │
+│  [ + New ]       ├────────────────────────────────────────┤
+│                  │                                         │
+│  ○ Session A     │   assistant / user / tool bubbles       │
+│  ● Session B     │   (scrollable transcript)               │
+│  ○ Session C     │                                         │
+│                  │                                         │
+│                  ├────────────────────────────────────────┤
+│                  │  [ message input .................... ] │
+│                  │  [ Send ]                               │
+└──────────────────┴────────────────────────────────────────┘
+</code></pre>
+<h3 id="ux-rules">UX rules</h3>
+<ul>
+<li>Left pane: list sessions + <strong>New session</strong> control; click selects active session.</li>
+<li>Right pane: transcript for active session; chat input at bottom.</li>
+<li>Sending a message includes <strong>full session history</strong> as model context (after budget trim).</li>
+<li>Stream assistant tokens and tool call progress into the transcript (SSE).</li>
+<li>No terminal emulator; native chat UI.</li>
+</ul>
+<h3 id="http-api-sketch">HTTP API (sketch)</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/</code></td>
+<td>SPA</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/sessions</code></td>
+<td>List sessions</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/sessions</code></td>
+<td>Create session</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/sessions/{id}</code></td>
+<td>Session metadata + history</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/sessions/{id}/messages</code></td>
+<td>User message → start agent turn</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/sessions/{id}/events</code></td>
+<td>SSE stream for that session</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/health</code></td>
+<td>Liveness + model config echo</td>
+</tr>
+</tbody>
+</table>
+<p>Persistence: <strong>in-memory only</strong> for v1 (restart clears sessions). Disk persistence is a later ADR.</p>
+<h2 id="cli">CLI</h2>
+<pre><code class="language-bash">marble-harness \
+  --base-url http://127.0.0.1:8000/v1 \
+  --model Qwen/Qwen3.5-122B-A10B-FP8 \
+  --context-limit 262144 \
+  --max-output 32768 \
+  --context-reserve 8192 \
+  --workspace /path/to/project \
+  --addr :8080
+</code></pre>
+<p>Open <code>http://127.0.0.1:8080/</code>.</p>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Centered design: model + tools + sessions are small and testable in Go.</li>
+<li>No API key plumbing for the first model.</li>
+<li>Context limits are explicit and retargetable when the model changes.</li>
+<li>Multi-session isolation is a natural fit for goroutines.</li>
+<li>Web UI is a real chat surface, not a PTY clone.</li>
+</ul>
+<h3 id="negative-trade-offs">Negative / trade-offs</h3>
+<ul>
+<li>Token estimation without a true tokenizer will be approximate (risk of over/under-trimming).</li>
+<li>In-memory sessions only until a persistence ADR.</li>
+<li>Single-host, no auth (fine for local/Tailscale trust network; not public-internet ready).</li>
+<li>Serial tool execution and simple trim policy may feel crude on huge histories.</li>
+<li>Qwen “reasoning” fields (content vs reasoning) may need client-side normalization — validate during implementation.</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model returns <code>content: null</code> with reasoning-only</td>
+<td>Normalize response; request non-thinking or map reasoning→content when needed</td>
+</tr>
+<tr>
+<td>Tailscale endpoint offline</td>
+<td>Health endpoint + clear UI error</td>
+</tr>
+<tr>
+<td>Path escape via tools</td>
+<td>Workspace root jail + clean path checks</td>
+</tr>
+<tr>
+<td>Context blow-up from tool dumps</td>
+<td>Truncate tool results; line-windowed <code>file_read</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="out-of-scope-later-adrs">Out of scope (later ADRs)</h2>
+<ul>
+<li>Auth / multi-user</li>
+<li>Session persistence / resume across restarts</li>
+<li>Summarization / memory</li>
+<li>Extra tools (shell, git, web search, browser)</li>
+<li>MCP / plugin system</li>
+<li>Desktop/TUI clients</li>
+<li>Evaluation harness / replay</li>
+</ul>
+<h2 id="implementation-order-after-adr-acceptance">Implementation order (after ADR acceptance)</h2>
+<ol>
+<li><code>config</code> + <code>model</code> client smoke test against local Qwen.</li>
+<li><code>tools</code> unit tests with temp workspace.</li>
+<li><code>session</code> agent loop (no UI) via a tiny CLI subcommand or test.</li>
+<li>HTTP API + in-memory registry.</li>
+<li>Embedded web portal (sessions list + chat + SSE).</li>
+<li>Context budget integration tests with synthetic long histories.</li>
+</ol>
+<h2 id="acceptance-criteria-for-this-adr">Acceptance criteria (for this ADR)</h2>
+<ul>
+<li>[ ] Stakeholders agree center-out scope and package boundaries.</li>
+<li>[ ] Defaults match OpenCode local Qwen configuration.</li>
+<li>[ ] Tool set limited to the three FS tools for v1.</li>
+<li>[ ] Multi-session concurrency model accepted.</li>
+<li>[ ] Web layout (left sessions / right chat) accepted.</li>
+<li>[ ] CLI flag set accepted as the sole config surface for v1.</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li>OpenCode local provider: <code>~/.config/opencode/opencode.jsonc</code> (<code>local-llama</code> → Qwen3.5-122B-A10B-FP8).</li>
+<li>OpenAI Chat Completions tool calling (wire format for local vLLM).</li>
+<li>Go <code>embed</code> for shipping UI with the binary.</li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0001-harness-inner-loop.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

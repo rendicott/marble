@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0021</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0021</span>
+      <span class="status accepted">Accepted (ready to implement)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0021-marble-desktop-peer.md">Markdown</a>
+      <a href="0021-review.html">Review</a>
+      <a href="0021-answers.json">Answers</a>
+      <a href="0020-doc.html">← 0020</a>
+      <a href="0022-doc.html">0022 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0021-marble-desktop-peer-desktop-agent-implementation">ADR-0021: marble-desktop-peer — Desktop Agent Implementation</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-27</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>marble-desktop-peer, peer, robotgo, playwright, CDP, tray, autostart, packaging, security</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td><a href="0020-doc.html">ADR-0020</a> (system design, harness contract, locked Q1–Q10)</td>
+</tr>
+<tr>
+<td><strong>Repo</strong></td>
+<td><strong><code>github.com/rendicott/marble-desktop-peer</code></strong> (binary <strong><code>marble-peer</code></strong>)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0021-answers.json</code> (<code>2026-07-27T03:20:46.838Z</code>)</td>
+</tr>
+<tr>
+<td><strong>Doc home</strong></td>
+<td>Marble monorepo <code>adr/0021</code> is system pointer; <strong>canonical peer copy</strong> = peer repo <code>adr/0001-desktop-agent.md</code> once repo exists (<strong>Q_P10</strong>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="overview">Overview</h2>
+<p><a href="0020-doc.html">ADR-0020</a> defines the <strong>system</strong>: Marble harness is the brain; a separate peer binary is the hands; mutual pairing; Playwright + robotgo; tools and Settings live in the harness.</p>
+<p><strong>Most of the engineering risk is on the peer.</strong> This ADR is the <strong>implementation design for <code>marble-desktop-peer</code> only</strong>: process model, state machine, browser lifecycle, desktop I/O, tray/mini-UI, credential storage, OS packaging, action queue, and failure modes.</p>
+<p>Harness-side schema/API/tools remain ADR-0020 + future harness PRs (M1–M6). This document is what peer P0–P5 implement.</p>
+<pre><code class="language-text">                    ADR-0020 (system + contract)
+                           │
+           ┌───────────────┴───────────────┐
+           ▼                               ▼
+   marble monorepo                   THIS ADR (0021)
+   pairing hub, tools                marble-desktop-peer
+   Settings, SQLite                  process, OS, browser, desktop
+</code></pre>
+<h2 id="background-why-a-peer-only-adr">Background — why a peer-only ADR</h2>
+<table>
+<thead>
+<tr>
+<th>Complexity</th>
+<th>Lives in peer</th>
+<th>Hard parts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CGO / robotgo / Wayland</td>
+<td>✓</td>
+<td>Build matrix, DPI, permissions</td>
+</tr>
+<tr>
+<td>Playwright / Node / CDP profile</td>
+<td>✓</td>
+<td>Launch, attach, profile path, crashes</td>
+</tr>
+<tr>
+<td>System tray</td>
+<td>✓</td>
+<td>3 OS APIs, no full GUI</td>
+</tr>
+<tr>
+<td>Autostart</td>
+<td>✓</td>
+<td>Login items / LaunchAgent / user systemd</td>
+</tr>
+<tr>
+<td>Device credential at rest</td>
+<td>✓</td>
+<td>Keychain / DPAPI / file 0600</td>
+</tr>
+<tr>
+<td>Action serialize + cancel</td>
+<td>✓</td>
+<td>Single flight, Stop from tray + wire</td>
+</tr>
+<tr>
+<td>Mini UI on localhost</td>
+<td>✓</td>
+<td>Pair + confirm without native windows</td>
+</tr>
+<tr>
+<td>Release signing / notarize</td>
+<td>✓</td>
+<td>Especially macOS</td>
+</tr>
+</tbody>
+</table>
+<p>Harness complexity is real but mostly <strong>CRUD + WS hub + tool proxy</strong> — smaller than making “click my DoorDash” reliable on three desktops.</p>
+<h2 id="goals-non-goals">Goals &amp; Non-Goals</h2>
+<h3 id="goals">Goals</h3>
+<ol>
+<li><strong>Single long-running process</strong> (<code>marble-peer run</code> / autostart) that owns tray, WS client, action queue, browser helper, and desktop driver.  </li>
+<li><strong>Faithful client of ADR-0020 protocol</strong> (<code>peer_protocol_version</code>, mutual pair, dial-out WS).  </li>
+<li><strong>Browser path</strong> (Playwright MCP/helper + dedicated profile) reliable enough for daily logged-in use.  </li>
+<li><strong>Desktop path</strong> (robotgo) as fallback; primary display; safe defaults.  </li>
+<li><strong>Operator can always regain control:</strong> tray Stop, confirm timeouts, Quit, unpair.  </li>
+<li><strong>Ship multi-arch binaries</strong> with clear install docs (Node dependency called out).  </li>
+<li><strong>No secrets leave the machine</strong> except protocol-required device auth material (token/pubkey attestations) — never cookies, never passwords.</li>
+</ol>
+<h3 id="non-goals-v1">Non-goals (v1)</h3>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Implementing harness SQLite / <code>computer_*</code> tools</td>
+<td>ADR-0020 / marble repo</td>
+</tr>
+<tr>
+<td>Multi-monitor, cron drives, cookie export</td>
+<td>Locked out in ADR-0020</td>
+</tr>
+<tr>
+<td>Full native GUI / Electron shell</td>
+<td>Tray + mini HTTP only</td>
+</tr>
+<tr>
+<td>Headless server-only peer (no user session)</td>
+<td>Needs login seat</td>
+</tr>
+<tr>
+<td>Perfect Wayland input day one</td>
+<td>Document X11 / XWayland; browser path still works</td>
+</tr>
+</tbody>
+</table>
+<h2 id="key-decisions-peer">Key Decisions (peer)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>PKD1</strong></td>
+<td><strong>One process</strong> for tray + daemon + miniui + WS (not separate tray helper + agent unless OS forces it)</td>
+<td>Simpler lifecycle; single Stop kills actions</td>
+</tr>
+<tr>
+<td><strong>PKD2</strong></td>
+<td><strong>State machine</strong> for peer lifecycle (see below); all subsystems observe <code>PeerState</code></td>
+<td>Avoid “tray green but browser dead” without signal</td>
+</tr>
+<tr>
+<td><strong>PKD3</strong></td>
+<td><strong>Action executor is a single worker</strong> (queue depth 1 per ADR-0020 Q7); cancel via context</td>
+<td>Matches harness serialization</td>
+</tr>
+<tr>
+<td><strong>PKD4</strong></td>
+<td><strong>Browser supervisor</strong> owns Playwright helper + <strong>system</strong> Chrome/Edge/Chromium (<strong>Q_P7</strong>) with dedicated profile; restart with backoff. On peer Quit: <strong>leave browser running</strong> by default; <code>--kill-browser-on-exit</code> opt-in (<strong>Q_P1</strong>)</td>
+<td>Crash isolation; preserve tabs/logins on Quit</td>
+</tr>
+<tr>
+<td><strong>PKD5</strong></td>
+<td><strong>Profile root</strong> under peer data dir: <code>$MARBLE_PEER_HOME/chrome-profile</code> (default <code>~/.marble-peer</code>)</td>
+<td>ADR-0020 Q2 dedicated profile</td>
+</tr>
+<tr>
+<td><strong>PKD6</strong></td>
+<td><strong>Desktop ops</strong> only through <code>internal/desktop</code> wrapping robotgo; never call robotgo from browser package. <strong><code>computer_screenshot</code></strong> = <strong>full primary desktop</strong> (<strong>Q_P3</strong>)</td>
+<td>Clear layering; vision of whole screen for computer use</td>
+</tr>
+<tr>
+<td><strong>PKD7</strong></td>
+<td><strong>Config</strong> <code>config.json</code>; <strong>secrets</strong> in <strong>OS keychain when available, else <code>credentials</code> mode 0600</strong> (<strong>Q_P4</strong>); <code>status</code> reports which store</td>
+<td>Balance security vs debug</td>
+</tr>
+<tr>
+<td><strong>PKD8</strong></td>
+<td><strong>Mini UI</strong> <code>127.0.0.1</code> only by default. Port: <strong>18765</strong>, else <strong>18766–18775</strong>, else random; write chosen port to state file (<strong>Q_P8</strong>)</td>
+<td>Avoid WAN exposure; survive conflicts</td>
+</tr>
+<tr>
+<td><strong>PKD9</strong></td>
+<td><strong>Logs</strong> to <code>$MARBLE_PEER_HOME/logs/peer.log</code> with rotation; never log cookies/HTML. <strong>No telemetry v1</strong> (<strong>Q_P9</strong>)</td>
+<td>Privacy</td>
+</tr>
+<tr>
+<td><strong>PKD10</strong></td>
+<td><strong>Build tags / CGO</strong>: document robotgo deps; CI builds three targets. <strong>Portable binary + optional <code>install-autostart</code></strong>; no system packages v1 (<strong>Q_P6</strong>)</td>
+<td>Simple install</td>
+</tr>
+<tr>
+<td><strong>PKD11</strong></td>
+<td>Protocol <strong>client only</strong> from marble OpenAPI/JSON</td>
+<td>ADR-0020 Q10</td>
+</tr>
+<tr>
+<td><strong>PKD12</strong></td>
+<td><strong>Confirm</strong> mini-UI + tray; default deny <strong>120s</strong> (ADR-0020 Q3)</td>
+<td>Money/auth gate</td>
+</tr>
+<tr>
+<td><strong>PKD13</strong></td>
+<td><strong>Action deadline:</strong> default <strong>120s</strong>; peer hard <strong>max 5 min</strong> per act; harness may request up to that max and <strong>retry</strong> longer workflows as multiple acts (<strong>Q_P5</strong>)</td>
+<td>Bounded hangs; long jobs via multi-step</td>
+</tr>
+<tr>
+<td><strong>PKD14</strong></td>
+<td><strong>Node/Playwright packaging (</strong>Q_P2<strong>):</strong> Prefer <strong>no system Node pre-install</strong> — spike embedding or side-by-side helper in release if size stays reasonable. If packaging is too hard or artifacts <strong>unwieldy</strong>, fall back to <strong>document system Node</strong> dependency.</td>
+<td>Owner priority: zero Node friction when practical</td>
+</tr>
+<tr>
+<td><strong>PKD15</strong></td>
+<td>After peer repo exists: <strong>copy this ADR to peer <code>adr/0001</code></strong>; marble <strong>0021 remains pointer + system context</strong> (<strong>Q_P10</strong>)</td>
+<td>Dual home without fork drift</td>
+</tr>
+</tbody>
+</table>
+<h2 id="process-architecture">Process architecture</h2>
+<pre><code class="language-mermaid">flowchart TB
+  subgraph main[&quot;marble-peer process&quot;]
+    CLI[cobra/flag main]
+    SM[PeerState machine]
+    Tray[tray systray]
+    Mini[miniui :127.0.0.1]
+    Pair[pair client]
+    WS[ws client dial-out]
+    Q[action queue depth 1]
+    BS[browser supervisor]
+    DS[desktop robotgo]
+    Conf[confirm waiters]
+  end
+
+  Chrome[Chromium + profile]
+  PW[Playwright helper Node]
+  Harness[Marble harness]
+
+  CLI --&gt; SM
+  Tray --&gt; SM
+  Mini --&gt; Pair
+  Mini --&gt; Conf
+  SM --&gt; WS
+  WS --&gt; Harness
+  WS --&gt; Q
+  Q --&gt; BS
+  Q --&gt; DS
+  Q --&gt; Conf
+  BS --&gt; PW
+  BS --&gt; Chrome
+  Tray --&gt; Q
+</code></pre>
+<h3 id="peerstate-normative">PeerState (normative)</h3>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Meaning</th>
+<th>Tray color (rec)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Unpaired</code></td>
+<td>No device credential</td>
+<td>Gray</td>
+</tr>
+<tr>
+<td><code>Pairing</code></td>
+<td>Mutual handshake in progress</td>
+<td>Yellow</td>
+</tr>
+<tr>
+<td><code>Offline</code></td>
+<td>Paired but WS down</td>
+<td>Red</td>
+</tr>
+<tr>
+<td><code>Online</code></td>
+<td>WS up, ready for actions</td>
+<td>Green</td>
+</tr>
+<tr>
+<td><code>Degraded</code></td>
+<td>WS up but browser and/or desktop unavailable</td>
+<td>Yellow</td>
+</tr>
+<tr>
+<td><code>Busy</code></td>
+<td>Action in flight</td>
+<td>Green + busy badge/menu label</td>
+</tr>
+<tr>
+<td><code>AwaitingConfirm</code></td>
+<td>Blocked on user confirm</td>
+<td>Yellow pulse</td>
+</tr>
+<tr>
+<td><code>Stopping</code></td>
+<td>Cancel + shutdown</td>
+<td>Gray</td>
+</tr>
+</tbody>
+</table>
+<p>Transitions are single-threaded via a small event loop or mutex + cond.</p>
+<h3 id="cli-surface">CLI surface</h3>
+<pre><code class="language-text">marble-peer run                 # foreground daemon + tray (default entry for autostart)
+marble-peer pair --harness URL --code H-XXXXXX
+marble-peer pair --serve        # mini UI pair flow only (or full miniui)
+marble-peer status              # print state, caps, last error (JSON optional)
+marble-peer unpair              # wipe local credential; leave process or exit
+marble-peer install-autostart
+marble-peer uninstall-autostart
+marble-peer version
+</code></pre>
+<p><code>run</code> is the only long-lived mode. Autostart invokes <code>marble-peer run</code> (or <code>run --quiet</code>).</p>
+<h2 id="data-directory-layout">Data directory layout</h2>
+<pre><code class="language-text">$MARBLE_PEER_HOME/                    # default ~/.marble-peer  (override env)
+├── config.json                       # harness_url, log_level, browser prefs
+├── credentials                       # or keychain ref; mode 0600
+├── device_id                         # stable UUID
+├── chrome-profile/                   # dedicated Chromium user-data-dir
+├── logs/
+│   └── peer.log
+└── state.json                        # optional crash recovery hints (not secrets)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Env</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MARBLE_PEER_HOME</code></td>
+<td>Data root</td>
+</tr>
+<tr>
+<td><code>MARBLE_PEER_MINIUI_ADDR</code></td>
+<td>Default <code>127.0.0.1:18765</code> (pick free port if busy)</td>
+</tr>
+<tr>
+<td><code>MARBLE_PEER_LOG</code></td>
+<td>Override log path</td>
+</tr>
+</tbody>
+</table>
+<h2 id="wire-client-peer-side">Wire client (peer side)</h2>
+<p>Normative messages are defined in marble <code>docs/peer-protocol</code> (ADR-0020 M2). Peer responsibilities:</p>
+<ol>
+<li><strong>Dial-out</strong> WebSocket to harness with device token after pair.  </li>
+<li><strong>Heartbeat</strong> every 30s with caps: <code>{browser, desktop, confirm, protocol_version, os, peer_version}</code>.  </li>
+<li><strong>Receive action frames</strong> → enqueue (reject if queue full / busy with structured error).  </li>
+<li><strong>Return results</strong>: ok, error, screenshot bytes (chunked or upload URL if protocol specifies), snapshot text.  </li>
+<li><strong>Honor cancel</strong> frames immediately (<code>context.Cancel</code>).  </li>
+<li><strong>Confirm requests</strong>: park action, open mini UI + notify tray, resolve accept/deny/timeout.</li>
+</ol>
+<h3 id="action-kinds-peer-executor">Action kinds (peer executor)</h3>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Backend</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>screenshot</code></td>
+<td><strong>desktop primary full screen</strong> (<strong>Q_P3</strong>)</td>
+<td>JPEG preferred; max edge 1280</td>
+</tr>
+<tr>
+<td><code>desktop.click/type/key/move</code></td>
+<td>robotgo</td>
+<td>Primary display coords</td>
+</tr>
+<tr>
+<td><code>browser.tabs/open/snapshot/act</code></td>
+<td>Playwright helper</td>
+<td>Snapshot before act when possible</td>
+</tr>
+<tr>
+<td><code>confirm</code></td>
+<td>miniui + tray</td>
+<td>120s deny (ADR-0020)</td>
+</tr>
+<tr>
+<td><code>stop</code> / cancel</td>
+<td>queue</td>
+<td>Clears current + pending</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Deadlines (</strong>Q_P5<strong>):</strong> each non-confirm action carries <code>deadline_ms</code> (default 120_000, peer clamps to <strong>max 300_000</strong>). Harness may split long tasks into multiple actions and retry.</p>
+<h2 id="browser-subsystem-deep-dive">Browser subsystem (deep dive)</h2>
+<h3 id="lifecycle">Lifecycle</h3>
+<pre><code class="language-text">run start
+  → ensure profile dir
+  → start Chromium with --remote-debugging-port=&lt;ephemeral&gt; --user-data-dir=profile
+  → wait CDP ready
+  → start Playwright helper pointed at CDP endpoint
+  → mark caps.browser=true
+
+on helper crash
+  → caps.browser=false, state Degraded
+  → restart with exponential backoff (cap 60s)
+  → do not exit peer process
+
+on run exit / Quit
+  → stop Playwright helper
+  → leave managed Chromium running by default (Q_P1)
+  → if --kill-browser-on-exit: terminate Chromium too
+</code></pre>
+<h3 id="profile-policy-locked-adr-0020-q2">Profile policy (locked ADR-0020 Q2)</h3>
+<ul>
+<li><strong>Never</strong> use the user’s daily default Chrome profile as the managed data dir (CDP attach fights lock files / Google policy).  </li>
+<li>Operator <strong>logs into</strong> airlines/food/tax sites <strong>inside</strong> the Marble profile (peer can open a window: “Sign in to sites here”).  </li>
+<li>Document: bookmarks/passwords are <strong>this profile’s</strong>, not magically synced from personal Chrome unless operator copies (out of scope to automate copy).</li>
+</ul>
+<h3 id="playwright-helper">Playwright helper</h3>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>v1 approach</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Install (<strong>Q_P2</strong>)</td>
+<td><strong>Prefer</strong> ship a side-by-side Playwright helper (or embed strategy) so operators need <strong>no Node pre-install</strong>. If release size/complexity is too high, fall back to “install Node 20+” in README</td>
+</tr>
+<tr>
+<td>Browser binary (<strong>Q_P7</strong>)</td>
+<td>Drive <strong>system</strong> Chrome / Edge / Chromium first (not a fully embedded browser)</td>
+</tr>
+<tr>
+<td>Pinning</td>
+<td>Pin Playwright helper version in peer repo; CI verifies adapter</td>
+</tr>
+<tr>
+<td>Mapping</td>
+<td>Thin Go adapter: action JSON → MCP tool call / Playwright API script</td>
+</tr>
+<tr>
+<td>Snapshots</td>
+<td>Accessibility tree or ARIA snapshot string; truncate to N KB with notice</td>
+</tr>
+<tr>
+<td>Acts</td>
+<td>Prefer role/name/ref from last snapshot; absolute CSS optional secondary</td>
+</tr>
+</tbody>
+</table>
+<h3 id="failure-modes">Failure modes</h3>
+<table>
+<thead>
+<tr>
+<th>Failure</th>
+<th>Peer behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Port in use</td>
+<td>Pick another debug port</td>
+</tr>
+<tr>
+<td>Profile locked</td>
+<td>Error + mini UI “close other Chrome using this profile”</td>
+</tr>
+<tr>
+<td>Helper/Node unavailable</td>
+<td><code>caps.browser=false</code>; desktop still works; status explains install path (bundled vs system Node — <strong>Q_P2</strong>)</td>
+</tr>
+<tr>
+<td>Navigation timeout</td>
+<td>Action error string to harness; no hang past action deadline</td>
+</tr>
+</tbody>
+</table>
+<h2 id="desktop-subsystem-deep-dive">Desktop subsystem (deep dive)</h2>
+<h3 id="robotgo-wrapper-api-internal">robotgo wrapper API (internal)</h3>
+<pre><code class="language-go">type Desktop interface {
+    Screenshot(ctx context.Context) (img []byte, meta ScreenMeta, err error)
+    Click(ctx context.Context, x, y int, button string) error
+    Type(ctx context.Context, text string) error
+    Key(ctx context.Context, key string, mods []string) error
+    Move(ctx context.Context, x, y int) error
+    ScreenMeta() ScreenMeta // w, h, scale, primary only
+}
+</code></pre>
+<h3 id="os-specific-notes-document-in-peer-readme">OS-specific notes (document in peer README)</h3>
+<table>
+<thead>
+<tr>
+<th>OS</th>
+<th>Permissions / pitfalls</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>macOS</strong></td>
+<td>Accessibility + Screen Recording; first-run open System Settings links from mini UI</td>
+</tr>
+<tr>
+<td><strong>Windows</strong></td>
+<td>DPI awareness (PerMonitorV2); UAC secure desktop not clickable — surface error</td>
+</tr>
+<tr>
+<td><strong>Linux</strong></td>
+<td>Prefer X11 session for robotgo; Wayland: best-effort, may fail input; browser CDP still primary</td>
+</tr>
+</tbody>
+</table>
+<h3 id="safety-rails-on-peer">Safety rails on peer</h3>
+<ul>
+<li>Reject desktop acts if <code>MARBLE_PEER_DESKTOP=0</code> or config <code>desktop.enabled=false</code>.  </li>
+<li>Optional local denylist of coordinates regions (future).  </li>
+<li>Never implement “read clipboard and send to harness” as unrestricted default (clipboard paste <em>into</em> focused field for Type unicode is OK).</li>
+</ul>
+<h2 id="tray-mini-ui">Tray &amp; mini UI</h2>
+<h3 id="tray-menu-normative">Tray menu (normative)</h3>
+<pre><code class="language-text">Marble Peer — Online | Offline | …
+Open mini UI
+Stop current action
+Restart browser helper
+Re-pair…
+Quit
+</code></pre>
+<p>Use <strong><code>getlantern/systray</code></strong> or maintained fork (ADR-0020 Q8); verify in CI or smoke on 3 OS before P1 complete.</p>
+<h3 id="mini-ui-routes">Mini UI routes</h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /</code></td>
+<td>Status dashboard</td>
+</tr>
+<tr>
+<td><code>GET/POST /pair</code></td>
+<td>Pairing form</td>
+</tr>
+<tr>
+<td><code>GET /confirm/{id}</code></td>
+<td>Accept / Deny</td>
+</tr>
+<tr>
+<td><code>GET /logs</code></td>
+<td>Tail last N lines (redacted)</td>
+</tr>
+<tr>
+<td><code>POST /stop</code></td>
+<td>Same as tray Stop</td>
+</tr>
+</tbody>
+</table>
+<p>Port selection (<strong>Q_P8</strong>): try <strong>18765</strong>, then <strong>18766–18775</strong>, then OS-assigned random; write <code>miniui_addr</code> / port into <code>$MARBLE_PEER_HOME/state.json</code>. Tray “Open mini UI” reads that file.</p>
+<p>Static assets <strong>embedded</strong> (<code>embed.FS</code>). No CDN. No remote JS. <strong>No telemetry</strong> (<strong>Q_P9</strong>).</p>
+<h2 id="pairing-client-peer-side">Pairing client (peer side)</h2>
+<ol>
+<li>Generate/store <code>device_id</code> on first run.  </li>
+<li>On <code>pair</code>: connect to harness pairing endpoints with <code>H-code</code> + harness URL.  </li>
+<li>Display <code>P-code</code> (stdout + mini UI).  </li>
+<li>Poll or wait for harness seal; write credential.  </li>
+<li>Transition <code>Unpaired</code> → <code>Online</code> (after first WS).  </li>
+</ol>
+<p><strong>Re-pair:</strong> wipe credential, revoke local, restart pair flow; harness row becomes revoked when operator completes new pair or explicitly revokes.</p>
+<p><strong>HTTP vs HTTPS:</strong> if harness URL is <code>http://</code> and host looks private (Tailscale CGNAT 100.64/10, RFC1918), require <code>--i-understand-private-http</code> or mini UI checkbox (<strong>ADR-0020 Q6</strong>).</p>
+<h2 id="autostart">Autostart</h2>
+<table>
+<thead>
+<tr>
+<th>OS</th>
+<th><code>install-autostart</code> writes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Windows</td>
+<td>HKCU <code>\Software\Microsoft\Windows\CurrentVersion\Run</code> or Startup <code>.lnk</code></td>
+</tr>
+<tr>
+<td>macOS</td>
+<td><code>~/Library/LaunchAgents/com.rendicott.marble-peer.plist</code></td>
+</tr>
+<tr>
+<td>Linux</td>
+<td><code>~/.config/systemd/user/marble-peer.service</code> <strong>and/or</strong> <code>~/.config/autostart/marble-peer.desktop</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>uninstall-autostart</code> removes the same artifacts. Never requires root.</p>
+<h2 id="packaging-release">Packaging &amp; release</h2>
+<h3 id="artifacts-from-peer-repo-ci">Artifacts (from peer repo CI)</h3>
+<p>Same as ADR-0020: <code>marble-peer-{linux,darwin,windows}-{amd64,arm64}</code> (+ <code>.exe</code>).</p>
+<h3 id="build-matrix-notes">Build matrix notes</h3>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>linux</td>
+<td>CGO for robotgo; build on Ubuntu with X11 libs or purego backend if usable</td>
+</tr>
+<tr>
+<td>darwin</td>
+<td>CGO; optional notarization stretch goal</td>
+</tr>
+<tr>
+<td>windows</td>
+<td>CGO/mingw as required by robotgo</td>
+</tr>
+</tbody>
+</table>
+<h3 id="release-packaging-q_p2-q_p6-q_p7">Release packaging (<strong>Q_P2</strong>, <strong>Q_P6</strong>, <strong>Q_P7</strong>)</h3>
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A — Preferred</strong></td>
+<td>Portable <strong><code>marble-peer</code></strong> + <strong>bundled Playwright helper</strong> (or equivalent) so <strong>Node is not a pre-req</strong>. Still uses <strong>system</strong> Chrome/Edge/Chromium for the real browser (<strong>Q_P7</strong>).</td>
+</tr>
+<tr>
+<td><strong>B — Fallback</strong></td>
+<td>If A is too much work or artifact size is <strong>unwieldy</strong>: slim Go binary + document <strong>system Node 20+</strong> for the helper.</td>
+</tr>
+<tr>
+<td><strong>Not v1</strong></td>
+<td>Fully embedded Chromium + Node in one multi‑hundred‑MB blob</td>
+</tr>
+</tbody>
+</table>
+<p>Also: <strong>portable zip/binary only</strong> + optional <code>install-autostart</code>; <strong>no</strong> apt/brew/msi system packages in v1 (<strong>Q_P6</strong>).</p>
+<p><strong>Spike in P3:</strong> measure size and maintenance of A; document decision in peer README if falling back to B.</p>
+<h2 id="testing-strategy-peer">Testing strategy (peer)</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unit</td>
+<td>Protocol encode/decode, queue cancel, state machine</td>
+</tr>
+<tr>
+<td>Fake desktop</td>
+<td>Interface mock — no robotgo in unit tests</td>
+</tr>
+<tr>
+<td>Integration (optional CI)</td>
+<td>Linux XVFB + robotgo smoke if feasible</td>
+</tr>
+<tr>
+<td>Manual checklist</td>
+<td>Pair against real harness; DoorDash-login profile; confirm deny timeout; tray Stop mid-action</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security-checklist-peer">Security checklist (peer)</h2>
+<ul>
+<li>[ ] Mini UI localhost-only default  </li>
+<li>[ ] Credentials 0600 / keychain  </li>
+<li>[ ] No cookie export endpoints  </li>
+<li>[ ] Logs redaction  </li>
+<li>[ ] Action timeout default 120s, clamp max 5 min (<strong>Q_P5</strong>)  </li>
+<li>[ ] Confirm default deny 120s  </li>
+<li>[ ] Unpair wipes local auth  </li>
+<li>[ ] Binary does not run as root  </li>
+<li>[ ] No telemetry (<strong>Q_P9</strong>)  </li>
+<li>[ ] Keychain or 0600 credentials only (<strong>Q_P4</strong>)  </li>
+</ul>
+<h2 id="suggested-package-tree">Suggested package tree</h2>
+<pre><code class="language-text">github.com/rendicott/marble-desktop-peer
+├── cmd/marble-peer/main.go
+├── internal/
+│   ├── app/           # run loop, PeerState
+│   ├── config/
+│   ├── creds/         # keychain + file fallback
+│   ├── protocol/      # client; generated or hand types from OpenAPI
+│   ├── queue/          # single-flight executor
+│   ├── browser/       # supervisor + playwright adapter
+│   ├── desktop/       # robotgo
+│   ├── tray/
+│   ├── miniui/        # embed static/
+│   ├── pair/
+│   └── autostart/
+├── web/miniui/        # source HTML/CSS/JS before embed
+├── docs/
+│   ├── INSTALL.md
+│   ├── PERMISSIONS.md
+│   └── PROTOCOL.md    # pointer to marble peer-protocol version
+├── adr/
+│   └── 0001-desktop-agent.md   # copy of this ADR once repo exists
+└── .github/workflows/
+    ├── ci.yml
+    └── release.yml
+</code></pre>
+<h2 id="implementation-plan-peer-repo-only">Implementation plan (peer repo only)</h2>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Title</th>
+<th>Acceptance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P0</strong></td>
+<td>Bootstrap module, CI 3-OS compile, LICENSE, README skeleton</td>
+<td><code>go build</code> matrix green (desktop stubs OK)</td>
+</tr>
+<tr>
+<td><strong>P1</strong></td>
+<td><code>app</code> state machine + config + creds + pair CLI + miniui pair + WS dial-out + tray stubs</td>
+<td>Pair against harness staging; tray shows Online/Offline</td>
+</tr>
+<tr>
+<td><strong>P2</strong></td>
+<td>Action queue + robotgo desktop + screenshot</td>
+<td>Remote click/type/screenshot via harness tool proxy</td>
+</tr>
+<tr>
+<td><strong>P3</strong></td>
+<td>Browser supervisor + Playwright helper + dedicated profile + <strong>Q_P2 packaging spike</strong></td>
+<td>tabs/open/snapshot/act; profile persists; choose bundle-helper vs Node dep</td>
+</tr>
+<tr>
+<td><strong>P4</strong></td>
+<td>Confirm flow + Stop + autostart + permissions docs</td>
+<td>120s deny; install-autostart works</td>
+</tr>
+<tr>
+<td><strong>P5</strong></td>
+<td>Release workflow + portable artifacts + install docs</td>
+<td>GitHub Release assets; document packaging choice</td>
+</tr>
+</tbody>
+</table>
+<p>Harness M2 (protocol doc) should land before or with <strong>P1</strong>.</p>
+<h2 id="decisions-locked-q_p1q_p10">Decisions locked (Q_P1–Q_P10)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Locked</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q_P1</strong></td>
+<td>Quit / browser lifecycle</td>
+<td><strong>Leave Chrome running by default</strong>; <code>--kill-browser-on-exit</code> opt-in</td>
+</tr>
+<tr>
+<td><strong>Q_P2</strong></td>
+<td>Node packaging</td>
+<td><strong>Prefer no Node pre-install</strong> if practical; if too hard or binary <strong>unwieldy</strong>, depend on system Node</td>
+</tr>
+<tr>
+<td><strong>Q_P3</strong></td>
+<td>Screenshot default</td>
+<td><strong>Desktop full primary</strong> for <code>computer_screenshot</code></td>
+</tr>
+<tr>
+<td><strong>Q_P4</strong></td>
+<td>Credentials</td>
+<td><strong>Keychain when available</strong>, else file <strong>0600</strong></td>
+</tr>
+<tr>
+<td><strong>Q_P5</strong></td>
+<td>Action timeout</td>
+<td><strong>Default 120s</strong>, peer <strong>max 5 min</strong>; harness may set higher within max and <strong>retry</strong> multi-step</td>
+</tr>
+<tr>
+<td><strong>Q_P6</strong></td>
+<td>Install</td>
+<td><strong>Portable binary</strong> + optional <strong>install-autostart</strong>; no system packages v1</td>
+</tr>
+<tr>
+<td><strong>Q_P7</strong></td>
+<td>Browser binary</td>
+<td><strong>System Chrome/Edge/Chromium first</strong></td>
+</tr>
+<tr>
+<td><strong>Q_P8</strong></td>
+<td>Mini UI port</td>
+<td><strong>18765 → 18766–18775 → random</strong>; write port to state file</td>
+</tr>
+<tr>
+<td><strong>Q_P9</strong></td>
+<td>Telemetry</td>
+<td><strong>None in v1</strong></td>
+</tr>
+<tr>
+<td><strong>Q_P10</strong></td>
+<td>ADR home</td>
+<td><strong>Copy to peer <code>adr/0001</code></strong>; marble <strong>0021</strong> stays pointer + system context</td>
+</tr>
+</tbody>
+</table>
+<p><em>Source: <code>adr/0021-answers.json</code> (<code>2026-07-27T03:20:46.838Z</code>).</em></p>
+<h2 id="risks-mitigations">Risks &amp; Mitigations</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>robotgo CGO breaks CI</td>
+<td>Stub build tags for unit tests; real desktop only on manual/smoke</td>
+</tr>
+<tr>
+<td>Playwright version skew</td>
+<td>Pin versions; peer_version in heartbeat</td>
+</tr>
+<tr>
+<td>Bundled helper too large (<strong>Q_P2</strong>)</td>
+<td>Explicit fallback to system Node; measure in P3 spike</td>
+</tr>
+<tr>
+<td>Operator uses personal profile by mistake</td>
+<td>Only manage Marble profile path; docs warn</td>
+</tr>
+<tr>
+<td>Tray library abandoned</td>
+<td>Abstract <code>Tray</code> interface; swap impl</td>
+</tr>
+<tr>
+<td>Protocol drift vs harness</td>
+<td>Heartbeat <code>protocol_version</code>; refuse major mismatch with clear error</td>
+</tr>
+<tr>
+<td>Accidental open mini UI to LAN</td>
+<td>Default localhost; warn in logs if non-local bind</td>
+</tr>
+<tr>
+<td>Long tasks hit 5 min clamp</td>
+<td>Harness multi-step + retry (<strong>Q_P5</strong>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="success-criteria-peer">Success criteria (peer)</h2>
+<ol>
+<li>Fresh machine: download binary → <code>pair</code> → tray green against real harness.  </li>
+<li>Log into a site in Marble profile once → <code>browser_open</code> shows logged-in state next day.  </li>
+<li><code>desktop</code> screenshot + click works on Win/macOS/Linux (Linux X11).  </li>
+<li>Confirm expires to deny at 120s.  </li>
+<li>Tray Stop cancels in-flight action.  </li>
+<li>Autostart survives logout/login (user session).  </li>
+<li>Unpair + harness revoke → peer cannot act.</li>
+</ol>
+<h2 id="relationship-to-adr-0020">Relationship to ADR-0020</h2>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Authority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mutual pair shape, tool names, schema v5, no cron, queue depth 1</td>
+<td><strong>0020</strong></td>
+</tr>
+<tr>
+<td>How peer implements browser/desktop/tray/autostart/data dir</td>
+<td><strong>0021 (this)</strong></td>
+</tr>
+<tr>
+<td>OpenAPI file location in marble monorepo</td>
+<td><strong>0020 M2</strong></td>
+</tr>
+<tr>
+<td>Peer release assets naming</td>
+<td><strong>Both</strong> (aligned)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-27</td>
+<td>Proposed — peer-focused implementation ADR under marble <code>adr/0021</code>; to be copied into <code>marble-desktop-peer</code></td>
+</tr>
+<tr>
+<td>2026-07-27</td>
+<td><strong>Accepted</strong> — locked Q_P1–Q_P10 (<code>2026-07-27T03:20:46.838Z</code>); PKD13–15; Node packaging preference + timeout policy</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0021-marble-desktop-peer.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

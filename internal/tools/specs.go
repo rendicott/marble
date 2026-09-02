@@ -206,7 +206,7 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"id"},
 			}),
-		spec("model_add", "Create a Settings → Models catalog entry. Prefer web research (mcp_tavily / web_fetch) for OpenAI-compatible base_url, context_limit, max_output, and capabilities. NEVER put API secrets in arguments — only api_key_env var NAMES (e.g. GEMINI_API_KEY). Operator puts KEY=secret in ~/.config/marble/env or $MEMORY/env. Gemini OpenAI path: https://generativelanguage.googleapis.com/v1beta/openai (not /interactions). Empty base_url inherits process --base-url. Empty api_key_env inherits process key; none = no Authorization.",
+		spec("model_add", "Create a Settings → Models catalog entry. Prefer web research (mcp_tavily / web_fetch) for OpenAI-compatible base_url, context_limit, max_output, and capabilities. NEVER put API secrets in arguments — only api_key_env var NAMES (e.g. GEMINI_API_KEY). Operator puts KEY=secret in $MEMORY/env (Settings → Secrets). Gemini OpenAI path: https://generativelanguage.googleapis.com/v1beta/openai (not /interactions). Empty base_url inherits process --base-url. Empty api_key_env inherits process key; none = no Authorization.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -264,30 +264,30 @@ func allSpecs() []model.ToolSpec {
 				},
 			}),
 		// Desktop peer (ADR-0020)
-		spec("computer_list", "List registered desktop peers (marble-peer) and online status.",
+		spec("computer_list", "List Marble Peer (aka Pier / desktop computer) agents and online status.",
 			map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}),
-		spec("computer_bind", "Bind this session to a computer_id for subsequent computer_* tools (empty clears).",
+		spec("computer_bind", "Bind this session to a computer_id for subsequent computer_* tools (empty clears). Marble Peer = remote desktop hands.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"computer_id": map[string]interface{}{"type": "string"},
 				},
 			}),
-		spec("computer_screenshot", "Capture the peer primary display as an image attachment. USE THIS when computer_browser_* returns CDP timeouts, bot walls, empty snapshots, or click_text not_found — then read the image and continue with computer_desktop_act (coords from the screenshot) or tell the user what is on screen. Also use for non-browser apps.",
+		spec("computer_screenshot", "Capture peer primary display (JPEG, max edge 1280) as an image attachment. meta.w/h are IMAGE pixels (click space); meta.screen_w/h are full display; meta.scale = screen/image. After a desktop click, a post-click shot is already attached — do NOT immediately re-call this. USE when CDP fails, click_text/click_button miss, or for non-browser apps. Look at pixels; if ui_unchanged after clicks → computer_confirm.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"computer_id": map[string]interface{}{"type": "string"},
 				},
 			}),
-		spec("computer_desktop_act", "OS-level click/type/key on the peer desktop (xdotool on XWayland). REQUIRED workflow for click: computer_screenshot → LOOK at image → pick x,y → action=click button=1. Clicks without a screenshot in the last 90s are rejected. After click, a post-click screenshot is attached automatically. Fallback when CDP struggles (timeout, bot wall, modal). Cannot complete OTP/SMS on a human phone.",
+		spec("computer_desktop_act", "OS-level click/type/key on Marble Peer. Click coords are IMAGE pixels from the latest screenshot (meta.w×meta.h), not necessarily full screen size. Workflow: screenshot → LOOK → click button=1. Post-click screenshot returns in the same result (attachment_id top-level); if ui_unchanged=true STOP repeating coords — use click_button or computer_confirm. Near-duplicate clicks escalate. Prefer click_button for labeled web buttons.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"computer_id": map[string]interface{}{"type": "string"},
 					"action":      map[string]interface{}{"type": "string", "description": "click|type|key"},
-					"x":           map[string]interface{}{"type": "integer", "description": "Screen X from latest screenshot (pixels)"},
-					"y":           map[string]interface{}{"type": "integer", "description": "Screen Y from latest screenshot (pixels)"},
+					"x":           map[string]interface{}{"type": "integer", "description": "X in latest screenshot IMAGE space (meta.w)"},
+					"y":           map[string]interface{}{"type": "integer", "description": "Y in latest screenshot IMAGE space (meta.h)"},
 					"text":        map[string]interface{}{"type": "string"},
 					"key":         map[string]interface{}{"type": "string"},
 					"button":      map[string]interface{}{"type": "string", "description": "1=left (default), 2=middle, 3=right. Never empty."},
@@ -322,14 +322,14 @@ func allSpecs() []model.ToolSpec {
 				"type":       "object",
 				"properties": map[string]interface{}{"computer_id": map[string]interface{}{"type": "string"}},
 			}),
-		spec("computer_browser_act", "Browser CDP actions. Prefer for clean web UIs (Gmail open_gmail, Play Console forms). actions: open_gmail|search_gmail|click_text|open|click|type|press|eval|wait|set_input_files. wait: text=substring and/or target=CSS, x=timeout_ms (default 10000). set_input_files: text=absolute path(s) on peer (comma-sep), target=optional input[type=file] CSS — required for Play Console icon/screenshot uploads (OS file choosers cannot be driven by desktop coords reliably). click_text returns a mini post-click snapshot. CRITICAL: on cdp timeout, not_found, bot wall — STOP CDP retries; screenshot then desktop click or computer_confirm for OTP/SMS.",
+		spec("computer_browser_act", "Browser CDP on Marble Peer. Prefer for web UIs. actions: open_gmail|search_gmail|click_button|click_text|open|click|type|press|eval|wait|set_input_files. Prefer click_button for labeled buttons (Create…, Save…); click_text for links/rows. Do NOT use jQuery :contains selectors. wait: text=substring and/or target=CSS, x=timeout_ms. set_input_files: absolute peer paths. On cdp timeout / not_found / ambiguous / bot wall — STOP CDP retries; screenshot then desktop click or computer_confirm.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"computer_id": map[string]interface{}{"type": "string"},
-					"action":      map[string]interface{}{"type": "string", "description": "open_gmail|search_gmail|click_text|open|click|type|press|eval|wait|set_input_files"},
-					"target":      map[string]interface{}{"type": "string", "description": "CSS selector; URL for open; for set_input_files optional file input selector"},
-					"text":        map[string]interface{}{"type": "string", "description": "query/needle/typed text/key; for wait: substring; for set_input_files: absolute peer path(s), comma-separated"},
+					"action":      map[string]interface{}{"type": "string", "description": "open_gmail|search_gmail|click_button|click_text|open|click|type|press|eval|wait|set_input_files"},
+					"target":      map[string]interface{}{"type": "string", "description": "CSS selector (no :contains); URL for open; optional file input selector for set_input_files"},
+					"text":        map[string]interface{}{"type": "string", "description": "button label / query / typed text; for wait: substring; for set_input_files: absolute peer path(s)"},
 					"x":           map[string]interface{}{"type": "integer", "description": "click x; for wait: timeout_ms (default 10000, max 60000)"},
 					"y":           map[string]interface{}{"type": "integer"},
 				},
@@ -426,7 +426,7 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"name"},
 			}),
-		spec("message_attach", "Attach an image or basic document to the chat transcript (durable chip + modal). Prefer workspace path. Not re-injected as a full tool result; vision models see user-uploaded images via history. No audio/PDF.",
+		spec("message_attach", "Attach an image or basic document to the chat transcript (durable chip the operator can download). Prefer this over attach_file when the user wants files in the chat. Images: png/jpeg/webp/gif. Docs: txt/md/csv/json/html/svg (SVG is a document, not an inline image). No audio/PDF. Prefer workspace path. Not re-injected as a full tool result.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -462,7 +462,7 @@ func allSpecs() []model.ToolSpec {
 				"required": []string{"url"},
 			}),
 		// call_agent_process (ADR-0014) — external coding harnesses (grok/claude)
-		spec("call_agent_process", "Run an external coding agent harness headless (format=grok|claude). Prefer background=true for multi-minute jobs so the Marble turn is not blocked; poll with task_id. Use workdir for a dedicated subfolder under the workspace. Auto-approve is on for the child — scope prompt and workdir carefully. Prefer Marble tools for simple edits. Poll: {\"task_id\":\"…\"}.",
+		spec("call_agent_process", "Run an external coding agent headless (format=grok|claude). Prefer background=true for app/multi-file work; poll {\"task_id\"}. Judge progress by progress.cwd_mtime_changed / stuck_hint — not identical poll text. Do not kill under ~5–8m unless stuck_hint. Short implement prompts beat long CRITICAL essays. Defaults (agent_process.json): medium effort, --no-plan, max-turns~40, timeout~15m. Allowlisted extra_args e.g. --effort low|medium|high, --max-turns N, --no-plan. Kill: {\"task_id\",\"kill\":true}. Prefer Marble tools for simple edits.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -472,7 +472,7 @@ func allSpecs() []model.ToolSpec {
 					},
 					"prompt": map[string]interface{}{
 						"type":        "string",
-						"description": "Self-contained task for the external agent",
+						"description": "Focused implement task (edit these files, then stop). Avoid multi-page planning essays.",
 					},
 					"cwd": map[string]interface{}{
 						"type":        "string",
@@ -480,15 +480,23 @@ func allSpecs() []model.ToolSpec {
 					},
 					"workdir": map[string]interface{}{
 						"type":        "string",
-						"description": "Dedicated subdir under cwd/workspace (created if missing) for isolation",
+						"description": "Dedicated subdir under cwd/workspace (created if missing). Prefer real repo root for app fixes, not empty workdirs.",
 					},
 					"background": map[string]interface{}{
 						"type":        "boolean",
-						"description": "If true, return agent_task_id immediately (preferred for long runs)",
+						"description": "If true, return agent_task_id immediately (preferred for multi-minute jobs)",
 					},
 					"task_id": map[string]interface{}{
 						"type":        "string",
-						"description": "Poll an existing background agent task",
+						"description": "Poll an existing background agent task (or use with kill=true)",
+					},
+					"kill": map[string]interface{}{
+						"type":        "boolean",
+						"description": "With task_id: terminate the agent process group",
+					},
+					"detail": map[string]interface{}{
+						"type":        "boolean",
+						"description": "On poll: include full command/prompt (default omits bulky fields while running)",
 					},
 					"output_format": map[string]interface{}{
 						"type":        "string",
@@ -496,16 +504,16 @@ func allSpecs() []model.ToolSpec {
 					},
 					"timeout_sec": map[string]interface{}{
 						"type":        "integer",
-						"description": "Wall timeout (default high, e.g. 1800s)",
+						"description": "Wall timeout seconds (default from agent_process.json, often 900)",
 					},
 					"model": map[string]interface{}{
 						"type":        "string",
 						"description": "Optional model id passed to the child CLI",
 					},
 					"extra_args": map[string]interface{}{
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Allowlisted extra CLI flags",
+						"type":  "array",
+						"items": map[string]interface{}{"type": "string"},
+						"description": "Allowlisted CLI flags, e.g. [\"--effort\",\"low\",\"--max-turns\",\"25\",\"--no-plan\"]",
 					},
 				},
 			}),

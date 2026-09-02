@@ -219,7 +219,7 @@ func isComputerClickClass(name, argsJSON string) bool {
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
 		act := strings.ToLower(strings.TrimSpace(a.Action))
-		if act == "click" || act == "click_text" {
+		if act == "click" || act == "click_text" || act == "click_button" {
 			return true
 		}
 		if act == "eval" || act == "evaluate" {
@@ -264,6 +264,53 @@ func (r *Registry) preflightThrash(name, argsJSON string, tc *TurnContext) error
 	// Escalate lock: hard-block same-class computer clicks (KD5)
 	if st.EscalateLock && isComputerClickClass(name, argsJSON) {
 		return fmt.Errorf("escalate lock active (ADR-0022): desktop/browser click blocked after stuck computer use. NEXT: computer_confirm (one human step), computer_screenshot/snapshot to re-assess, shell/API path, or a different action class — not another identical click")
+	}
+
+	// Pending / stale computer_confirm cards must be Accept/Deny/Dismissed first.
+	if isComputerTool(name) && name != "computer_confirm" && name != "computer_list" && name != "computer_bind" && name != "computer_stop" {
+		if r.ListPendingConfirms != nil && tc != nil {
+			pending := r.ListPendingConfirms(tc.SessionID)
+			if len(pending) == 0 {
+				pending = r.ListPendingConfirms("") // any session — don't let them pile invisibly
+			}
+			if len(pending) > 0 {
+				ids := make([]string, 0, len(pending))
+				for _, p := range pending {
+					if id, _ := p["id"].(string); id != "" {
+						ids = append(ids, id)
+					}
+				}
+				return fmt.Errorf("pending confirmation(s) must be resolved first (%s). Open the Accept/Deny card in Marble (or /confirm/{id}), then Deny/Dismiss stale ones — computer use is blocked until the queue is clear", strings.Join(ids, ", "))
+			}
+		}
+	}
+
+	// Near-duplicate desktop clicks (even when AntiRepeatN=0): same spot ±16px thrice.
+	if name == "computer_desktop_act" && tc != nil && tc.LastClickSet {
+		var a struct {
+			Action string `json:"action"`
+			X      int    `json:"x"`
+			Y      int    `json:"y"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if strings.EqualFold(strings.TrimSpace(a.Action), "click") {
+			dx := a.X - tc.LastClickX
+			dy := a.Y - tc.LastClickY
+			if dx < 0 {
+				dx = -dx
+			}
+			if dy < 0 {
+				dy = -dy
+			}
+			if dx <= 16 && dy <= 16 {
+				n := countNearDupDesktopClicks(st.Events, a.X, a.Y, 16)
+				if n >= 2 {
+					st.EscalateLock = true
+					st.LastFailure = "near-dup desktop click"
+					return fmt.Errorf("near-duplicate desktop click at ~(%d,%d) used %d+ times with no progress. NEXT: computer_browser_act action=click_button, computer_confirm, or a clearly different region — not another pixel nudge", a.X, a.Y, n+1)
+				}
+			}
+		}
 	}
 
 	// Successful computer_confirm clears escalate lock
@@ -456,7 +503,49 @@ func isComputerFailResult(result string) bool {
 		strings.Contains(low, "anti-repeat") ||
 		strings.Contains(low, "snapshot error") ||
 		strings.Contains(low, "bot_wall") ||
-		strings.Contains(low, "escalate lock")
+		strings.Contains(low, "escalate lock") ||
+		strings.Contains(low, "ui_unchanged") ||
+		strings.Contains(low, "near-duplicate") ||
+		strings.Contains(low, "ambiguous")
+}
+
+// countNearDupDesktopClicks counts recent successful/failed desktop clicks near (x,y).
+func countNearDupDesktopClicks(events []FingerprintEvent, x, y, radius int) int {
+	n := 0
+	for i := len(events) - 1; i >= 0 && n < 8; i-- {
+		if events[i].Name != "computer_desktop_act" {
+			continue
+		}
+		// Fingerprint form: click|x|y|button
+		fp := events[i].FP
+		if !strings.Contains(fp, "click|") {
+			continue
+		}
+		parts := strings.Split(fp, "|")
+		if len(parts) < 3 {
+			continue
+		}
+		var ex, ey int
+		if _, err := fmt.Sscanf(parts[1], "%d", &ex); err != nil {
+			continue
+		}
+		if _, err := fmt.Sscanf(parts[2], "%d", &ey); err != nil {
+			continue
+		}
+		dx, dy := ex-x, ey-y
+		if dx < 0 {
+			dx = -dx
+		}
+		if dy < 0 {
+			dy = -dy
+		}
+		if dx <= radius && dy <= radius {
+			n++
+		} else {
+			break
+		}
+	}
+	return n
 }
 
 func extractURLHint(result string) string {

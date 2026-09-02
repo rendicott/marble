@@ -2,21 +2,25 @@ package config
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Default operator env file locations (never store secrets in SQLite).
-// Process env (systemd EnvironmentFile at start) wins over file overlay.
-// Files are re-read so new catalog api_key_env names work without restart.
+// ValidEnvKeyRE matches shell-safe env var names (no $ or spaces).
+var ValidEnvKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// Default operator env file location (never store secrets in SQLite).
+// Process env (systemd EnvironmentFile / shell export) wins over the file overlay.
+// $MEMORY/env is re-read so new catalog api_key_env names work without restart.
 const (
-	// RelMemoryEnv is under --memory (gitignored operator dir).
+	// RelMemoryEnv is under --memory (gitignored operator dir). Settings → Secrets writes here.
 	RelMemoryEnv = "env"
-	// UserConfigEnv is the common systemd EnvironmentFile path.
-	UserConfigEnv = ".config/marble/env"
 )
 
 var (
@@ -37,21 +41,17 @@ func SetMemoryDirForEnv(memory string) {
 	envOverlayMu.Unlock()
 }
 
-// EnvFilePaths returns paths checked for KEY=value overlay (for Settings help).
+// EnvFilePaths returns overlay file paths checked after process env (for Settings help).
 func EnvFilePaths() []string {
-	var out []string
-	if MemoryDirForEnv != "" {
-		out = append(out, filepath.Join(MemoryDirForEnv, RelMemoryEnv))
+	if MemoryDirForEnv == "" {
+		return nil
 	}
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		out = append(out, filepath.Join(h, UserConfigEnv))
-	}
-	return out
+	return []string{filepath.Join(MemoryDirForEnv, RelMemoryEnv)}
 }
 
 // ResolveAPIKeyEnv resolves a comma-separated list of env var names to a secret.
 // Never logs the secret. First non-empty value wins.
-// Order: process environment (os.Getenv), then overlay files ($MEMORY/env, ~/.config/marble/env).
+// Order: process environment (os.Getenv), then $MEMORY/env overlay.
 // Empty list → no key.
 func ResolveAPIKeyEnv(apiKeyEnv string) (key, used string, configured bool) {
 	raw := strings.TrimSpace(apiKeyEnv)
@@ -97,14 +97,13 @@ func loadEnvOverlay() map[string]string {
 		return envOverlayCache
 	}
 	merged := make(map[string]string)
-	// Later files do not override earlier (memory first, then user config as fill-in)
 	for _, p := range envFilePathsLocked() {
 		m, err := ParseEnvFile(p)
 		if err != nil {
 			continue
 		}
 		for k, v := range m {
-			if _, exists := merged[k]; !exists && v != "" {
+			if v != "" {
 				merged[k] = v
 			}
 		}
@@ -115,14 +114,10 @@ func loadEnvOverlay() map[string]string {
 }
 
 func envFilePathsLocked() []string {
-	var out []string
-	if MemoryDirForEnv != "" {
-		out = append(out, filepath.Join(MemoryDirForEnv, RelMemoryEnv))
+	if MemoryDirForEnv == "" {
+		return nil
 	}
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		out = append(out, filepath.Join(h, UserConfigEnv))
-	}
-	return out
+	return []string{filepath.Join(MemoryDirForEnv, RelMemoryEnv)}
 }
 
 // InvalidateEnvOverlay forces the next ResolveAPIKeyEnv to re-read files.
@@ -206,6 +201,197 @@ func LookupEnvName(name string) (configured bool, source string) {
 	return false, ""
 }
 
+// ManagedEnvPath is the file Settings → Secrets writes ($MEMORY/env).
+func ManagedEnvPath() string {
+	envOverlayMu.Lock()
+	defer envOverlayMu.Unlock()
+	if MemoryDirForEnv != "" {
+		return filepath.Join(MemoryDirForEnv, RelMemoryEnv)
+	}
+	return ""
+}
+
+// EnvEntry is one KEY from the managed env file (and optional process note).
+type EnvEntry struct {
+	Name          string `json:"name"`
+	Value         string `json:"value"`
+	InManagedFile bool   `json:"in_managed_file"`
+	InProcess     bool   `json:"in_process"`
+}
+
+// ValidateEnvKey returns an error if name is not a valid env identifier.
+func ValidateEnvKey(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	if !ValidEnvKeyRE.MatchString(name) {
+		return fmt.Errorf("invalid env name %q (use A-Z, 0-9, _; must start with letter or _)", name)
+	}
+	return nil
+}
+
+// ListManagedEnv returns entries from the managed file plus process flags.
+func ListManagedEnv() (path string, readPaths []string, entries []EnvEntry, err error) {
+	path = ManagedEnvPath()
+	readPaths = EnvFilePaths()
+	fileMap, err := ParseEnvFile(path)
+	if err != nil {
+		return path, readPaths, nil, err
+	}
+	keys := make([]string, 0, len(fileMap))
+	for k := range fileMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		e := EnvEntry{
+			Name:          k,
+			Value:         fileMap[k],
+			InManagedFile: true,
+		}
+		if pv := strings.TrimSpace(os.Getenv(k)); pv != "" {
+			e.InProcess = true
+			// Prefer displaying process value when set (matches resolve order)
+			e.Value = pv
+		}
+		entries = append(entries, e)
+	}
+	return path, readPaths, entries, nil
+}
+
+// UpsertManagedEnv sets KEY=value in the managed env file (mode 0600). Creates file/dir if needed.
+func UpsertManagedEnv(name, value string) (path string, err error) {
+	if err := ValidateEnvKey(name); err != nil {
+		return "", err
+	}
+	path = ManagedEnvPath()
+	if path == "" {
+		return "", fmt.Errorf("no managed env path (set --memory)")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return path, err
+	}
+	lines, err := readEnvLines(path)
+	if err != nil {
+		return path, err
+	}
+	quoted := quoteEnvValue(value)
+	replaced := false
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		export := false
+		if strings.HasPrefix(trim, "export ") {
+			export = true
+			trim = strings.TrimSpace(strings.TrimPrefix(trim, "export "))
+		}
+		eq := strings.IndexByte(trim, '=')
+		if eq <= 0 {
+			continue
+		}
+		if strings.TrimSpace(trim[:eq]) != name {
+			continue
+		}
+		if export {
+			lines[i] = "export " + name + "=" + quoted
+		} else {
+			lines[i] = name + "=" + quoted
+		}
+		replaced = true
+		break
+	}
+	if !replaced {
+		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
+			lines = append(lines, "")
+		}
+		lines = append(lines, name+"="+quoted)
+	}
+	if err := writeEnvLines(path, lines); err != nil {
+		return path, err
+	}
+	InvalidateEnvOverlay()
+	return path, nil
+}
+
+// DeleteManagedEnv removes KEY from the managed env file.
+func DeleteManagedEnv(name string) (path string, err error) {
+	if err := ValidateEnvKey(name); err != nil {
+		return "", err
+	}
+	path = ManagedEnvPath()
+	if path == "" {
+		return "", fmt.Errorf("no managed env path (set --memory)")
+	}
+	lines, err := readEnvLines(path)
+	if err != nil {
+		return path, err
+	}
+	out := make([]string, 0, len(lines))
+	removed := false
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		check := trim
+		if strings.HasPrefix(check, "export ") {
+			check = strings.TrimSpace(strings.TrimPrefix(check, "export "))
+		}
+		if eq := strings.IndexByte(check, '='); eq > 0 {
+			if strings.TrimSpace(check[:eq]) == name {
+				removed = true
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	if !removed {
+		return path, fmt.Errorf("key %q not found in managed env file", name)
+	}
+	if err := writeEnvLines(path, out); err != nil {
+		return path, err
+	}
+	InvalidateEnvOverlay()
+	return path, nil
+}
+
+func readEnvLines(path string) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{
+				"# Marble operator secrets (Settings → Secrets)",
+				"# Mode 0600. Not injected into model context. Not stored in SQLite.",
+				"",
+			}, nil
+		}
+		return nil, err
+	}
+	raw := strings.ReplaceAll(string(b), "\r\n", "\n")
+	return strings.Split(raw, "\n"), nil
+}
+
+func writeEnvLines(path string, lines []string) error {
+	// Ensure trailing newline
+	body := strings.Join(lines, "\n")
+	if !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func quoteEnvValue(val string) string {
+	// Always double-quote so spaces / # / = are safe
+	esc := strings.ReplaceAll(val, `\`, `\\`)
+	esc = strings.ReplaceAll(esc, `"`, `\"`)
+	return `"` + esc + `"`
+}
+
 // AuthHintForAPIKeyEnv returns a safe operator message when keys are missing.
 func AuthHintForAPIKeyEnv(apiKeyEnv string) string {
 	apiKeyEnv = strings.TrimSpace(apiKeyEnv)
@@ -220,9 +406,9 @@ func AuthHintForAPIKeyEnv(apiKeyEnv string) string {
 	paths := EnvFilePaths()
 	pathHint := strings.Join(paths, " or ")
 	if pathHint == "" {
-		pathHint = "~/.config/marble/env"
+		pathHint = "$MEMORY/env"
 	}
-	return "Env " + strings.Join(names, "/") + " not set in process or env files. Add KEY=… to " +
-		pathHint + " (applies within seconds; no restart required for catalog models). " +
-		"If you only use systemd EnvironmentFile without re-read, restart marble-harness after editing."
+	return "Env " + strings.Join(names, "/") + " not set in process or $MEMORY/env. Add KEY=… via Settings → Secrets (or edit " +
+		pathHint + "; applies within seconds for catalog models). " +
+		"If the var exists only in process env from an old EnvironmentFile, restart marble-harness after clearing/updating it."
 }

@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0002</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0002</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0002-session-memory.md">Markdown</a>
+      <a href="0002-review.html">Review</a>
+      <a href="0001-doc.html">← 0001</a>
+      <a href="0003-doc.html">0003 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0002-session-management-history-and-memory">ADR-0002: Session Management, History, and Memory</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-16</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>sessions, memory, persistence, daemon, learning</td>
+</tr>
+<tr>
+<td><strong>Supersedes / extends</strong></td>
+<td>ADR-0001 (in-memory-only sessions)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>ADR-0001 delivered the agent <strong>inner loop</strong> and a multi-session web UI, but session state is <strong>process-local</strong>: restart clears everything. Marble’s purpose is broader than a disposable coding chat:</p>
+<blockquote>
+<p>A <strong>general-purpose harness</strong> for sysadmin work, personal automation, and <strong>learning over time</strong>.</p>
+</blockquote>
+<p>That requires:</p>
+<ol>
+<li><strong>Stable session identity</strong> that is short enough to type, cite, and put in filenames.</li>
+<li><strong>Durable transcripts</strong> so work survives restarts and can be audited later.</li>
+<li>A <strong>memory root</strong> separate from the tool workspace (ops secrets, notes, and history should not be mixed into the project the agent is editing).</li>
+<li>A <strong>background persistence loop</strong> so operators do not have to think about save.</li>
+<li><strong>Daily compaction</strong> so long-term recall stays cheap and human-readable, without rewriting empty days.</li>
+</ol>
+<p>This ADR defines session lifecycle, on-disk layout, the daemon, close semantics, and daily compaction. It does <strong>not</strong> yet define vector RAG, skill distillation, or cross-session tool memory graphs (future ADRs).</p>
+<h2 id="decision">Decision</h2>
+<ol>
+<li>Add a required-or-default <strong><code>--memory</code></strong> directory (may live <strong>outside</strong> <code>--workspace</code>).</li>
+<li>Under that root, maintain:
+   - <code>session/&lt;session_id&gt;.md</code> — full (or checkpointed) session transcripts
+   - <code>daily/YYYY-MM-DD.md</code> — compacted rollup for days with activity</li>
+<li>Assign each session a <strong>short unique id</strong> (not a full GUID).</li>
+<li>Run an in-process <strong>background daemon</strong> that flushes dirty sessions to disk every <strong>5 minutes</strong>.</li>
+<li>On <strong>session close</strong> (UI: right-click → Close), flush immediately, mark closed, and free the in-memory session.</li>
+<li>Once per calendar day (and on shutdown if needed), <strong>compact</strong> that day’s session activity into <code>daily/…</code> <strong>only if</strong> new activity occurred that day.</li>
+</ol>
+<h2 id="product-framing">Product framing</h2>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>How memory helps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sysadmin</td>
+<td>Past runbooks, command outcomes, host notes survive across reboots of the harness</td>
+</tr>
+<tr>
+<td>Personal automation</td>
+<td>Recurring tasks can reference yesterday’s decisions and file paths</td>
+</tr>
+<tr>
+<td>Learn over time</td>
+<td>Daily digests become the substrate for later “what did we learn?” tooling</td>
+</tr>
+</tbody>
+</table>
+<p>Workspace (<code>--workspace</code>) remains the <strong>agent’s tool jail</strong> for <code>file_read</code> / <code>file_write</code> / <code>list_files</code>.<br />
+Memory (<code>--memory</code>) is the <strong>harness’s private store</strong>; tools do not write there unless a future tool deliberately exposes it.</p>
+<h2 id="session-ids">Session IDs</h2>
+<h3 id="requirements">Requirements</h3>
+<ul>
+<li>Unique within a memory root (and ideally collision-resistant across machines).</li>
+<li>Short enough for UI, logs, and filenames (not 32-char hex GUIDs).</li>
+<li>Filesystem-safe (<code>[a-z0-9_-]</code> preferred).</li>
+</ul>
+<h3 id="format-v1">Format (v1)</h3>
+<pre><code>&lt;base32-crockford-time&gt;&lt;base32-random&gt;
+</code></pre>
+<p>Concrete choice:</p>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Size</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Time prefix</td>
+<td>6 chars</td>
+<td>Crockford base32 of unix minute or similar → roughly sortable</td>
+</tr>
+<tr>
+<td>Random suffix</td>
+<td>4 chars</td>
+<td>~20 bits of entropy</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Example:</strong> <code>k7m2q9-a3f2</code> or compact <code>k7m2q9a3f2</code> (10–11 chars).</p>
+<p>Implementation may use: 4 bytes time + 2–3 bytes crypto/rand, encoded Crockford base32, lowercase, <strong>no padding</strong>.</p>
+<p><strong>Not used:</strong> UUID/GUID, 16-byte hex.</p>
+<p>On collision (extremely rare): regenerate random suffix.</p>
+<h3 id="lifecycle-states">Lifecycle states</h3>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>active</code></td>
+<td>Loaded in registry; accepting messages</td>
+</tr>
+<tr>
+<td><code>dirty</code></td>
+<td>Has unpersisted transcript changes</td>
+</tr>
+<tr>
+<td><code>closed</code></td>
+<td>User closed; flushed; removed from live registry</td>
+</tr>
+<tr>
+<td><code>archived</code></td>
+<td>Optional later; closed + compacted into daily</td>
+</tr>
+</tbody>
+</table>
+<h2 id="on-disk-layout">On-disk layout</h2>
+<p><code>--memory</code> points at a user-chosen root. Marble owns a <code>memory/</code> subtree inside it:</p>
+<pre><code>$MEMORY/                          # --memory argument
+├── session/
+    │   ├── k7m2q9a3f2.md         # one file per session
+    │   └── p1x4c8b2n0.md
+    ├── daily/
+    │   ├── 2026-07-15.md         # only days with activity
+    │   └── 2026-07-16.md
+    └── state.json                # optional: daemon watermarks, last compact day
+</code></pre>
+<h3 id="why-leaf-layout">Why leaf layout?</h3>
+<p>The flag is the <strong>data home</strong> (may already contain other app data later). The nested <code>memory/</code> package name keeps session/daily/state namespaced and matches the mental model “this folder is Marble memory.”</p>
+<p>If the path feels redundant in practice, a later ADR may flatten to <code>$MEMORY/session</code> — for now nest under <code>memory/</code>.</p>
+<p><strong>Decision:</strong> <code>--memory</code> is the leaf. Paths are <code>$MEMORY/session/…</code> and <code>$MEMORY/daily/…</code> with no extra nesting.</p>
+<h3 id="session-file-format-sessionidmd">Session file format (<code>session/&lt;id&gt;.md</code>)</h3>
+<p>Human-readable Markdown with a YAML front matter block for machine fields:</p>
+<pre><code class="language-markdown">---
+id: k7m2q9a3f2
+title: &quot;nginx renew certs&quot;
+created_at: 2026-07-16T20:01:02-04:00
+updated_at: 2026-07-16T21:15:44-04:00
+closed_at: null
+status: active
+message_count: 12
+workspace: ~/src/marble
+model: Qwen/Qwen3.5-122B-A10B-FP8
+---
+
+# Session k7m2q9a3f2 — nginx renew certs
+
+## 2026-07-16 20:01:02 · user
+Renew the cert on edge-01 and reload nginx.
+
+## 2026-07-16 20:01:08 · tool · list_files
+path=.
+(result excerpt…)
+
+## 2026-07-16 20:01:40 · assistant
+Here’s what I did…
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Append or rewrite whole file on flush (v1: <strong>rewrite full transcript</strong> for simplicity).</li>
+<li>Tool results may be truncated in the persisted form if huge (note original length).</li>
+<li>Binary/secrets: do not special-case yet; treat as plain text (future redaction ADR).</li>
+</ul>
+<h3 id="daily-file-format-dailyyyyy-mm-ddmd">Daily file format (<code>daily/YYYY-MM-DD.md</code>)</h3>
+<p>One file per <strong>local calendar day</strong> (timezone: host local unless <code>--memory-timezone</code> added later).</p>
+<pre><code class="language-markdown">---
+date: 2026-07-16
+generated_at: 2026-07-16T23:59:01-04:00
+sessions:
+  - id: k7m2q9a3f2
+    title: nginx renew certs
+    messages: 12
+  - id: p1x4c8b2n0
+    title: backup restic
+    messages: 4
+---
+
+# Daily log — 2026-07-16
+
+## k7m2q9a3f2 — nginx renew certs
+- Goal / opener: Renew the cert on edge-01…
+- Outcome: certificate renewed; nginx reloaded
+- Paths / hosts touched: /etc/nginx/…, edge-01
+- Open threads: none
+
+## p1x4c8b2n0 — backup restic
+…
+</code></pre>
+<p>Compaction is a <strong>summary</strong>, not a full replay. Full fidelity stays in <code>session/*.md</code>.</p>
+<h2 id="background-daemon">Background daemon</h2>
+<p>Runs inside <code>marble-harness</code> (same process), started at boot:</p>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>v1 decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Interval</td>
+<td><strong>5 minutes</strong> (configurable later: <code>--persist-interval</code>)</td>
+</tr>
+<tr>
+<td>Scope</td>
+<td>All sessions with <code>dirty == true</code></td>
+</tr>
+<tr>
+<td>Action</td>
+<td>Write/update <code>session/&lt;id&gt;.md</code></td>
+</tr>
+<tr>
+<td>Atomicity</td>
+<td>Write temp file + rename</td>
+</tr>
+<tr>
+<td>Errors</td>
+<td>Log; retry next tick; surface count on <code>/api/health</code></td>
+</tr>
+<tr>
+<td>Shutdown</td>
+<td>Flush all dirty sessions before exit</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dirty-tracking">Dirty tracking</h3>
+<p>A session becomes dirty when:</p>
+<ul>
+<li>User message accepted</li>
+<li>Assistant message appended</li>
+<li>Tool result appended</li>
+<li>Title changes</li>
+</ul>
+<p>Clear dirty after successful flush. Periodic tick is a no-op if nothing dirty.</p>
+<h3 id="startup-hydration-v1-scope">Startup hydration (v1 scope)</h3>
+<table>
+<thead>
+<tr>
+<th>Behavior</th>
+<th>v1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List sessions from disk on boot</td>
+<td><strong>Yes</strong> — index <code>session/*.md</code> front matter</td>
+</tr>
+<tr>
+<td>Auto-resume full history into agent context</td>
+<td><strong>Optional load on open</strong> — opening a session in UI loads transcript into memory registry</td>
+</tr>
+<tr>
+<td>Closed sessions</td>
+<td>Appear in UI history list (later filter); not auto-active</td>
+</tr>
+</tbody>
+</table>
+<p>Minimum for this ADR:</p>
+<ol>
+<li>Persist live sessions on interval + close.</li>
+<li>On boot, <strong>discover</strong> session files for the left-pane list (title, ids, updated_at).</li>
+<li>Selecting a session <strong>loads</strong> messages into the live registry if not already loaded.</li>
+</ol>
+<h2 id="session-close-ui-api">Session close (UI + API)</h2>
+<h3 id="ui">UI</h3>
+<ul>
+<li><strong>Right-click</strong> (long-press on mobile — follow-up UX) on a session row → menu:</li>
+<li><strong>Close session</strong> — flush, mark <code>status: closed</code>, set <code>closed_at</code>, remove from live agent registry (or mark inactive)</li>
+<li>(Future) Rename, Export, Delete</li>
+</ul>
+<h3 id="api">API</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/sessions/{id}/close</code></td>
+<td>Flush transcript; mark closed; drop live turn state</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/api/sessions/{id}</code></td>
+<td>Optional later — delete disk file (not in v1 required set)</td>
+</tr>
+</tbody>
+</table>
+<p>Close always triggers an <strong>immediate persist</strong>, not waiting for the 5-minute tick.</p>
+<h2 id="daily-compaction">Daily compaction</h2>
+<h3 id="when">When</h3>
+<ul>
+<li>Background job: after session flush tick, or a dedicated daily ticker (e.g. every hour), check:</li>
+<li><code>today</code> has activity (<code>dirty</code> was true today, or any session <code>updated_at</code> on this local date), <strong>and</strong></li>
+<li>daily file missing or <code>generated_at</code> older than latest session activity for that day → regenerate.</li>
+<li><strong>If no new activity that calendar day → do nothing</strong> (do not touch/create empty daily files).</li>
+<li>On process shutdown: compact today if dirty activity occurred.</li>
+</ul>
+<h3 id="how-v1-algorithm">How (v1 algorithm)</h3>
+<p>Without calling the LLM initially (cheaper, deterministic):</p>
+<ol>
+<li>Collect all sessions with <code>updated_at</code> on that date (from front matter or live registry).</li>
+<li>For each, extract: title, first user message, last assistant message, tool names used, file paths mentioned (simple regex).</li>
+<li>Write structured Markdown sections.</li>
+</ol>
+<p><strong>Later (not blocking this ADR):</strong> optional LLM summarization using the same local model, rate-limited.</p>
+<h3 id="idempotency">Idempotency</h3>
+<p>Daily files are regenerated from session files for that date, not append-only, so re-running compaction is safe.</p>
+<h2 id="cli">CLI</h2>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--memory</code></td>
+<td><code>~/.marble</code> (proposed)</td>
+<td>Data home; may be outside workspace</td>
+</tr>
+<tr>
+<td><code>--persist-interval</code></td>
+<td><code>5m</code></td>
+<td>Daemon flush interval</td>
+</tr>
+<tr>
+<td><code>--workspace</code></td>
+<td><code>.</code></td>
+<td>Unchanged from ADR-0001 — tool jail</td>
+</tr>
+</tbody>
+</table>
+<p>Example:</p>
+<pre><code class="language-bash">marble-harness \
+  --workspace /srv/edge-01 \
+  --memory /var/lib/marble \
+  --addr :8080
+</code></pre>
+<p>On first run, create:</p>
+<pre><code>/var/lib/marble/session/
+/var/lib/marble/daily/
+</code></pre>
+<h2 id="concurrency-safety">Concurrency &amp; safety</h2>
+<ul>
+<li>Single writer daemon + request handlers coordinate via session mutex + a small <code>persist</code> lock per session id.</li>
+<li>No multi-process writers assumed for v1 (one harness per memory root).</li>
+<li>Document: running two harnesses on the same <code>--memory</code> is undefined.</li>
+</ul>
+<h2 id="relationship-to-learning-over-time">Relationship to learning over time</h2>
+<p>This ADR lays <strong>durable substrate</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session/*.md</code></td>
+<td>Ground truth transcript</td>
+</tr>
+<tr>
+<td><code>daily/*.md</code></td>
+<td>Human + machine digest for a day</td>
+</tr>
+<tr>
+<td>Future</td>
+<td>Skills, facts, host inventory derived from daily/session</td>
+</tr>
+</tbody>
+</table>
+<p>Agent tools that <strong>read memory</strong> (e.g. <code>memory_search</code>) are a later ADR so the model can intentionally recall past days.</p>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Restarts no longer erase work.</li>
+<li>Short ids fit UI and filenames.</li>
+<li>Memory and workspace separation matches sysadmin safety.</li>
+<li>5-minute daemon + close flush is simple and robust.</li>
+<li>Daily compaction scales “learn over time” without rereading every raw session forever.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Full rewrite of session Markdown is simple but can be heavy for huge transcripts (optimize later).</li>
+<li>Deterministic daily summaries are shallower than LLM summaries.</li>
+<li>Leaf layout keeps paths short and matches user mental model.</li>
+<li>Right-click close needs a mobile equivalent (long-press).</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Disk full / permission errors</td>
+<td>Health flag + UI banner; keep in-memory truth</td>
+</tr>
+<tr>
+<td>Partial write corruption</td>
+<td>Temp + rename</td>
+</tr>
+<tr>
+<td>Clock skew on daily boundaries</td>
+<td>Use host local time; document</td>
+</tr>
+<tr>
+<td>Secrets landing in transcripts</td>
+<td>Future redaction ADR; careful defaults</td>
+</tr>
+</tbody>
+</table>
+<h2 id="out-of-scope">Out of scope</h2>
+<ul>
+<li>Multi-user auth / shared memory ACLs  </li>
+<li>Encrypted-at-rest memory  </li>
+<li>Vector index / embeddings  </li>
+<li>Automatic skill extraction  </li>
+<li>Cross-host memory sync  </li>
+<li>Deleting sessions from UI  </li>
+<li>Streaming token persistence mid-generation (flush after complete messages only)</li>
+</ul>
+<h2 id="implementation-order-after-acceptance">Implementation order (after acceptance)</h2>
+<ol>
+<li><code>--memory</code> bootstrap + directory layout  </li>
+<li>Short session id generator; migrate away from 32-char hex  </li>
+<li>Session Markdown serializer/loader  </li>
+<li>Dirty flags + 5-minute daemon + shutdown flush  </li>
+<li><code>POST /api/sessions/{id}/close</code> + UI right-click menu  </li>
+<li>Boot-time session index + load on select  </li>
+<li>Daily compaction job + skip empty days  </li>
+<li>Health fields: <code>last_persist_ok</code>, <code>dirty_sessions</code>, <code>memory_path</code></li>
+</ol>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[ ] <code>--memory</code> may point outside <code>--workspace</code>  </li>
+<li>[ ] Layout <code>session/*.md</code> and <code>daily/YYYY-MM-DD.md</code> agreed  </li>
+<li>[ ] Session ids short (≈10 chars), not GUIDs  </li>
+<li>[ ] 5-minute background persist agreed  </li>
+<li>[ ] Close (right-click) forces immediate flush  </li>
+<li>[ ] Daily compaction only when the day had activity  </li>
+<li>[ ] <code>--memory</code> is the leaf (<code>session/</code>, <code>daily/</code> directly under it)  </li>
+<li>[ ] Ready to implement after review iterations  </li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0001: Harness Inner Loop  </li>
+<li>Current in-memory registry: <code>internal/session</code>  </li>
+<li>Open goal: general-purpose sysadmin + personal automation + learning  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0002-session-memory.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0004</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0004</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0004-workspace-file-explorer.md">Markdown</a>
+      <a href="0004-review.html">Review</a>
+      <a href="0003-doc.html">← 0003</a>
+      <a href="0005-doc.html">0005 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0004-workspace-file-explorer-modal">ADR-0004: Workspace File Explorer Modal</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-17</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>ui, workspace, files, modal, upload, download</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (workspace tool jail), ADR-0002/0003 (memory is separate)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Marble’s agent tools can already read/write/list under <code>--workspace</code>, but the <strong>operator</strong> has no first-class UI to browse that tree. Today they must use an external file manager or ask the model.</p>
+<p>We want an in-app <strong>file explorer modal</strong> scoped to the launch workspace so operators can:</p>
+<ul>
+<li>Navigate the same tree the agent sees  </li>
+<li>View/edit non-binary text files  </li>
+<li>Create, rename, delete, download, upload  </li>
+<li>Copy paths for pasting into chat  </li>
+</ul>
+<p><strong>Out of scope for this ADR:</strong> browsing <code>--memory</code>, multi-root workspaces, rich IDE features (diff, git, LSP), binary hex editors.</p>
+<h2 id="decision">Decision</h2>
+<ol>
+<li>Add a <strong>folder icon</strong> control in the sidebar head, next to <strong>New session (+)</strong>, that opens a <strong>modal</strong> file explorer.</li>
+<li>Explorer is rooted at the harness <strong><code>--workspace</code></strong> (absolute path known to the server; never escapes it).</li>
+<li><strong>Browse</strong> directories; select a <strong>non-binary</strong> file → modal becomes a <strong>split view</strong>: tree (or list) + <strong>viewer/basic editor</strong>.</li>
+<li><strong>Context menus</strong> as specified (file/folder vs empty space).</li>
+<li><strong>Download:</strong> single file as-is; directory as <strong><code>.tar.gz</code></strong>.</li>
+<li><strong>Drag-and-drop:</strong> into modal = upload; out of modal = download (browser-supported best effort).</li>
+<li><strong>Refresh</strong> reloads the current directory listing from the server.</li>
+<li>Implement via <strong>HTTP API</strong> under <code>/api/workspace/...</code> plus SPA modal UI (no separate binary).</li>
+</ol>
+<h2 id="ui-placement-chrome">UI placement &amp; chrome</h2>
+<pre><code>┌ Sidebar head ─────────────────────────┐
+│ [mark] Marble     [Sessions▾] [📁] [+] │
+└───────────────────────────────────────┘
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>📁 (folder)</td>
+<td>Open workspace explorer modal</td>
+</tr>
+<tr>
+<td>+</td>
+<td>New session (unchanged)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="modal-layout">Modal layout</h3>
+<p><strong>Browse-only (no file selected, or directory selected):</strong></p>
+<pre><code>┌ Workspace explorer ──────────────────────── [↻] [×] ┐
+│ path: /abs/workspace/subdir                         │
+│ ┌ listing ────────────────────────────────────────┐ │
+│ │ 📁 src/                                         │ │
+│ │ 📄 README.md                                    │ │
+│ └─────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────┘
+</code></pre>
+<p><strong>File selected (text):</strong></p>
+<pre><code>┌ Workspace explorer ─────────────────── [Save] [↻] [×] ┐
+│ path crumbs…                                           │
+│ ┌ tree/list ─────┬── editor ─────────────────────────┐ │
+│ │ …              │  (textarea / CodeMirror-lite)     │ │
+│ │ README.md ●    │                                   │ │
+│ └────────────────┴───────────────────────────────────┘ │
+└────────────────────────────────────────────────────────┘
+</code></pre>
+<ul>
+<li><strong>↻ Refresh</strong> — reload listing (+ re-fetch open file if any).  </li>
+<li><strong>Save</strong> — only when a dirty text buffer exists.  </li>
+<li><strong>×</strong> — close modal (prompt if dirty — open Q).</li>
+</ul>
+<h2 id="path-safety-hard-requirements">Path safety (hard requirements)</h2>
+<p>All paths from the client are treated as <strong>relative to workspace</strong> (or absolute only if under workspace after clean).</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Jail</td>
+<td>Resolve with <code>filepath.Abs</code> + require prefix of workspace root</td>
+</tr>
+<tr>
+<td>Reject</td>
+<td><code>..</code> escape, symlinks that leave workspace (follow carefully or reject external links)</td>
+</tr>
+<tr>
+<td>Same as tools</td>
+<td>Align with <code>internal/tools</code> resolve semantics</td>
+</tr>
+</tbody>
+</table>
+<h2 id="binary-vs-text">Binary vs text</h2>
+<table>
+<thead>
+<tr>
+<th>Classification</th>
+<th>Behavior on select</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Text</strong></td>
+<td>Split view: load content into editor (size-capped — open Q)</td>
+</tr>
+<tr>
+<td><strong>Binary</strong></td>
+<td>No editor; show metadata panel (size, mime, “binary — download only”)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>v1 heuristics (proposed):</strong></p>
+<ul>
+<li>Extension allowlist for text (<code>.go</code>, <code>.md</code>, <code>.txt</code>, <code>.json</code>, <code>.yaml</code>, <code>.yml</code>, <code>.toml</code>, <code>.css</code>, <code>.js</code>, <code>.ts</code>, <code>.html</code>, <code>.sh</code>, <code>.env</code>, <code>.mod</code>, <code>.sum</code>, no extension small files, …)  </li>
+<li>AND/OR content sniff: no NUL in first 8 KiB, valid UTF-8  </li>
+<li>Over size limit → treat as “too large to edit”; offer download only  </li>
+</ul>
+<h2 id="context-menus">Context menus</h2>
+<h3 id="on-file">On file</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Copy path</strong></td>
+<td>Copy workspace-relative path (open Q: also absolute?) to clipboard</td>
+</tr>
+<tr>
+<td><strong>Delete</strong></td>
+<td>Confirm → delete file</td>
+</tr>
+<tr>
+<td><strong>Rename</strong></td>
+<td>Inline prompt → rename (same directory)</td>
+</tr>
+<tr>
+<td><strong>Download</strong></td>
+<td>Browser download of file bytes</td>
+</tr>
+</tbody>
+</table>
+<h3 id="on-folder">On folder</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Copy path</strong></td>
+<td>Same as file</td>
+</tr>
+<tr>
+<td><strong>Delete</strong></td>
+<td>Confirm → recursive delete (open Q: require empty only?)</td>
+</tr>
+<tr>
+<td><strong>Rename</strong></td>
+<td>Rename directory</td>
+</tr>
+<tr>
+<td><strong>Download</strong></td>
+<td>Stream <strong><code>dirname.tar.gz</code></strong> of folder tree (jailed walk)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="on-empty-listing-space-background">On empty listing space (background)</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>New folder</strong></td>
+<td>Prompt name → <code>mkdir</code></td>
+</tr>
+<tr>
+<td><strong>New file</strong></td>
+<td>Prompt name → create empty file (optional open in editor)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="drag-and-drop">Drag and drop</h2>
+<table>
+<thead>
+<tr>
+<th>Direction</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Into modal</strong> (from OS / browser)</td>
+<td>Upload into <strong>current directory</strong> (overwrite policy — open Q)</td>
+</tr>
+<tr>
+<td><strong>Out of modal</strong> (from row)</td>
+<td>Browser download (file) or tar.gz (folder) via drag — <strong>best effort</strong>; HTML5 DnD download support varies by browser</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Note:</strong> Drag-<em>out</em> as true file download is inconsistent across browsers. Minimum bar: drag-out triggers same as Download when possible; otherwise Download menu remains authoritative.</p>
+<h2 id="refresh">Refresh</h2>
+<ul>
+<li>Button reloads <code>GET</code> listing for current path.  </li>
+<li>If a file is open and not dirty, re-fetch content.  </li>
+<li>If dirty, refresh listing only or prompt (open Q).</li>
+</ul>
+<h2 id="api-sketch">API sketch</h2>
+<p>All under workspace jail. Errors: <code>400</code> bad path, <code>403</code> escape, <code>404</code> missing, <code>409</code> conflict, <code>413</code> too large.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/workspace</code></td>
+<td>Root info: absolute workspace path (display), sep</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/workspace/list?path=</code></td>
+<td>Entries: name, type (<code>file</code>/<code>dir</code>), size, mtime, is_text</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/workspace/read?path=</code></td>
+<td>Text content (+ encoding); reject binary/oversize</td>
+</tr>
+<tr>
+<td><code>PUT</code></td>
+<td><code>/api/workspace/write</code></td>
+<td>Body: <code>{path, content}</code> — create/overwrite text</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/workspace/mkdir</code></td>
+<td><code>{path}</code></td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/workspace/rename</code></td>
+<td><code>{from, to}</code></td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/api/workspace?path=</code></td>
+<td>File or dir (recursive if dir — policy Q)</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/workspace/download?path=</code></td>
+<td>File attachment</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/workspace/archive?path=</code></td>
+<td><code>application/gzip</code> tar.gz of directory</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/workspace/upload?path=</code></td>
+<td>Multipart files into directory <code>path</code> (cwd)</td>
+</tr>
+</tbody>
+</table>
+<p><code>path</code> query/body values are <strong>relative to workspace</strong> (preferred) or validated absolute under root.</p>
+<h2 id="security-considerations">Security considerations</h2>
+<ul>
+<li>Explorer is as powerful as local filesystem access to the workspace — <strong>no auth</strong> in v1 matches current dashboard posture (local/Tailscale trust).  </li>
+<li>Document: exposing <code>:8080</code> on a network exposes workspace R/W + delete.  </li>
+<li>Future: optional auth (later ADR) gates these routes with the rest of the UI.  </li>
+<li>Archive/download should not follow symlinks out of jail.  </li>
+<li>Upload size limits and extension allow/deny (open Q).</li>
+</ul>
+<h2 id="relationship-to-agent-tools">Relationship to agent tools</h2>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tools <code>file_*</code> / <code>list_files</code></td>
+<td>Model-driven</td>
+</tr>
+<tr>
+<td>Explorer API</td>
+<td>Operator-driven</td>
+</tr>
+</tbody>
+</table>
+<p>Same jail implementation should be <strong>shared</strong> (extract common <code>workspacefs</code> package) to avoid drift.</p>
+<h2 id="implementation-sketch-post-accept">Implementation sketch (post-accept)</h2>
+<ol>
+<li><code>internal/workspacefs</code> — resolve, list, read, write, mkdir, rename, delete, archive, classify text/binary.  </li>
+<li><code>internal/api</code> routes under <code>/api/workspace/*</code>.  </li>
+<li>SPA modal component (vanilla JS consistent with current UI).  </li>
+<li>Context menu + DnD + refresh/save.  </li>
+<li>Tests: path escape, tar.gz round-trip, upload overwrite.  </li>
+</ol>
+<h2 id="decisions-partial">Decisions (partial)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Context menu presents <strong>both</strong> “Copy relative path” and “Copy absolute path”</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Dirty editor on close → prompt <strong>Save / Discard / Cancel</strong></td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td><strong>Yes</strong> — remember last directory (e.g. <code>sessionStorage</code>)</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Navigation = <strong>breadcrumbs</strong> + flat list of current directory (no tree sidebar in v1)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisions-complete">Decisions (complete)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q1</td>
+<td>Both copy relative path and copy absolute path</td>
+</tr>
+<tr>
+<td>Q2</td>
+<td>Dirty close → Save / Discard / Cancel</td>
+</tr>
+<tr>
+<td>Q3</td>
+<td>Remember last directory (<code>sessionStorage</code>)</td>
+</tr>
+<tr>
+<td>Q4</td>
+<td>Breadcrumbs + flat list</td>
+</tr>
+<tr>
+<td>Q5</td>
+<td>Plain <code>&lt;textarea&gt;</code> editor</td>
+</tr>
+<tr>
+<td>Q6</td>
+<td>Show dotfiles by default (+ toggle to hide)</td>
+</tr>
+<tr>
+<td>Q7</td>
+<td>Recursive delete of non-empty folders with confirm popup</td>
+</tr>
+<tr>
+<td>Q8</td>
+<td>New file auto-opens in editor</td>
+</tr>
+<tr>
+<td>Q9</td>
+<td>Mobile long-press for context menu</td>
+</tr>
+<tr>
+<td>Q10</td>
+<td>Max editable size <strong>1 MiB</strong></td>
+</tr>
+<tr>
+<td>Q11</td>
+<td>Max upload <strong>50 MiB</strong> per file</td>
+</tr>
+<tr>
+<td>Q12</td>
+<td>Upload conflict → confirm; Save overwrites open file</td>
+</tr>
+<tr>
+<td>Q13</td>
+<td>List symlinks; follow only if target stays in jail</td>
+</tr>
+<tr>
+<td>Q14</td>
+<td>tar.gz abort ~200 MiB uncompressed / 10k files</td>
+</tr>
+<tr>
+<td>Q15</td>
+<td>Stream large downloads; no extra cap</td>
+</tr>
+<tr>
+<td>Q16</td>
+<td><code>--workspace-readonly</code> deferred</td>
+</tr>
+<tr>
+<td>Q17</td>
+<td>Audit log deferred</td>
+</tr>
+<tr>
+<td>Q18</td>
+<td>Do not notify agent on operator edit</td>
+</tr>
+</tbody>
+</table>
+<h2 id="open-questions">Open questions</h2>
+<p>None blocking.</p>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Operators manage the same tree as the agent without leaving Marble.  </li>
+<li>Upload/download/tar.gz covers common sysadmin workflows.  </li>
+<li>Shared jail code hardens tools + UI together.  </li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Powerful R/W surface on an unauthenticated local UI.  </li>
+<li>Browser DnD-out is imperfect.  </li>
+<li>Basic editor is not a full IDE.  </li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Path escape</td>
+<td>Shared resolve + tests</td>
+</tr>
+<tr>
+<td>Accidental recursive delete</td>
+<td>Confirm + optional empty-only</td>
+</tr>
+<tr>
+<td>Huge tar/upload DoS</td>
+<td>Caps + timeouts</td>
+</tr>
+<tr>
+<td>Symlink escape</td>
+<td>Don’t follow out of root</td>
+</tr>
+</tbody>
+</table>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Q1–Q4 decided (both path copies; save/discard/cancel; remember path; breadcrumbs)  </li>
+<li>[ ] Sidebar folder icon + modal agreed  </li>
+<li>[ ] Menu actions + blank-space actions agreed  </li>
+<li>[ ] File vs folder download behavior agreed  </li>
+<li>[ ] DnD semantics agreed (with browser caveats)  </li>
+<li>[ ] Remaining open questions (Q5–Q18) answered or defaulted  </li>
+<li>[ ] Ready to implement  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-17</td>
+<td>Initial proposal</td>
+</tr>
+<tr>
+<td>2026-07-17</td>
+<td>Q1–Q4 decisions locked</td>
+</tr>
+</tbody>
+</table>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0001 workspace tools  </li>
+<li>Current UI: <code>internal/web/static/*</code>  </li>
+<li>Agent path jail: <code>internal/tools</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0004-workspace-file-explorer.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

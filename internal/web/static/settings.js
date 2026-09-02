@@ -172,6 +172,373 @@
     return "none";
   }
 
+  async function copyText(text, okMsg) {
+    try {
+      await navigator.clipboard.writeText(text);
+      flashBanner(okMsg || "Copied", false);
+    } catch {
+      // Fallback
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        flashBanner(okMsg || "Copied", false);
+      } catch (e) {
+        flashBanner("Copy failed: " + e, true);
+      }
+      ta.remove();
+    }
+  }
+
+  function flashBanner(msg, isErr) {
+    if (!els.banner) return;
+    els.banner.hidden = false;
+    els.banner.textContent = msg;
+    els.banner.classList.toggle("err", !!isErr);
+    clearTimeout(flashBanner._t);
+    flashBanner._t = setTimeout(() => {
+      if (data && data.mode === "limp") {
+        els.banner.textContent =
+          "⚠ Limp mode: " + (data.limp_reason || "DB not writable");
+        els.banner.classList.remove("err");
+      } else {
+        els.banner.hidden = true;
+        els.banner.textContent = "";
+        els.banner.classList.remove("err");
+      }
+    }, 2200);
+  }
+
+  async function renderTTSSection() {
+    try {
+      const res = await api("/api/settings/tts");
+      const cfg = res.config || {};
+      const st = res.status || {};
+      const path = res.config_path || "—";
+      const forced = !!res.forced_off;
+      const chip = st.ready
+        ? `<span class="settings-chip ok">ready</span>`
+        : st.configured
+          ? `<span class="settings-chip warn">not ready</span>`
+          : st.enabled
+            ? `<span class="settings-chip warn">incomplete</span>`
+            : `<span class="settings-chip muted">off</span>`;
+      const hint = st.ready_hint || st.last_error || "";
+      els.pane.innerHTML = `
+        <h3>Server-side TTS</h3>
+        <p class="hint">ADR-0027 neural narration for Wonderstand / web ▶. Secrets stay in Settings → Secrets (<code>api_key_env</code> name only).</p>
+        <div class="settings-group">
+          <p class="hint" style="margin-top:0"><strong>Config file:</strong> <code class="mono">${escapeHtml(path)}</code> ${chip}</p>
+          <p class="hint">Status: provider <code>${escapeHtml(st.provider || "none")}</code>
+            · enabled ${st.enabled ? "yes" : "no"}
+            · ready ${st.ready ? "yes" : "no"}
+            · voice <code>${escapeHtml(st.default_voice || "(empty)")}</code>
+            · cache hits ${st.cache_hits ?? 0}
+            · synth ok ${st.synth_calls ?? 0} / err ${st.synth_errors ?? 0}
+            ${forced ? " · <strong>forced off by --tts-disable</strong>" : ""}</p>
+          ${hint ? `<p class="hint model-editor-err">${escapeHtml(hint)}</p>` : ""}
+          <p class="hint">Wonderstand immersion shows <strong>Neural</strong> vs <strong>Phone TTS</strong> in the mute chrome while narrating. Web assistant ▶ uses the same status.</p>
+        </div>
+        <div class="settings-group">
+          <div class="settings-field">
+            <label><input type="checkbox" id="tts-enabled" ${cfg.enabled ? "checked" : ""} ${forced ? "disabled" : ""}/> Enabled</label>
+          </div>
+          <div class="settings-field">
+            <label>Provider</label>
+            <select id="tts-provider" ${forced ? "disabled" : ""}>
+              <option value="none" ${cfg.provider === "none" ? "selected" : ""}>none</option>
+              <option value="elevenlabs" ${cfg.provider === "elevenlabs" ? "selected" : ""}>elevenlabs</option>
+              <option value="openai" ${cfg.provider === "openai" ? "selected" : ""}>openai</option>
+            </select>
+          </div>
+          <div class="settings-field">
+            <label>API key env name</label>
+            <input type="text" id="tts-api-key-env" class="mono" value="${escapeAttr(cfg.api_key_env || "")}" ${forced ? "disabled" : ""}/>
+          </div>
+          <div class="settings-field">
+            <label>Default voice</label>
+            <input type="text" id="tts-voice" class="mono" value="${escapeAttr(cfg.default_voice || "")}" ${forced ? "disabled" : ""} placeholder="ElevenLabs voice id / OpenAI alloy"/>
+          </div>
+          <div class="settings-field">
+            <label>Default model</label>
+            <input type="text" id="tts-model" class="mono" value="${escapeAttr(cfg.default_model || "")}" ${forced ? "disabled" : ""}/>
+          </div>
+          <div class="settings-field">
+            <label><input type="checkbox" id="tts-cache" ${cfg.cache !== false ? "checked" : ""} ${forced ? "disabled" : ""}/> Cache</label>
+          </div>
+          <div class="settings-field">
+            <label><input type="checkbox" id="tts-eager" ${cfg.eager_on_wonderstand_turn ? "checked" : ""} ${forced ? "disabled" : ""}/> Eager fill phase.audio on Wonderstand turns</label>
+          </div>
+          <div class="settings-field">
+            <label>Max chars / request</label>
+            <input type="number" id="tts-max-chars" value="${escapeAttr(String(cfg.max_chars_per_request || 4000))}" ${forced ? "disabled" : ""}/>
+          </div>
+          <button type="button" class="icon-btn" id="tts-save" ${forced ? "disabled" : ""}>Save tts.json</button>
+          <p class="hint model-editor-err" id="tts-err" hidden></p>
+        </div>
+      `;
+      const saveBtn = document.getElementById("tts-save");
+      if (saveBtn) {
+        saveBtn.onclick = async () => {
+          const errEl = document.getElementById("tts-err");
+          try {
+            await api("/api/settings/tts", {
+              method: "PUT",
+              body: JSON.stringify({
+                enabled: !!(document.getElementById("tts-enabled") || {}).checked,
+                provider: (document.getElementById("tts-provider") || {}).value || "none",
+                api_key_env: (document.getElementById("tts-api-key-env") || {}).value || "",
+                default_voice: (document.getElementById("tts-voice") || {}).value || "",
+                default_model: (document.getElementById("tts-model") || {}).value || "",
+                format: cfg.format || "mp3",
+                cache: !!(document.getElementById("tts-cache") || {}).checked,
+                max_chars_per_request: parseInt((document.getElementById("tts-max-chars") || {}).value || "4000", 10),
+                max_concurrent: cfg.max_concurrent || 2,
+                eager_on_wonderstand_turn: !!(document.getElementById("tts-eager") || {}).checked,
+              }),
+            });
+            flashBanner("TTS settings saved", false);
+            renderTTSSection();
+          } catch (e) {
+            if (errEl) {
+              errEl.hidden = false;
+              errEl.textContent = e.message || String(e);
+            }
+            flashBanner(String(e.message || e), true);
+          }
+        };
+      }
+    } catch (e) {
+      els.pane.innerHTML = `<h3>TTS</h3><p class="hint model-editor-err">${escapeHtml(e.message || String(e))}</p>`;
+    }
+  }
+
+  async function renderSecretsSection() {
+    try {
+      const res = await api("/api/settings/env");
+      const path = res.managed_path || "—";
+      const entries = res.entries || [];
+      const sec = res.security || {};
+      const rows = entries
+        .map((e) => {
+          const name = e.name || "";
+          const flags = [];
+          if (e.in_managed_file) flags.push("file");
+          if (e.in_process) flags.push("process");
+          const revealed = !!e._reveal;
+          return `<div class="settings-group env-row" data-name="${escapeAttr(name)}">
+            <div class="env-row-head">
+              <code class="env-name">${escapeHtml(name)}</code>
+              <span class="settings-chip muted">${escapeHtml(flags.join(" · ") || "—")}</span>
+            </div>
+            <div class="env-value-row">
+              <input type="${revealed ? "text" : "password"}" class="env-value mono" data-name="${escapeAttr(name)}" value="${escapeAttr(e.value || "")}" spellcheck="false" autocomplete="off" />
+              <button type="button" class="icon-btn env-toggle" data-name="${escapeAttr(name)}" title="Show / hide">👁</button>
+            </div>
+            <div class="env-actions">
+              <button type="button" class="icon-btn env-save" data-name="${escapeAttr(name)}">Update</button>
+              <button type="button" class="icon-btn env-copy-name" data-name="${escapeAttr(name)}" title="Copy name">Copy name</button>
+              <button type="button" class="icon-btn env-copy-val" data-name="${escapeAttr(name)}" title="Copy value">Copy value</button>
+              <button type="button" class="icon-btn danger env-del" data-name="${escapeAttr(name)}">Delete</button>
+            </div>
+          </div>`;
+        })
+        .join("");
+
+      els.pane.innerHTML = `
+        <h3 class="env-heading">
+          Secrets
+          <button type="button" class="icon-btn tip env-docs-btn" id="env-docs-open" title="How env sources work" aria-label="Secrets documentation">?</button>
+        </h3>
+        <div class="settings-group env-secure-callout">
+          <p class="hint" style="margin-top:0">
+            Browser → harness API → local file. <strong>Not sent to the model.</strong>
+            Catalog/MCP store <em>names</em> only. File mode ${escapeHtml(String(sec.file_mode || "0600"))}.
+          </p>
+          <p class="hint"><strong>This tab writes:</strong> <code class="env-path">${escapeHtml(path)}</code></p>
+          <p class="hint">Chips (<code>file</code> · <code>process</code>) show where Marble sees that name — tap <strong>?</strong> for load order.</p>
+        </div>
+
+        <div class="settings-group">
+          <h4>Add secret</h4>
+          <div class="settings-field">
+            <label>Name</label>
+            <input type="text" id="env-new-name" class="mono" placeholder="GEMINI_API_KEY" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="settings-field">
+            <label>Value</label>
+            <input type="password" id="env-new-value" class="mono" placeholder="••••••••" autocomplete="new-password" spellcheck="false" />
+          </div>
+          <button type="button" class="icon-btn" id="env-add">Add / upsert</button>
+        </div>
+
+        <h4>Stored keys (${entries.length})</h4>
+        ${rows || "<p class='hint'>No keys in managed file yet.</p>"}
+      `;
+
+      const docsBtn = document.getElementById("env-docs-open");
+      if (docsBtn) {
+        docsBtn.addEventListener("click", () => openEnvDocsModal(path));
+      }
+
+      const addBtn = document.getElementById("env-add");
+      if (addBtn) {
+        addBtn.addEventListener("click", async () => {
+          const name = (document.getElementById("env-new-name") || {}).value || "";
+          const value = (document.getElementById("env-new-value") || {}).value || "";
+          try {
+            await api("/api/settings/env", {
+              method: "PUT",
+              body: JSON.stringify({ name, value }),
+            });
+            flashBanner("Saved " + name.trim(), false);
+            renderSecretsSection();
+          } catch (e) {
+            flashBanner(String(e.message || e), true);
+          }
+        });
+      }
+
+      els.pane.querySelectorAll(".env-toggle").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const row = btn.closest(".env-row");
+          const input = row && row.querySelector(".env-value");
+          if (!input) return;
+          input.type = input.type === "password" ? "text" : "password";
+        });
+      });
+      els.pane.querySelectorAll(".env-save").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.getAttribute("data-name");
+          const row = btn.closest(".env-row");
+          const input = row && row.querySelector(".env-value");
+          try {
+            await api("/api/settings/env", {
+              method: "PUT",
+              body: JSON.stringify({ name, value: input ? input.value : "" }),
+            });
+            flashBanner("Updated " + name, false);
+            renderSecretsSection();
+          } catch (e) {
+            flashBanner(String(e.message || e), true);
+          }
+        });
+      });
+      els.pane.querySelectorAll(".env-copy-name").forEach((btn) => {
+        btn.addEventListener("click", () => copyText(btn.getAttribute("data-name") || "", "Name copied"));
+      });
+      els.pane.querySelectorAll(".env-copy-val").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const row = btn.closest(".env-row");
+          const input = row && row.querySelector(".env-value");
+          copyText(input ? input.value : "", "Value copied");
+        });
+      });
+      els.pane.querySelectorAll(".env-del").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.getAttribute("data-name");
+          if (!confirm(`Delete ${name} from ${path}?`)) return;
+          try {
+            await api("/api/settings/env?name=" + encodeURIComponent(name), {
+              method: "DELETE",
+            });
+            flashBanner("Deleted " + name, false);
+            renderSecretsSection();
+          } catch (e) {
+            flashBanner(String(e.message || e), true);
+          }
+        });
+      });
+    } catch (e) {
+      els.pane.innerHTML = `<h3>Secrets</h3><p class="hint err">${escapeHtml(String(e.message || e))}</p>`;
+    }
+  }
+
+  function openEnvDocsModal(managedPath) {
+    let overlay = document.getElementById("env-docs-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "env-docs-overlay";
+      overlay.className = "model-test-overlay env-docs-overlay";
+      overlay.innerHTML = `
+        <div class="model-test-dialog env-docs-dialog" role="dialog" aria-labelledby="env-docs-title">
+          <div class="model-test-top">
+            <div class="model-test-title" id="env-docs-title">Secrets &amp; env sources</div>
+            <div class="model-test-actions">
+              <button type="button" class="icon-btn" id="env-docs-close" title="Close">×</button>
+            </div>
+          </div>
+          <div class="env-docs-body" id="env-docs-body" tabindex="0"></div>
+          <p class="hint model-test-foot muted">Esc / backdrop closes</p>
+        </div>`;
+      document.body.appendChild(overlay);
+      const close = () => {
+        overlay.hidden = true;
+      };
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) close();
+      });
+      overlay.querySelector("#env-docs-close").onclick = close;
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && overlay && !overlay.hidden) close();
+      });
+    }
+    const body = overlay.querySelector("#env-docs-body");
+    body.innerHTML = `
+      <p class="env-docs-lede">
+        Marble resolves API keys and similar secrets by <strong>env var name</strong>
+        (e.g. catalog <code>api_key_env=GEMINI_API_KEY</code>). Values live in the
+        process environment or <code>$MEMORY/env</code> — never in SQLite, and never in the model transcript.
+        This Settings tab is a <strong>model bypass</strong>: browser → HTTP API → file write only.
+      </p>
+
+      <h4>Load order (first match wins)</h4>
+      <p>When Marble needs a secret, it looks in this order and <strong>stops at the first non-empty value</strong>:</p>
+      <ol class="env-docs-ol">
+        <li><strong>Process environment</strong> — already loaded into the running harness (e.g. systemd <code>EnvironmentFile=</code> at start, or <code>export</code> before launch).</li>
+        <li><strong>Managed file</strong> — <code>${escapeHtml(managedPath || "$MEMORY/env")}</code> — <strong>this is what Secrets edits</strong>. Re-read live (~2s).</li>
+      </ol>
+      <pre class="env-docs-pre">1. process env   ← if set here, the file below is ignored for that key
+2. $MEMORY/env   ← Secrets tab writes here</pre>
+
+      <h4>Pros / cons</h4>
+      <table class="env-docs-table">
+        <thead>
+          <tr><th>Location</th><th>Pros</th><th>Cons</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Process</strong><br/><span class="muted">systemd / shell export</span></td>
+            <td>Familiar; good for baseline host secrets at boot</td>
+            <td><strong>Always wins</strong> for that key until you clear it and restart; Secrets “Update” cannot override it</td>
+          </tr>
+          <tr>
+            <td><strong>Managed file</strong><br/><code class="muted">${escapeHtml(managedPath || "$MEMORY/env")}</code></td>
+            <td><strong>Recommended</strong>; mode 0600; live re-read; one clear write target</td>
+            <td>Gone if you wipe <code>--memory</code>; readable by anything running as your OS user</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>What the chips mean</h4>
+      <ul class="env-docs-ul">
+        <li><code>file</code> — key exists in <code>$MEMORY/env</code> (what this tab edits)</li>
+        <li><code>process</code> — key is set on the running process; that value is the one Marble actually uses</li>
+      </ul>
+
+      <h4>Recommendation</h4>
+      <p>
+        Put secrets in the managed file via this tab (or point systemd
+        <code>EnvironmentFile=</code> at the same <code>$MEMORY/env</code> path).
+        If a name is also set in process env, clear/restart before expecting Secrets edits to win.
+      </p>
+    `;
+    overlay.hidden = false;
+    if (body) body.focus();
+  }
+
   async function renderComputersSection(editable) {
     try {
       const res = await api("/api/computers");
@@ -273,7 +640,7 @@
       const envPathsHint =
         envPaths.length > 0
           ? envPaths.map((p) => `<code class="mono">${escapeHtml(p)}</code>`).join(" or ")
-          : `<code class="mono">~/.config/marble/env</code>`;
+          : `<code class="mono">$MEMORY/env</code>`;
       const rows = models
         .map((m) => {
           const id = m.id || "";
@@ -804,7 +1171,15 @@
     if (section === "mcp")
       els.save.disabled = !mcpDirty || (data && data.runtime && data.runtime.mcp_disabled_cli);
     if (section === "ui") els.save.disabled = !dirty;
-    if (section === "runtime" || section === "agent" || section === "about" || section === "models" || section === "computers")
+    if (
+      section === "runtime" ||
+      section === "agent" ||
+      section === "about" ||
+      section === "models" ||
+      section === "computers" ||
+      section === "secrets" ||
+      section === "tts"
+    )
       els.save.disabled = true;
   }
 
@@ -897,6 +1272,12 @@
     } else if (section === "computers") {
       els.pane.innerHTML = `<h3>Computers</h3><p class="hint">Loading peers…</p>`;
       renderComputersSection(editable);
+    } else if (section === "secrets") {
+      els.pane.innerHTML = `<h3>Secrets</h3><p class="hint">Loading…</p>`;
+      renderSecretsSection();
+    } else if (section === "tts") {
+      els.pane.innerHTML = `<h3>TTS</h3><p class="hint">Loading…</p>`;
+      renderTTSSection();
     } else if (section === "memory") {
       els.pane.innerHTML = `
         <h3>Memory &amp; DB</h3>

@@ -1,0 +1,25 @@
+# Example user unit for the ADR docs server.
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp adr/marble-adr.service.example ~/.config/systemd/user/marble-adr.service
+#   # edit paths if needed
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now marble-adr
+#
+# Then open http://127.0.0.1:8791/adr/
+# After editing ADR markdown: python3 adr/render_docs.py
+
+[Unit]
+Description=Marble ADR docs server (static HTML + review UI)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/marble
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/projects/marble/adr/serve.py 8791
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,1514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0005</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0005</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0005-tools-and-agent-loop.md">Markdown</a>
+      <a href="0005-review.html">Review</a>
+      <a href="0005-answers.json">Answers</a>
+      <a href="0004-doc.html">← 0004</a>
+      <a href="0006-doc.html">0006 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0005-expanded-tool-suite-robust-agent-loop">ADR-0005: Expanded Tool Suite &amp; Robust Agent Loop</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-17</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tools, agent-loop, shell, memory, skills, compaction, background-tasks, system-agents</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (inner loop + v1 tools), ADR-0002/0003 (memory + DB settings), ADR-0004 (workspace jail)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>ADR-0001 shipped a minimal tool set (<code>file_read</code>, <code>file_write</code>, <code>list_files</code>) and a simple agent loop (serial tools, hard stop at <code>--max-tool-iters</code>, FIFO context trim only). That is enough for toy edits; it is not enough for real sysadmin / coding / long-running work.</p>
+<p>Marble needs:</p>
+<ol>
+<li>A <strong>richer tool suite</strong> for navigation, surgical edits, shell, background processes, memory, skills, and UI attachments.</li>
+<li>A <strong>policy-aware tool loop</strong>: soft warnings, hard caps, auto-compaction nudges, continuations when work outlives a turn.</li>
+<li><strong>Configurable shell power</strong> — from “almost nothing” to “full operator shell” — with defaults that fail closed, prohibited-command lists in DB settings, and permission inheritance from the harness process (no privilege escalation).</li>
+</ol>
+<p>This ADR defines tool contracts, loop policies, shell safety model, background tasks, scheduled continuations, memory/skill tools, and open decisions for review.</p>
+<h2 id="decision-summary">Decision summary</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>v1 tools</td>
+<td>Keep <code>file_read</code>, <code>file_write</code>, <code>list_files</code>; add the suite below</td>
+</tr>
+<tr>
+<td>Tool registry</td>
+<td>Full suite always in v1 (<strong>Q29</strong>); tool profiles later if schema tax hurts</td>
+</tr>
+<tr>
+<td>Workspace jail</td>
+<td>All path tools use shared <code>workspacefs</code> resolve (ADR-0004)</td>
+</tr>
+<tr>
+<td>Memory tools</td>
+<td>Read/write intentional knowledge + search; writes only under <code>$MEMORY/knowledge/</code> (<strong>Q25</strong>)</td>
+</tr>
+<tr>
+<td>Skills</td>
+<td><code>$MEMORY/skills</code> + <code>$WORKSPACE/.marble/skills</code> (<strong>Q26</strong>)</td>
+</tr>
+<tr>
+<td>Shell</td>
+<td><code>deny_list</code> default; DB settings; <code>/bin/bash -lc</code> or <code>/bin/sh -c</code>; inherit harness UID</td>
+</tr>
+<tr>
+<td>BG tasks</td>
+<td>Session-scoped; max <strong>8</strong>; no restart survival; SIGTERM then SIGKILL</td>
+</tr>
+<tr>
+<td>Continuations</td>
+<td>Max <strong>24h</strong>; fire delay <strong>or</strong> task exit (first); cancel on close; DB persist when normal</td>
+</tr>
+<tr>
+<td>Context</td>
+<td>Soft warn ≥60%; LLM compact via system agents; hard fail-closed as today</td>
+</tr>
+<tr>
+<td>Tool rounds</td>
+<td>Soft <strong>65</strong> / hard <strong>80</strong> (<code>--max-tool-iters</code> hard default 80)</td>
+</tr>
+<tr>
+<td>Shell timeout</td>
+<td>Default <strong>60s</strong>; agent max <strong>5m</strong>; longer → background task</td>
+</tr>
+<tr>
+<td>Round wall time</td>
+<td>Soft <strong>3m</strong> without user reply</td>
+</tr>
+<tr>
+<td>Compaction</td>
+<td><strong>LLM summary</strong> via <strong>system agents</strong></td>
+</tr>
+<tr>
+<td>Advisories</td>
+<td>UI chips + <strong>DB logs</strong>; omit from session MD</td>
+</tr>
+<tr>
+<td>Config surface</td>
+<td>Loop/shell defaults: CLI + DB <code>settings</code> (DB wins for tunable security lists)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisions-locked-q1q30">Decisions locked (Q1–Q30)</h2>
+<p>Source: <code>adr/0005-answers.json</code> (<code>2026-07-17T17:55:38.280Z</code>).</p>
+<h3 id="loop-context">Loop &amp; context</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Hard tool-round stop <strong>80</strong>; soft advisory <strong>65</strong></td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Soft wall-clock <strong>3 minutes</strong> of continuous tool rounds → advisory</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Auto-compact only if usage ≥<strong>85%</strong> for <strong>3</strong> consecutive rounds; else tool-driven (<code>session_compact</code>)</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Compaction uses <strong>LLM summary</strong>. Summarization (and similar harness jobs) run as <strong>system agents</strong> scheduled by the same inner daemon as memory flush/prune. System agents appear in the UI under a <strong>separate session selector</strong> at the <strong>bottom of the left pane</strong> (collapsible/expandable), each with a normal short <strong>session id</strong>, openable transcript, closeable like user sessions</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td><code>usage_ratio = est_prompt / (context_limit − max_output − reserve)</code></td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Harness advisories: collapsible UI chips; <strong>omit from session Markdown</strong>; <strong>retain in DB</strong> <code>session_events</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="shell">Shell</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q7</strong></td>
+<td><code>/bin/bash -lc</code> if present, else <code>/bin/sh -c</code></td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Default mode: <strong><code>deny_list</code></strong> with strong seed patterns (powerful but foot-gun resistant)</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td><code>sudo</code> only with explicit <code>shell_allow_sudo=true</code> + remove from deny — still no privilege beyond harness</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Network unrestricted in v1 (same as host user); document trust model; sandbox later ADR</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>No cwd outside workspace when <code>shell_cwd_strict=true</code> (default)</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Filtered parent env inherit + limited tool <code>env</code> overlay; drop dangerous bash hooks</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>Best-effort path heuristics <strong>on</strong> by default (block shell targeting <code>--memory</code>)</td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td><code>--disable-shell</code> CLI plus DB <code>shell_enabled</code></td>
+</tr>
+<tr>
+<td><strong>Q15</strong></td>
+<td><strong>512 KiB</strong> combined stdout/stderr; spill rest to blob; always include exit + timing</td>
+</tr>
+<tr>
+<td><strong>Q15b</strong></td>
+<td>Deny seed: destructive disk + privilege + power control; expand after first week of use. <strong>Normal file deletion allowed</strong>; block catastrophic patterns like <code>rm -rf /</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="background-continuations">Background &amp; continuations</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q16</strong></td>
+<td>BG tasks do <strong>not</strong> survive harness restart; boot marks orphans dead</td>
+</tr>
+<tr>
+<td><strong>Q17</strong></td>
+<td>Max <strong>8</strong> concurrent BG tasks per session</td>
+</tr>
+<tr>
+<td><strong>Q18</strong></td>
+<td>Continuation max delay <strong>24 hours</strong></td>
+</tr>
+<tr>
+<td><strong>Q19</strong></td>
+<td>Fire on whichever comes first (<code>delay_sec</code> or <code>wait_for_task</code>); require at least one</td>
+</tr>
+<tr>
+<td><strong>Q20</strong></td>
+<td><strong>Cancel</strong> continuations on session close</td>
+</tr>
+<tr>
+<td><strong>Q21</strong></td>
+<td>Persist schedules to SQLite in normal mode; in-memory only when limp</td>
+</tr>
+</tbody>
+</table>
+<h3 id="edit-patch">Edit / patch</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q22</strong></td>
+<td>Prior-read required for <code>apply_patch</code> <strong>update</strong>; not for <strong>add</strong>/<strong>delete</strong></td>
+</tr>
+<tr>
+<td><strong>Q23</strong></td>
+<td>Fail if <code>old_string</code> matches more than once unless <code>replace_all</code></td>
+</tr>
+<tr>
+<td><strong>Q24</strong></td>
+<td>Temp files + rename; reverse ops for deletes; test multi-file failure mid-batch</td>
+</tr>
+</tbody>
+</table>
+<h3 id="memory-skills-attach">Memory / skills / attach</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q25</strong></td>
+<td><code>memory_write</code> only under <code>$MEMORY/knowledge/</code></td>
+</tr>
+<tr>
+<td><strong>Q26</strong></td>
+<td>Skill roots: <code>$MEMORY/skills</code> + <code>$WORKSPACE/.marble/skills</code></td>
+</tr>
+<tr>
+<td><strong>Q27</strong></td>
+<td><code>attach_file</code> is <strong>UI event only</strong>; does not inject bytes into model context</td>
+</tr>
+<tr>
+<td><strong>Q28</strong></td>
+<td>Keep both <code>list_files</code> and <code>glob</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="schema-config">Schema / config</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q29</strong></td>
+<td>Register full tool suite always in v1; tool profiles later if schema tax hurts</td>
+</tr>
+<tr>
+<td><strong>Q30</strong></td>
+<td>CLI <code>--max-tool-iters</code> hard default <strong>80</strong>; soft <strong>65</strong> via setting/constant</td>
+</tr>
+</tbody>
+</table>
+<h2 id="product-framing">Product framing</h2>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Tools that matter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coding</td>
+<td><code>codebase_summary</code>, <code>grep</code>, <code>glob</code>, <code>edit_file</code>, <code>apply_patch</code>, <code>attach_file</code></td>
+</tr>
+<tr>
+<td>Sysadmin</td>
+<td><code>shell_execute</code>, background tasks, continuations</td>
+</tr>
+<tr>
+<td>Learn over time</td>
+<td><code>memory_*</code>, <code>skill_*</code>, <code>session_compact</code>, <code>get_context_usage</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="relationship-to-existing-tools">Relationship to existing tools</h2>
+<table>
+<thead>
+<tr>
+<th>Existing</th>
+<th>Fate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>file_read</code></td>
+<td>Keep — required for <code>edit_file</code> prior-read rule</td>
+</tr>
+<tr>
+<td><code>file_write</code></td>
+<td>Keep — full overwrite; prefer <code>edit_file</code> / <code>apply_patch</code> for surgery</td>
+</tr>
+<tr>
+<td><code>list_files</code></td>
+<td>Keep — shallow listing; <code>codebase_summary</code> / <code>glob</code> for project maps</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="tool-suite">Tool suite</h2>
+<h3 id="conventions-all-tools">Conventions (all tools)</h3>
+<ul>
+<li>Results are <strong>strings</strong> to the model (JSON text OK for structured tools).</li>
+<li>Large results truncated to <code>--max-tool-result</code> (or DB setting) with a clear marker + how to re-fetch.</li>
+<li>Errors are tool results (not silent failures): <code>ERROR: …</code> prefix or structured <code>{ "ok": false, "error": "…" }</code>.</li>
+<li>Path args: workspace-relative preferred; absolute only if under workspace after jail resolve.</li>
+<li>Tools that mutate disk dual-write diagnostics to SQLite when not limp (ADR-0003).</li>
+</ul>
+<h3 id="a-filesystem-code-navigation">A. Filesystem &amp; code navigation</h3>
+<h4 id="codebase_summary"><code>codebase_summary</code></h4>
+<p>Presents a <strong>project layout tree</strong> with file sizes (and later language-specific metadata).</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>Root relative to workspace (default <code>.</code>)</td>
+</tr>
+<tr>
+<td><code>max_depth</code></td>
+<td>Default 4; hard cap e.g. 12</td>
+</tr>
+<tr>
+<td><code>max_entries</code></td>
+<td>Default 2000; abort/truncate beyond</td>
+</tr>
+<tr>
+<td><code>ignore</code></td>
+<td>Optional globs; always ignore common junk (<code>.git</code>, <code>node_modules</code>, …)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output:</strong> ASCII/Unicode tree + sizes (human + bytes), directory totals.<br />
+<strong>v1:</strong> no language parsers. Later: language hints (Go module, pyproject, etc.).</p>
+<h4 id="grep"><code>grep</code></h4>
+<p>Regex search across workspace file contents.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pattern</code></td>
+<td>RE2/Go regex</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>Subtree (default <code>.</code>)</td>
+</tr>
+<tr>
+<td><code>glob</code></td>
+<td>Optional file filter</td>
+</tr>
+<tr>
+<td><code>case_insensitive</code></td>
+<td>bool</td>
+</tr>
+<tr>
+<td><code>max_matches</code></td>
+<td>Default 50; hard cap 500</td>
+</tr>
+<tr>
+<td><code>context_lines</code></td>
+<td>Default 2 (before/after)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output:</strong> path, line number, line text, optional ± context. Skip binaries (same heuristics as explorer).</p>
+<h4 id="glob"><code>glob</code></h4>
+<p>Recursive glob (<code>**</code> supported) within workspace.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pattern</code></td>
+<td>e.g. <code>**/*_test.go</code></td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>Subtree root (default <code>.</code>)</td>
+</tr>
+<tr>
+<td><code>max_results</code></td>
+<td>Default 500</td>
+</tr>
+</tbody>
+</table>
+<h4 id="edit_file"><code>edit_file</code></h4>
+<p>Targeted text replacement in an <strong>existing</strong> file.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>File path</td>
+</tr>
+<tr>
+<td><code>old_string</code></td>
+<td>Exact match to find</td>
+</tr>
+<tr>
+<td><code>new_string</code></td>
+<td>Replacement</td>
+</tr>
+<tr>
+<td><code>replace_all</code></td>
+<td>Default false</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hard rule:</strong> requires a successful <strong><code>file_read</code> on the same path earlier in the same agent turn</strong> (same user-turn tool loop). If not, return error instructing the model to read first.</p>
+<p><strong>Also:</strong> if <code>old_string</code> not found or not unique (and <code>replace_all</code> false) → error, no write.</p>
+<h4 id="apply_patch"><code>apply_patch</code></h4>
+<p>Atomic multi-file edit set.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>edits</code></td>
+<td>Array of typed ops</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Ops (v1):</strong></p>
+<table>
+<thead>
+<tr>
+<th><code>op</code></th>
+<th>Fields</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>add</code></td>
+<td><code>path</code>, <code>content</code></td>
+<td>Create; fail if exists</td>
+</tr>
+<tr>
+<td><code>update</code></td>
+<td><code>path</code>, <code>old_string</code>?, <code>new_string</code>? or full <code>content</code></td>
+<td>Update existing</td>
+</tr>
+<tr>
+<td><code>delete</code></td>
+<td><code>path</code></td>
+<td>Delete file</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Atomicity:</strong> apply to temp/side copies or record reverse ops; on <strong>any</strong> failure → <strong>rollback all</strong> successful ops in the batch; return which op failed.<br />
+<strong>Do not</strong> leave a half-applied multi-file change.</p>
+<h4 id="attach_file"><code>attach_file</code></h4>
+<p>Attach a workspace file to the <strong>current assistant reply</strong> so the UI can render it inline (or as a downloadable chip).</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>Workspace file</td>
+</tr>
+<tr>
+<td><code>as</code></td>
+<td>Optional display name</td>
+</tr>
+<tr>
+<td><code>inline</code></td>
+<td>Prefer inline for text/images if size allows</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Harness behavior:</strong> does not necessarily dump full file into model context again if already read; emits a UI event <code>attachment</code> with path, mime, size, optional preview. Caps: reuse explorer edit/download limits (e.g. inline text ≤ 1 MiB).</p>
+<hr />
+<h3 id="b-shell-process-control">B. Shell &amp; process control</h3>
+<h4 id="shell_execute-highest-scrutiny"><code>shell_execute</code> ⚠ highest scrutiny</h4>
+<p>Run a shell command <strong>scoped to the workspace</strong> (default <code>cwd</code> = workspace root).</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code></td>
+<td>String passed to shell (<code>/bin/bash -lc</code> proposed)</td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>Optional relative subdir of workspace</td>
+</tr>
+<tr>
+<td><code>timeout_sec</code></td>
+<td>Default <strong>60</strong>; agent may set up to <strong>300</strong> (5m)</td>
+</tr>
+<tr>
+<td><code>env</code></td>
+<td>Optional map; cannot inject privileged vars that escalate (open Q)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Permission model:</strong></p>
+<ol>
+<li>Process runs as the <strong>same UID/GID</strong> as <code>marble-harness</code> (inherit parent). No setuid, no capability add.</li>
+<li><strong>Cannot exceed</strong> harness privileges (OS-enforced).</li>
+<li>Additional <strong>policy layer</strong> (Marble):
+   - Prohibited command patterns from DB <code>settings</code> (and optional CLI seed on first create).
+   - Optional allowlist mode for locked-down deployments.
+   - Network/filesystem outside workspace: <strong>not</strong> OS-sandbox by default in v1 — document trust model; optional future bubblewrap/firejail ADR.</li>
+<li>User configures weak→powerful via settings (deny lists, allow lists, timeout ceilings, enable/disable tool entirely).</li>
+</ol>
+<p><strong>Default prohibited examples (seeded, editable in DB):</strong></p>
+<ul>
+<li>Destructive disk: <code>rm -rf /</code>, <code>mkfs</code>, <code>dd of=/dev/</code></li>
+<li>Privilege: <code>sudo</code>, <code>su</code>, <code>pkexec</code>, <code>doas</code> (unless explicitly allowed)</li>
+<li>System control: <code>shutdown</code>, <code>reboot</code>, <code>init</code>, <code>systemctl poweroff</code></li>
+<li>Marble self-harm optional: killing the harness PID, writing under <code>--memory</code> via shell (open Q)</li>
+</ul>
+<p>Matching is <strong>pattern-based</strong> (regex or token prefix); not a perfect security boundary — defense in depth with OS user isolation.</p>
+<p><strong>Timeouts:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Value</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default</td>
+<td>60s</td>
+<td>If agent omits timeout</td>
+</tr>
+<tr>
+<td>Agent max</td>
+<td>300s (5m)</td>
+<td>Clamp; error text suggests <code>start_background_task</code></td>
+</tr>
+<tr>
+<td>Soft suggest</td>
+<td>&gt;60s requested</td>
+<td>Result note: “consider background task for long jobs”</td>
+</tr>
+<tr>
+<td>On timeout</td>
+<td>kill process group</td>
+<td>SIGTERM → wait → SIGKILL; return partial stdout/stderr</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output:</strong> exit code, duration, stdout/stderr (truncated), killed-by-timeout flag.</p>
+<h4 id="start_background_task"><code>start_background_task</code></h4>
+<p>Start long-running command; returns <strong>task id</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code></td>
+<td>Same shell policy as <code>shell_execute</code></td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>Optional</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td>Optional human label</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Scope:</strong> per <strong>session</strong>. Survives across turns until exit/kill/session close (open Q: survive harness restart?).</p>
+<p><strong>Output:</strong> <code>task_id</code>, pid (optional), start time, log path if streamed to memory/blobs.</p>
+<h4 id="kill_background_task"><code>kill_background_task</code></h4>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_id</code></td>
+<td>Required</td>
+</tr>
+<tr>
+<td><code>signal</code></td>
+<td><code>term</code> (default) or <code>kill</code></td>
+</tr>
+<tr>
+<td>Escalation</td>
+<td>If term and still alive after grace (e.g. 5s), auto SIGKILL optional</td>
+</tr>
+</tbody>
+</table>
+<h4 id="check_background_task"><code>check_background_task</code></h4>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_id</code></td>
+<td>Optional; omit → list all for session</td>
+</tr>
+<tr>
+<td><code>tail_lines</code></td>
+<td>Optional stdout/stderr tail</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output:</strong> status (<code>running</code>/<code>exited</code>/<code>killed</code>/<code>failed</code>), exit code, timestamps, resource hints if cheap.</p>
+<hr />
+<h3 id="c-continuations-context">C. Continuations &amp; context</h3>
+<h4 id="schedule_continuation"><code>schedule_continuation</code></h4>
+<p>Schedule a <strong>delayed auto-resume</strong> of the session: at fire time, inject <code>prompt</code> as a <strong>system/user synthetic message</strong> and start an agent turn (if session not busy).</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td>Required — re-injected text</td>
+</tr>
+<tr>
+<td><code>delay_sec</code></td>
+<td>Wait N seconds (min 1; max open Q, e.g. 24h)</td>
+</tr>
+<tr>
+<td><code>wait_for_task</code></td>
+<td>Optional <code>task_id</code> — fire when task exits <strong>or</strong> delay, whichever policy (open Q)</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td>Optional</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Harness:</strong> timer in-process; persist scheduled jobs to DB so limp/restart behavior is defined (open Q).<br />
+<strong>UI:</strong> show pending continuation chip on session.</p>
+<h4 id="get_context_usage"><code>get_context_usage</code></h4>
+<p>Return current context estimate and traced token totals.</p>
+<p><strong>Output (sketch):</strong></p>
+<pre><code class="language-json">{
+  &quot;context_limit&quot;: 262144,
+  &quot;budget&quot;: 221184,
+  &quot;estimated_prompt_tokens&quot;: 120000,
+  &quot;usage_ratio&quot;: 0.54,
+  &quot;reported_in&quot;: 118000,
+  &quot;reported_out&quot;: 4000,
+  &quot;est_in&quot;: 120000,
+  &quot;est_out&quot;: 4100,
+  &quot;message_count&quot;: 80,
+  &quot;soft_warn&quot;: false,
+  &quot;recommend_compact&quot;: false
+}
+</code></pre>
+<h4 id="session_compact"><code>session_compact</code></h4>
+<p>Summarize / compact conversation history when context is high.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>style</code></td>
+<td><code>auto</code> / <code>aggressive</code> / <code>preserve_code</code></td>
+</tr>
+<tr>
+<td><code>keep_last_n</code></td>
+<td>Messages to retain verbatim (default e.g. 12)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Behavior (locked — Q3/Q4):</strong></p>
+<ol>
+<li>Request an <strong>LLM summary</strong> of older messages (not a deterministic-only extract).</li>
+<li>Compaction work is executed by a <strong>system agent</strong> (see below), not as a silent side-effect with no session identity.</li>
+<li>When complete, replace middle history of the <strong>target user session</strong> with a single summary block; keep last <em>N</em> messages verbatim.</li>
+<li>Persist: summary applied to target session MD/history; <strong>DB</strong> events for compact request + result; system-agent transcript retained per system-session rules.</li>
+<li>Return new usage estimate to the caller (user session tool result).</li>
+</ol>
+<hr />
+<h3 id="system-agents-q4">System agents (Q4)</h3>
+<p>Harness-owned sessions used for internal LLM work (first consumer: <strong>session compaction</strong>). Same short-id and storage substrate as user sessions where practical; <strong>distinct kind</strong> for UI and policy.</p>
+<h4 id="scheduling">Scheduling</h4>
+<ul>
+<li>Created and resumed by the <strong>inner scheduling daemon</strong> — same process loop family as memory flush, prune, daily compact, continuation timers (ADR-0002/0003).</li>
+<li>Daemon may enqueue: “compact session X”, future: daily LLM digest, skill distill, etc.</li>
+<li>System agents use the same model client/config unless a later setting overrides.</li>
+<li>Tool access for system agents is <strong>restricted by kind</strong> (e.g. compaction agent: read target transcript + write summary artifact; no free <code>shell_execute</code> unless a future kind needs it). Open detail for implementers; default: minimal tools.</li>
+</ul>
+<h4 id="identity-lifecycle">Identity &amp; lifecycle</h4>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ID</td>
+<td>Short session id (same generator as user sessions)</td>
+</tr>
+<tr>
+<td>Kind</td>
+<td><code>system</code> (DB <code>sessions</code> column or equivalent; MD front matter <code>kind: system</code>)</td>
+</tr>
+<tr>
+<td>Purpose / title</td>
+<td>e.g. <code>compact · k7m2q9a3f2</code>, <code>system · daily-digest</code></td>
+</tr>
+<tr>
+<td>Parent</td>
+<td>Optional <code>parent_session_id</code> → user session being served</td>
+</tr>
+<tr>
+<td>Close</td>
+<td>Operator can <strong>Close</strong> like a normal session (flush, mark closed, prune rules apply)</td>
+</tr>
+<tr>
+<td>Spawn</td>
+<td>Daemon or harness action; user does not “New” a system agent from the main + control (unless future debug affordance)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="ui-left-pane">UI (left pane)</h4>
+<pre><code>┌ Left pane ─────────────────────┐
+│  [Sessions ▾]  [📁]  [+]       │
+│  ○ user session A              │
+│  ● user session B              │
+│  ○ user session C              │
+│                                │
+│  ▾ System agents          (2)  │  ← collapsible section, bottom
+│    ○ c0mp4ct1a1  compact · B   │
+│    ○ sysd4ily01  daily digest  │
+└────────────────────────────────┘
+</code></pre>
+<ul>
+<li><strong>Separate selector</strong> from the main user session list, anchored at the <strong>bottom</strong> of the left pane.</li>
+<li><strong>Collapsible / expandable</strong> (remember collapsed state in <code>sessionStorage</code> or similar).</li>
+<li>Each row: session id, title/purpose, activity affordances consistent with user rows (select → transcript in main pane; right-click <strong>Close</strong>, etc.).</li>
+<li>Selecting a system agent shows its transcript (prompts, model replies, tool use) for audit/debug.</li>
+<li>Badge/count of active or recent system agents optional.</li>
+</ul>
+<h4 id="persistence">Persistence</h4>
+<ul>
+<li>Dual-write like user sessions when not limp: <code>session/&lt;id&gt;.md</code> + DB rows.</li>
+<li>List APIs: <code>GET /api/sessions</code> may include <code>kind</code> filter or return both; UI splits panes client-side.</li>
+<li>Advisories and compact machinery that touch system agents still follow Q6 for <em>user</em> MD omission of harness chips.</li>
+</ul>
+<hr />
+<h3 id="d-memory">D. Memory</h3>
+<p>Memory root remains <code>--memory</code> (ADR-0002/0003). Extend layout:</p>
+<pre><code>$MEMORY/
+├── marble.db
+├── session/&lt;id&gt;.md
+├── daily/YYYY-MM-DD.md
+├── blobs/
+├── knowledge/                 # intentional long-term notes (new)
+│   └── &lt;topic-slug&gt;.md
+└── skills/                    # optional local skills (new)
+    └── &lt;skill-name&gt;/
+        └── SKILL.md
+</code></pre>
+<h4 id="memory_search"><code>memory_search</code></h4>
+<p>Search <strong>auto</strong> (session/daily) + <strong>intentional</strong> (<code>knowledge/</code>) memory.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>query</code></td>
+<td>Keywords</td>
+</tr>
+<tr>
+<td><code>since</code> / <code>until</code></td>
+<td>Optional dates</td>
+</tr>
+<tr>
+<td><code>tags</code></td>
+<td>Optional tag filter (front matter)</td>
+</tr>
+<tr>
+<td><code>scope</code></td>
+<td><code>all</code> / <code>session</code> / <code>daily</code> / <code>knowledge</code></td>
+</tr>
+<tr>
+<td><code>max_results</code></td>
+<td>Default 20</td>
+</tr>
+</tbody>
+</table>
+<p><strong>v1:</strong> keyword / substring / simple scoring (no vectors yet).</p>
+<h4 id="memory_fetch"><code>memory_fetch</code></h4>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>One of</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>Relative under memory (jailed to memory root)</td>
+</tr>
+<tr>
+<td><code>topic</code></td>
+<td>knowledge topic slug</td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td>Load session md</td>
+</tr>
+</tbody>
+</table>
+<h4 id="memory_write"><code>memory_write</code></h4>
+<p>Persist <strong>intentional</strong> knowledge.</p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>topic</code></td>
+<td>Slug / title</td>
+</tr>
+<tr>
+<td><code>content</code></td>
+<td>Markdown body</td>
+</tr>
+<tr>
+<td><code>tags</code></td>
+<td>string[]</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>append</code> / <code>overwrite</code></td>
+</tr>
+</tbody>
+</table>
+<p>Writes under <code>$MEMORY/knowledge/…</code> with YAML front matter (topic, tags, updated_at).<br />
+<strong>Not</strong> for session transcripts (those remain daemon dual-write).</p>
+<hr />
+<h3 id="e-skills">E. Skills</h3>
+<p>Skills are reusable procedure packs (inspired by agent skill files): directory with <code>SKILL.md</code> + optional references.</p>
+<h4 id="skill_search"><code>skill_search</code></h4>
+<p>| Input | <code>query</code>, <code>max_results</code> |
+| Output | name, description, path, tags — <strong>no full body</strong> |</p>
+<h4 id="skill_load"><code>skill_load</code></h4>
+<p>| Input | <code>name</code>, optional <code>ref</code> (relative file inside skill dir) |
+| Output | Full markdown content of <code>SKILL.md</code> or ref |</p>
+<p><strong>Discovery roots (proposed):</strong></p>
+<ol>
+<li><code>$MEMORY/skills/</code></li>
+<li>Optional <code>$WORKSPACE/.marble/skills/</code> (open Q)</li>
+<li>Optional bundled skills in binary (open Q)</li>
+</ol>
+<hr />
+<h2 id="agent-loop-detailed">Agent loop (detailed)</h2>
+<h3 id="turn-lifecycle-unchanged-spine">Turn lifecycle (unchanged spine)</h3>
+<pre><code>user message accepted
+  → begin turn (busy)
+  → loop:
+       budget trim / inject loop advisories
+       model call (tools enabled)
+       if tool_calls → execute (policy) → append results → continue
+       if final content → emit assistant → end turn
+  → end turn
+</code></pre>
+<h3 id="definitions">Definitions</h3>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Tool round</strong></td>
+<td>One model response that includes ≥1 tool call, plus execution of those tools</td>
+</tr>
+<tr>
+<td><strong>Tool call</strong></td>
+<td>Single function invocation inside a round (may be parallel later; v1 serial)</td>
+</tr>
+<tr>
+<td><strong>Turn</strong></td>
+<td>One user message (or continuation injection) through final assistant reply or hard stop</td>
+</tr>
+<tr>
+<td><strong>Usage ratio</strong></td>
+<td><code>estimated_prompt_tokens / (context_limit - context_reserve)</code> or vs full window — pick one and document</td>
+</tr>
+</tbody>
+</table>
+<h3 id="soft-vs-hard-controls">Soft vs hard controls</h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Soft (advise)</th>
+<th>Hard (enforce)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Context ≥ <strong>60%</strong></td>
+<td>Inject advisory: call <code>get_context_usage</code> / <code>session_compact</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Context ≥ <strong>90%</strong> (proposed)</td>
+<td>Strong advisory; prefer compact before tools</td>
+<td>Optional block new large tool results</td>
+</tr>
+<tr>
+<td>Over budget</td>
+<td>—</td>
+<td>FIFO trim; fail closed if latest turn alone too big</td>
+</tr>
+<tr>
+<td>Tool rounds ≥ <strong>65</strong></td>
+<td>Advisory: schedule continuation, compact, or final reply</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Tool rounds ≥ <strong>80</strong> (default hard)</td>
+<td>—</td>
+<td>Stop turn with error + partial state</td>
+</tr>
+<tr>
+<td>Shell timeout</td>
+<td>Suggest BG task</td>
+<td>Clamp to 5m; kill on expiry</td>
+</tr>
+<tr>
+<td>Round wall clock ≥ <strong>3m</strong> (<strong>Q2</strong>)</td>
+<td>Advisory: continuation or final reply</td>
+<td>Optional hard turn ceiling (keep 15m total for now)</td>
+</tr>
+<tr>
+<td>Max tool result size</td>
+<td>Truncate marker</td>
+<td>Always</td>
+</tr>
+</tbody>
+</table>
+<h3 id="loop-advisories-implementation-q6-locked">Loop advisories (implementation) — <strong>Q6 locked</strong></h3>
+<p>Before each model call (or after threshold crossings), the harness may append a <strong>transient system note</strong> for the model:</p>
+<pre><code>[harness] context_usage=72% rounds=40/65 soft. Prefer session_compact if history is large.
+[harness] rounds=65 soft cap. Consider schedule_continuation or final user update.
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Policy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model input</td>
+<td>Ephemeral advisory for that call (strip/replace each round; do not stack forever)</td>
+</tr>
+<tr>
+<td>UI</td>
+<td>Collapsible <strong>harness</strong> chips / system bubbles</td>
+</tr>
+<tr>
+<td>Session Markdown</td>
+<td><strong>Omit</strong> harness advisories</td>
+</tr>
+<tr>
+<td>SQLite <code>session_events</code></td>
+<td><strong>Keep</strong> — kind e.g. <code>harness_advisory</code> with content + thresholds</td>
+</tr>
+</tbody>
+</table>
+<h3 id="auto-compaction-policy-q3q4-locked">Auto-compaction policy — <strong>Q3/Q4 locked</strong></h3>
+<table>
+<thead>
+<tr>
+<th>Trigger</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>usage ≥ 60%</td>
+<td>Soft warn (throttle: on crossing + every N rounds)</td>
+</tr>
+<tr>
+<td>usage ≥ 75%</td>
+<td>Stronger warn</td>
+</tr>
+<tr>
+<td>Model calls <code>session_compact</code></td>
+<td>Enqueue/run <strong>system agent</strong> LLM summary; apply result to user session; continue turn when ready (or return “compacting…” + continuation — implementer detail)</td>
+</tr>
+<tr>
+<td>Auto path</td>
+<td>If usage ≥ <strong>85%</strong> for <strong>3 consecutive</strong> model rounds without successful compact → harness triggers compact system agent (same LLM path)</td>
+</tr>
+<tr>
+<td>Post-compact still ≥ 90%</td>
+<td>Soft fail: advise new session or drop large tool payloads</td>
+</tr>
+</tbody>
+</table>
+<h3 id="max-tool-rounds-q1-locked">Max tool rounds — <strong>Q1 locked</strong></h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Storage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tool_round_soft</code></td>
+<td><strong>65</strong></td>
+<td>DB settings / CLI</td>
+</tr>
+<tr>
+<td><code>tool_round_hard</code></td>
+<td><strong>80</strong></td>
+<td>DB settings / CLI</td>
+</tr>
+</tbody>
+</table>
+<p>At soft: advisory to use <code>schedule_continuation</code>, background tasks, or reply to user.<br />
+At hard: stop like today’s max-iters error (message includes how to continue).</p>
+<h3 id="shell-timeout-policy-loop-aware">Shell timeout policy (loop-aware)</h3>
+<ol>
+<li>Default timeout 60s when unspecified.  </li>
+<li>If model requests &gt;300s → clamp + tool error text: use <code>start_background_task</code>.  </li>
+<li>If model requests 61–300s → allow, attach hint in result.  </li>
+<li>Hung processes: killed with process group; never leave orphans if possible (<code>Setpgid</code>).</li>
+</ol>
+<h3 id="single-round-turn-time-q2-locked">Single-round / turn time — <strong>Q2 locked</strong></h3>
+<table>
+<thead>
+<tr>
+<th>Cap</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per <code>shell_execute</code></td>
+<td>60s–5m</td>
+<td>As above</td>
+</tr>
+<tr>
+<td>Soft wall for “no user-visible progress”</td>
+<td><strong>3 minutes</strong> of continuous tool rounds</td>
+<td>Advisory</td>
+</tr>
+<tr>
+<td>Hard turn context</td>
+<td><strong>15 minutes</strong> (existing)</td>
+<td>Keep; document</td>
+</tr>
+</tbody>
+</table>
+<h3 id="context-usage-ratio-q5-locked">Context usage ratio — <strong>Q5 locked</strong></h3>
+<pre><code>usage_ratio = est_prompt / (context_limit - max_output - context_reserve)
+</code></pre>
+<p>Same denominator as the budget frame used for history trim. Soft warn when <code>usage_ratio ≥ 0.60</code>.</p>
+<h3 id="parallel-tool-calls">Parallel tool calls</h3>
+<p><strong>v1:</strong> execute tool_calls <strong>serially</strong> in array order (deterministic, safer for edit_file read rules).<br />
+<strong>Later:</strong> parallel for pure read tools only.</p>
+<h3 id="edit_file-apply_patch-prior-read-q22q23-locked"><code>edit_file</code> / <code>apply_patch</code> prior-read — <strong>Q22/Q23 locked</strong></h3>
+<p>Harness tracks <code>map[path]bool</code> of successful <code>file_read</code> in current turn.</p>
+<ul>
+<li><code>edit_file</code>: requires prior read; fails if <code>old_string</code> not unique unless <code>replace_all</code> (<strong>Q23</strong>).</li>
+<li><code>apply_patch</code>: prior-read required for <strong><code>update</code></strong> ops only; <strong><code>add</code></strong> / <strong><code>delete</code></strong> exempt (<strong>Q22</strong>).</li>
+<li>Rollback: temp files + rename; reverse ops for deletes (<strong>Q24</strong>).</li>
+</ul>
+<h3 id="background-tasks-session-close-q16q17q20-locked">Background tasks + session close — <strong>Q16/Q17/Q20 locked</strong></h3>
+<ul>
+<li>Max <strong>8</strong> concurrent BG tasks per session.</li>
+<li>Do <strong>not</strong> survive harness restart; boot marks orphans dead.</li>
+<li>On session <strong>close</strong>: SIGTERM all session BG tasks, wait grace, SIGKILL; <strong>cancel</strong> pending continuations.</li>
+</ul>
+<h3 id="continuations-firing-q18q21-locked">Continuations firing — <strong>Q18–Q21 locked</strong></h3>
+<p>When timer fires:</p>
+<ol>
+<li>If session busy → requeue shortly or mark deferred.  </li>
+<li>If closed → <strong>cancelled</strong> (no fire).  </li>
+<li>Else inject prompt (role: <code>user</code> with prefix <code>[scheduled continuation]</code> or dedicated role) and <code>PostUserMessage</code>-equivalent.</li>
+</ol>
+<p>Semantics: fire on <strong>whichever comes first</strong> of <code>delay_sec</code> and <code>wait_for_task</code> (require at least one). Max delay <strong>24h</strong>. Persist schedules to DB in normal mode; in-memory only when limp.</p>
+<hr />
+<h2 id="shell-security-deep-dive">Shell security (deep dive)</h2>
+<h3 id="goals">Goals</h3>
+<ul>
+<li>Configurable from <strong>weak</strong> (deny-by-default allowlist) to <strong>powerful</strong> (broad shell, minimal deny list).  </li>
+<li>No privilege escalation beyond parent process.  </li>
+<li>Operator-visible policy; stored in DB so it survives restarts and is inspectable.  </li>
+<li>Fail closed when disabled or deny matched.</li>
+</ul>
+<h3 id="settings-keys-seed-in-settings-q7q15-locked">Settings keys (seed in <code>settings</code>) — <strong>Q7–Q15 locked</strong></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shell_enabled</code></td>
+<td><code>true</code></td>
+<td>Master switch (also CLI <code>--disable-shell</code>)</td>
+</tr>
+<tr>
+<td><code>shell_mode</code></td>
+<td><code>deny_list</code></td>
+<td><code>deny_list</code> | <code>allow_list</code></td>
+</tr>
+<tr>
+<td><code>shell_deny_patterns</code></td>
+<td>JSON array of regexes</td>
+<td>Matched against full command line</td>
+</tr>
+<tr>
+<td><code>shell_allow_patterns</code></td>
+<td><code>[]</code></td>
+<td>Used when mode=allow_list</td>
+</tr>
+<tr>
+<td><code>shell_allow_sudo</code></td>
+<td><code>false</code></td>
+<td>Must be true <strong>and</strong> sudo removed from deny to allow</td>
+</tr>
+<tr>
+<td><code>shell_default_timeout_sec</code></td>
+<td><code>60</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>shell_max_timeout_sec</code></td>
+<td><code>300</code></td>
+<td>Hard ceiling</td>
+</tr>
+<tr>
+<td><code>shell_max_output_bytes</code></td>
+<td><code>524288</code></td>
+<td>Capture cap (512 KiB); spill remainder to blob</td>
+</tr>
+<tr>
+<td><code>shell_cwd_strict</code></td>
+<td><code>true</code></td>
+<td>cwd must stay in workspace</td>
+</tr>
+<tr>
+<td><code>shell_block_memory_paths</code></td>
+<td><code>true</code></td>
+<td>Reject commands that clearly target <code>--memory</code> path (heuristic)</td>
+</tr>
+</tbody>
+</table>
+<p>CLI: <code>--disable-shell</code> (and optional future overrides). Shell binary: <code>/bin/bash -lc</code> if present, else <code>/bin/sh -c</code>.</p>
+<p><strong>Deny seed (Q15b):</strong> destructive disk, privilege escalation, power control. <strong>Normal file deletion is allowed</strong>; block catastrophic patterns such as <code>rm -rf /</code> (not ordinary <code>rm</code> of workspace files). Expand seed after first week of use.</p>
+<h3 id="permission-inheritance">Permission inheritance</h3>
+<pre><code>OS user of marble-harness
+  └── child: bash -lc &lt;command&gt;   # or sh -c
+        cwd = workspace (or subdir)
+        env = filtered parent env + limited tool env overlay
+        no new capabilities
+</code></pre>
+<p>Network: unrestricted in v1 (same as host user) — document trust model; true sandbox is a later ADR.</p>
+<p>Document: if you launch Marble as root, the agent is root. <strong>Don&rsquo;t.</strong></p>
+<h3 id="what-v1-is-not">What v1 is not</h3>
+<ul>
+<li>Not a container/seccomp sandbox  </li>
+<li>Not multi-tenant isolation  </li>
+<li>Deny lists are <strong>best-effort</strong> (obfuscation can bypass)  </li>
+</ul>
+<p>Trust model remains local/Tailscale operator (ADR-0001).</p>
+<h3 id="audit">Audit</h3>
+<p>Dual-write every shell invocation to <code>session_events</code> (command, cwd, timeout, exit, truncated out).<br />
+Optional redaction later.</p>
+<hr />
+<h2 id="system-prompt-tool-descriptions">System prompt / tool descriptions</h2>
+<p>Tool schemas must encode policies the model should follow:</p>
+<ul>
+<li>Prefer <code>edit_file</code> / <code>apply_patch</code> over full <code>file_write</code> for existing files.  </li>
+<li>Read before edit.  </li>
+<li>Long jobs → background + <code>schedule_continuation</code> or poll <code>check_background_task</code>.  </li>
+<li>Context high → <code>session_compact</code>.  </li>
+<li>Use <code>memory_write</code> for durable facts; don&rsquo;t rely on chat alone.</li>
+</ul>
+<hr />
+<h2 id="api-ui-surface-supporting">API / UI surface (supporting)</h2>
+<table>
+<thead>
+<tr>
+<th>Addition</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SSE <code>attachment</code></td>
+<td><code>attach_file</code> rendering</td>
+</tr>
+<tr>
+<td>SSE <code>task</code> / <code>continuation</code></td>
+<td>BG + schedule status</td>
+</tr>
+<tr>
+<td>Health / session detail</td>
+<td>context usage %, open tasks</td>
+</tr>
+<tr>
+<td>Settings UI (later)</td>
+<td>shell deny list editor — not required for ADR accept</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="package-sketch">Package sketch</h2>
+<pre><code>internal/
+  tools/
+    registry.go          # dispatch + specs
+    fs_*.go              # read/write/list/grep/glob/summary/edit/patch/attach
+    shell.go             # shell_execute + policy
+    bgtask.go            # start/kill/check
+    memory_tools.go
+    skill_tools.go
+    context_tools.go     # get_context_usage, session_compact helpers
+  shellpolicy/           # load settings, match deny/allow
+  bgtask/                # process groups, logs
+  continuation/          # timers + DB persistence
+  skills/                # discover/load
+</code></pre>
+<p>Agent loop changes live in <code>internal/session/loop.go</code> (+ budget helpers).</p>
+<hr />
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Real coding + ops workflows without leaving Marble.  </li>
+<li>Explicit context and round budgets reduce silent truncation / runaway loops.  </li>
+<li>Shell power is operator-tunable; defaults deny the worst foot-guns.  </li>
+<li>Continuations + BG tasks unlock multi-minute jobs without blocking the UX forever.  </li>
+<li>Memory/skills tools make “learn over time” actionable for the model.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Large tool schema tax on context (mitigate: compact descriptions; optional tool groups later).  </li>
+<li>Deny-list shell is not a sandbox.  </li>
+<li>Atomic multi-file patch is complex to implement correctly.  </li>
+<li>Compaction quality depends on LLM + system-agent latency (extra model calls).  </li>
+<li>System agents add UI and lifecycle surface (kind, parent link, restricted tools).  </li>
+<li>More moving parts (timers, child processes, system sessions) → more daemon responsibilities.</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prompt injection → shell</td>
+<td>Deny list + never elevate; document; optional allow_list mode</td>
+</tr>
+<tr>
+<td>Orphan processes</td>
+<td>Process groups; session close cleanup; harness shutdown sweep</td>
+</tr>
+<tr>
+<td>Runaway tool loops</td>
+<td>Soft 65 / hard 80; wall clock advisories</td>
+</tr>
+<tr>
+<td>Context blow-up from grep/shell</td>
+<td>Truncation caps; max_matches</td>
+</tr>
+<tr>
+<td>Half-applied patches</td>
+<td>Rollback transaction design + tests</td>
+</tr>
+<tr>
+<td>Memory path exfil via shell</td>
+<td>Heuristic block + OS user isolation</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="out-of-scope">Out of scope</h2>
+<ul>
+<li>Vector/embedding RAG  </li>
+<li>True OS sandbox (bwrap/nsjail)  </li>
+<li>Multi-user auth on tools  </li>
+<li>MCP tool bridge  </li>
+<li>Language-aware <code>codebase_summary</code>  </li>
+<li>Interactive TTY / full PTY shell  </li>
+<li>Cross-session background tasks  </li>
+<li>GUI settings editor for shell policy (API/DB seed enough for v1)</li>
+</ul>
+<hr />
+<h2 id="implementation-order-after-acceptance">Implementation order (after acceptance)</h2>
+<ol>
+<li>Loop policy framework: soft/hard counters, advisory injection (+ DB log, no MD), raise hard default to 80.  </li>
+<li><code>get_context_usage</code> + <strong>Q5</strong> usage ratio plumbing (reported + est).  </li>
+<li><strong>System agent</strong> session kind + daemon scheduling hooks + left-pane System agents UI.  </li>
+<li><code>session_compact</code> → LLM summary via system agent; auto path at 85%×3 rounds.  </li>
+<li><code>grep</code>, <code>glob</code>, <code>codebase_summary</code> (read-only wins).  </li>
+<li><code>edit_file</code> + prior-read gate; then <code>apply_patch</code> with rollback tests.  </li>
+<li><code>shellpolicy</code> + <code>shell_execute</code> + DB seed settings.  </li>
+<li>Background task registry + kill/check + session close cleanup.  </li>
+<li><code>schedule_continuation</code> (in-process first; then DB persist).  </li>
+<li>Memory knowledge layout + search/fetch/write.  </li>
+<li>Skills discovery + search/load.  </li>
+<li><code>attach_file</code> + UI SSE.  </li>
+<li>Docs + integration tests for jail, rollback, shell deny, timeouts, compact agent.</li>
+</ol>
+<hr />
+<h2 id="open-questions">Open questions</h2>
+<p><strong>None blocking.</strong> All Q1–Q30 locked — see <strong>Decisions locked</strong> and <code>adr/0005-answers.json</code>.</p>
+<hr />
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Q1–Q30 locked (loop, shell, BG/continuations, edit/patch, memory/skills, schema)  </li>
+<li>[x] Tool suite list accepted (names + responsibilities)  </li>
+<li>[x] Loop soft/hard numbers accepted (60% context, 65/80 rounds, shell 60s/5m, 3m wall)  </li>
+<li>[x] Shell security model accepted (inherit PID perms, DB settings, deny_list, Q15b note)  </li>
+<li>[x] System agents UI/daemon model accepted (Q4)  </li>
+<li>[x] Ready to implement in phases  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-17</td>
+<td>Initial proposal</td>
+</tr>
+<tr>
+<td>2026-07-17</td>
+<td>Q1–Q6 locked; system agents + LLM compaction; advisory DB-only (no MD)</td>
+</tr>
+<tr>
+<td>2026-07-17</td>
+<td>Q7–Q30 locked from review answers; status → <strong>Accepted</strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="review-ergonomics">Review ergonomics</h2>
+<ul>
+<li>Interactive questions: <code>adr/0005-review.html</code> (uses <code>review-kit.js</code>)</li>
+<li>Structured answers file: <code>adr/0005-answers.json</code> (agent reads this on “collect answers”)</li>
+<li>Workflow docs: <code>adr/README.md</code></li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0001 Harness inner loop  </li>
+<li>ADR-0002 Session memory  </li>
+<li>ADR-0003 SQLite + settings + limp  </li>
+<li>ADR-0004 Workspace explorer / <code>workspacefs</code> jail  </li>
+<li>Current loop: <code>internal/session/loop.go</code> (<code>MaxToolIters</code> default 25)  </li>
+<li>Current tools: <code>internal/tools/tools.go</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0005-tools-and-agent-loop.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

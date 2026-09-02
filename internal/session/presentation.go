@@ -35,10 +35,20 @@ type Presentation struct {
 
 // Phase is one immersion beat (scrubber key = id).
 type Phase struct {
-	ID             string  `json:"id"`
-	SpeechText     string  `json:"speech_text"`
-	ProseMarkdown  string  `json:"prose_markdown,omitempty"`
-	Visual         *Visual `json:"visual,omitempty"`
+	ID             string     `json:"id"`
+	SpeechText     string     `json:"speech_text"`
+	ProseMarkdown  string     `json:"prose_markdown,omitempty"`
+	Visual         *Visual    `json:"visual,omitempty"`
+	Audio          *PhaseAudio `json:"audio,omitempty"` // ADR-0027 additive; no protocol bump
+}
+
+// PhaseAudio is optional neural narration on a phase (ADR-0027).
+type PhaseAudio struct {
+	AttachmentID string `json:"attachment_id"`
+	MIME         string `json:"mime,omitempty"`
+	DurationMS   int    `json:"duration_ms,omitempty"`
+	Voice        string `json:"voice,omitempty"`
+	Provider     string `json:"provider,omitempty"`
 }
 
 // Visual is a first-class phase visual (exactly one payload matching kind).

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0013</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0013</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0013-system-prompt-and-soul.md">Markdown</a>
+      <a href="0013-review.html">Review</a>
+      <a href="0013-answers.json">Answers</a>
+      <a href="0012-doc.html">← 0012</a>
+      <a href="0014-doc.html">0014 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0013-system-prompt-viewer-every-turn-context-soul">ADR-0013: System Prompt Viewer &amp; Every-Turn Context (“soul”)</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-18</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>ui, system-prompt, soul, context, settings</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (system prompt), ADR-0005 (agent loop), ADR-0007 (Settings UI chrome)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0013-answers.json</code> (<code>2026-07-18T17:53:01.519Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Marble’s agent loop always includes a <strong>system</strong> message (compiled-in <code>defaultSystemPrompt</code>). Operators cannot see that prompt in the UI and cannot add durable <strong>every-turn</strong> operator context (persona / house rules / “soul.md”) without rebuilding.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>👁 icon</strong> next to Settings (icon only — <strong>Q1</strong>).  </li>
+<li>Modal shows <strong>immutable system prompt</strong> + <strong>editable every-turn soul</strong>.  </li>
+<li>Tooltip <strong>and</strong> short blurb explain composition (<strong>Q14</strong>).  </li>
+<li>Soul injected every model call for <strong>user</strong> sessions when non-empty.  </li>
+<li>File-backed under memory leaf; limp-safe; live apply after Save.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>Editing the compiled system prompt  </li>
+<li>Per-session souls  </li>
+<li>Soul inject for system agents / compaction  </li>
+<li>Multi-profile souls / version history UI  </li>
+</ul>
+<h2 id="decision">Decision</h2>
+<ol>
+<li><strong>Entry:</strong> sidebar <code>Sessions · 📁 · 👁 · ⚙ · +</code> — eyeball is <strong>icon only</strong> (<strong>Q1</strong>, <strong>Q2</strong>).  </li>
+<li><strong>Modal title:</strong> “System prompt &amp; every-turn context” (<strong>Q3</strong>).  </li>
+<li><strong>System prompt:</strong> read-only; source = live binary <code>defaultSystemPrompt</code>; UI cannot change it.  </li>
+<li><strong>Soul:</strong> editable; stored <strong>only</strong> at <code>$MEMORY/soul.md</code> (<strong>Q5</strong>, <strong>Q8</strong>).  </li>
+<li><strong>Composition</strong> on each user-session model call (<strong>Q4</strong>, <strong>Q6</strong>, <strong>Q7</strong>):<br />
+<code>[system] immutable harness system prompt
+   [system] soul contents          ← second system message; omit if blank
+   … history user/assistant/tool …
+   [system] ephemeral advisories   ← existing loop behavior</code><br />
+   No soul inject for system-agent / compaction sessions.  </li>
+<li><strong>API:</strong> <code>GET/PUT /api/prompt</code> — GET returns system + soul; PUT accepts <strong><code>soul</code> only</strong> (reject system_prompt) (<strong>Q9</strong>).  </li>
+<li><strong>Max soul size:</strong> <strong>64 KiB</strong> (<strong>Q10</strong>); show char count + cap in editor (<strong>Q12</strong>).  </li>
+<li><strong>Live apply</strong> after Save (re-read file or short TTL); no restart (<strong>Q11</strong>).  </li>
+<li><strong>Dirty close:</strong> confirm discard (<strong>Q13</strong>).  </li>
+<li><strong>Help:</strong> <code>?</code> tooltip <strong>and</strong> short blurb under title (<strong>Q14</strong>).  </li>
+<li>Soul is <strong>not</strong> written into session Markdown as chat turns.</li>
+</ol>
+<h2 id="decisions-locked-q1q14">Decisions locked (Q1–Q14)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Just icon (👁)</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Order: Sessions · folder · eyeball · gear · +</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Modal title: System prompt &amp; every-turn context</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Second system message when non-empty</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Global <code>$MEMORY/soul.md</code> for all user sessions</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>No soul inject for system agents / compaction</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Omit soul message entirely when blank</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td><code>$MEMORY/soul.md</code> only for v1</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td><code>GET/PUT /api/prompt</code> — PUT soul only</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>64 KiB max soul</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>Live apply after Save — no restart</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Char count + cap in soul editor</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>Confirm discard if dirty on close</td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td>Tooltip on ? <strong>and</strong> short blurb under title</td>
+</tr>
+</tbody>
+</table>
+<h2 id="ui-sketch">UI sketch</h2>
+<pre><code>┌ System prompt &amp; every-turn context ── [?] [Save soul] [×] ┐
+│ Blurb: system = immutable harness text; soul = optional   │
+│ every-turn context you control (not part of chat MD).     │
+│                                                           │
+│ ── System prompt (immutable) ───────────────────────────  │
+│ [read-only monospace]                                     │
+│                                                           │
+│ ── Every-turn context (soul) ────── n / 65536 ──────────  │
+│ [editable textarea]                                       │
+│ Path: $MEMORY/soul.md                                     │
+└───────────────────────────────────────────────────────────┘
+</code></pre>
+<p><strong>Tooltip (?):</strong> System prompt is built into Marble and cannot be edited here. Every-turn context (soul) is optional operator text injected on every model call after the system prompt when non-empty. Leave empty for stock behavior. Not stored in the chat transcript.</p>
+<h2 id="api">API</h2>
+<h3 id="get-apiprompt"><code>GET /api/prompt</code></h3>
+<pre><code class="language-json">{
+  &quot;system_prompt&quot;: &quot;…&quot;,
+  &quot;soul&quot;: &quot;…&quot;,
+  &quot;soul_path&quot;: &quot;soul.md&quot;,
+  &quot;soul_path_abs&quot;: &quot;/…/.marble/soul.md&quot;,
+  &quot;soul_max_chars&quot;: 65536,
+  &quot;immutable&quot;: true
+}
+</code></pre>
+<h3 id="put-apiprompt"><code>PUT /api/prompt</code></h3>
+<pre><code class="language-json">{ &quot;soul&quot;: &quot;…&quot; }
+</code></pre>
+<ul>
+<li>Reject unknown fields / <code>system_prompt</code> with <strong>400</strong>.  </li>
+<li>Reject if <code>len(soul) &gt; 65536</code> with <strong>400</strong>.  </li>
+<li>Write <code>$MEMORY/soul.md</code> (create if missing). Empty string deletes or writes empty file such that inject is omitted.</li>
+</ul>
+<h2 id="loop-integration">Loop integration</h2>
+<ul>
+<li>Export <code>session.SystemPrompt() string</code>.  </li>
+<li><code>ReadSoul</code> / <code>WriteSoul</code> on memory store.  </li>
+<li>In <code>runTurn</code> prompt build for <strong>user</strong> sessions only: after base system message, if soul trimmed non-empty, insert <code>{Role: system, Content: soul}</code>.  </li>
+<li>Re-read soul each turn or cache with short TTL after Save.  </li>
+<li>System agents: no soul.</li>
+</ul>
+<h2 id="implementation-sketch">Implementation sketch</h2>
+<ol>
+<li><code>SystemPrompt()</code> + soul file IO under memory root.  </li>
+<li><code>GET/PUT /api/prompt</code>.  </li>
+<li>Inject second system message in user-session turns.  </li>
+<li>UI: 👁 button, modal, load/save, char count, dirty confirm, tooltip + blurb.  </li>
+<li>Tests: omit empty; inject when set; PUT rejects system_prompt; size cap; system agent free of soul.</li>
+</ol>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Transparency into harness system prompt.  </li>
+<li>Operator personalization without rebuild.  </li>
+<li>Clear immutable vs soul split.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>Soul tokens every turn when large (cap 64 KiB).  </li>
+<li>Soul can contradict system prompt (system still first; operator responsibility).</li>
+</ul>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Open questions answered (<code>0013-answers.json</code>)  </li>
+<li>[x] Eyeball + modal + soul file + injection order locked  </li>
+<li>[x] Implemented (<code>GET/PUT /api/prompt</code>, soul inject, 👁 modal)  </li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><code>internal/session/session.go</code> — <code>defaultSystemPrompt</code>  </li>
+<li>ADR-0007 Settings gear  </li>
+<li><code>adr/0013-answers.json</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0013-system-prompt-and-soul.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

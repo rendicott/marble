@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Orb · ADR-0001 Design Review</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 10% -10%, #1a2848 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #1a2e24 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #3ee0b0, #7c9cff);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 960px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
+    .lede, .muted, .how { color: var(--muted); max-width: 78ch; }
+    .how {
+      background: #121a16; border: 1px solid #2d6a4f; border-radius: 10px;
+      padding: 0.75rem 1rem; color: #d5dbeb; margin: 0.85rem 0 0;
+    }
+    .how ol { margin: 0.4rem 0 0 1.2rem; padding: 0; }
+    .q {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.65rem 0.8rem; margin: 0.4rem 0; background: #141824; font-size: 0.9rem;
+    }
+    .q.is-locked { border-color: #2d6a4f; background: #121a16; }
+    .qhead strong { color: var(--warn); font-family: var(--mono); font-size: 0.78rem; }
+    .badge {
+      display: inline-block; font-family: var(--mono); font-size: 0.68rem; color: #a7f3d0;
+      border: 1px solid #2d6a4f; border-radius: 999px; padding: 0.1rem 0.45rem; margin-left: 0.2rem;
+    }
+    .rec { color: var(--muted); font-size: 0.84rem; margin-top: 0.25rem; }
+    .adr-choices { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0.5rem 0 0.4rem; }
+    .adr-choices label {
+      display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem;
+      color: var(--muted); background: #0c0e13; border: 1px solid var(--border);
+      border-radius: 999px; padding: 0.22rem 0.55rem; cursor: pointer; user-select: none;
+    }
+    .adr-choices label:has(input:checked) {
+      border-color: #3d4f7a; color: #c7d6ff; background: rgba(124, 156, 255, 0.1);
+    }
+    .adr-choices input { accent-color: var(--accent); margin: 0; }
+    .adr-notes, #dump {
+      width: 100%; min-height: 2.6rem; resize: vertical; font-family: var(--sans);
+      font-size: 0.84rem; color: var(--text); background: #0c0e13;
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem 0.55rem;
+    }
+    #dump {
+      min-height: 22rem; font-family: var(--mono); font-size: 0.75rem; line-height: 1.4;
+    }
+    .adr-notes:focus, #dump:focus { outline: none; border-color: var(--accent); }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid #2d6a4f; color: #a7f3d0;
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+    .warnbox {
+      background: #3a2e10; border: 1px solid #6b5420; color: #fde68a;
+      border-radius: 8px; padding: 0.55rem 0.75rem; font-size: 0.82rem; margin: 0.6rem 0 0;
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <span>Orb · ADR-0001</span>
+      <span class="status">no-JS · mpub CSP</span>
+    </div>
+    <nav class="toc">
+      <a href="/mpub/orb-design">Design</a>
+      <a href="/mpub/orb-ntfy">ntfy note</a>
+      <a href="#dump-wrap">Answer dump</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <h1>Orb — pick recs, then copy the dump</h1>
+      <p class="lede">
+        Marble mpub pages <strong>block JavaScript</strong> (CSP). The old “Use rec / Copy for agent”
+        kit cannot run here. This page is a normal HTML form — radios and text boxes work without JS.
+      </p>
+      <div class="how">
+        <strong>How to answer</strong>
+        <ol>
+          <li>Leave <em>Use rec</em> checked unless you disagree.</li>
+          <li>If you disagree, choose <em>Custom</em> or <em>Defer</em> and type it in the box under that question.</li>
+          <li>Scroll to <a href="#dump-wrap">Answer dump</a>. It is pre-filled with every rec. Edit any line you changed.</li>
+          <li>Select all in that box, copy, paste into this Marble chat.</li>
+        </ol>
+      </div>
+      <div class="chips">
+        <span class="chip">orbnet.app</span>
+        <span class="chip">envelope ≤2KB</span>
+        <span class="chip">body fetch ≤1MB</span>
+        <span class="chip">ntfy = wakeup only</span>
+      </div>
+    </section>
+    <section id="questions">
+      <h2>Questions</h2>
+      <h3>Already locked</h3>
+      <div class="q is-locked">
+        <div class="qhead"><strong>Q0a</strong> <span class="badge">LOCKED</span> Brand / domain?</div>
+        <div class="rec">Decision: Canonical domain orbnet.app (apex portal, www→apex, api.orbnet.app, gw.orbnet.app).</div>
+      </div>
+      <div class="q is-locked">
+        <div class="qhead"><strong>Q0b</strong> <span class="badge">LOCKED</span> Envelope vs body?</div>
+        <div class="rec">Decision: Fan-out ≤2KB envelope everywhere; body stored once, GET on open, hard cap 1MB UTF-8. No 128KB vs 1MB fetch tiers. Bots default envelopes-only. Meter envelope count + body-fetch GB.</div>
+      </div>
+      <h3>Product / positioning</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q1</strong> Who is the first user?</div>
+        <div class="rec">Rec: First user is you + Marble (API-first, one private topic, desktop tray + optional ntfy for phone). Homelab/public later.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q1" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q1" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q1" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q1" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q2</strong> Hosted SaaS, self-host binary, or both from day one?</div>
+        <div class="rec">Rec: Hosted SaaS only in v1 (orbnet.app). Self-host binary is phase 3.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q2" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q2" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q2" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q2" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q3</strong> Compete with ntfy or integrate?</div>
+        <div class="rec">Rec: Do not compete as a ntfy clone. Optional BYO ntfy topic as a 2KB wakeup sink. Optional ntfy-compatible POST gateway on api.orbnet.app later.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q3" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q3" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q3" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q3" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q4</strong> Public topics: world can listen only, or unauthenticated publish like ntfy?</div>
+        <div class="rec">Rec: Public topics are listen-only. Only keyed publishers may POST. Topic URL is not a password.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q4" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q4" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q4" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q4" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q5</strong> Are paid topics (subscribers pay publishers) in v1?</div>
+        <div class="rec">Rec: No paid topics / subscriber marketplace in v1. Bill publishers for usage only (or free until it hurts).</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q5" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q5" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q5" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q5" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q6</strong> Tone of clients?</div>
+        <div class="rec">Rec: Ops-terminal tone: dense markdown inbox, not chat bubbles, not consumer-calm marketing.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q6" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q6" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q6" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q6" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <h3>Message model</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q7</strong> Attachments in v1? Inline images?</div>
+        <div class="rec">Rec: No attachments in v1. Markdown subset, no raw HTML. Images only as https links (client renders, server does not fetch).</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q7" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q7" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q7" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q7" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q8</strong> Binary / JSON-only agent payloads vs markdown-only?</div>
+        <div class="rec">Rec: Markdown/text is the product. Optional YAML front matter (orb.agent.v1). JSON body allowed if Content-Type is application/json but still stored as the blob; not a second product.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q8" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q8" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q8" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q8" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q9</strong> Priority: ntfy 1–5 or silent/normal/urgent?</div>
+        <div class="rec">Rec: ntfy-style priority 1–5 on the envelope. Map to Android channels / iOS interruption later.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q9" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q9" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q9" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q9" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q10</strong> Retention defaults?</div>
+        <div class="rec">Rec: Free: 7d body retention private, 24h public. Envelope index 7d both. Tune with plan later.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q10" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q10" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q10" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q10" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q11</strong> Replay for humans vs bots — same topic?</div>
+        <div class="rec">Rec: Same topic. Humans and bots both get envelopes. Bots opt into body fetch / durable offsets. No separate topic type.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q11" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q11" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q11" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q11" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q12</strong> Threading / run_id grouping in UI?</div>
+        <div class="rec">Rec: v1 flat feed grouped only by topic. Optional client-side group by run_id if present. No threads-as-product.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q12" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q12" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q12" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q12" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q13</strong> Read receipts / delivery acks to publishers?</div>
+        <div class="rec">Rec: No read receipts in v1. Body-fetch logs are for metering/abuse, not shown to publishers.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q13" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q13" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q13" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q13" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q14</strong> Who writes the envelope preview?</div>
+        <div class="rec">Rec: Server truncates preview from title + first markdown lines to fit remaining envelope budget. Publisher cannot override with a longer preview.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q14" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q14" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q14" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q14" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <h3>Auth &amp; keys</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q15</strong> Verified email required, or GitHub OIDC enough?</div>
+        <div class="rec">Rec: Email magic link required to create topics. GitHub/Google OIDC optional in addition, not instead, until passkeys.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q15" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q15" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q15" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q15" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q16</strong> One key many topics, or topic-scoped only?</div>
+        <div class="rec">Rec: v1 keys are topic-scoped. Account-level admin key (orb_ak_) manages topics/keys but does not publish unless explicitly granted.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q16" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q16" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q16" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q16" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q17</strong> Subscriber API keys on public topics?</div>
+        <div class="rec">Rec: Anonymous OK for public subscribe. Optional subscriber key only for private/paid or for bots that want higher rate limits / durable cursor.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q17" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q17" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q17" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q17" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q18</strong> Invite link: one topic or org bundle?</div>
+        <div class="rec">Rec: Invite is single-topic. Org bundles are v1.5.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q18" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q18" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q18" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q18" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q19</strong> Stolen invite — unlimited devices?</div>
+        <div class="rec">Rec: Invite: max uses default 10, expiry 7d, cap 5 devices per grant. Owner can revoke.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q19" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q19" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q19" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q19" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q20</strong> Anonymous → billed account merge across devices?</div>
+        <div class="rec">Rec: Anonymous device key signs a merge to the new account; subscriptions unioned. Conflicts: account prefs win.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q20" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q20" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q20" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q20" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <h3>Clients &amp; platforms</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q21</strong> Client stack?</div>
+        <div class="rec">Rec: v1: web SPA/PWA + Tauri desktop (macOS/Linux first, Windows next). Phone: BYO ntfy until native. Flutter Android then iOS after Apple/Google accounts exist.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q21" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q21" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q21" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q21" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q22</strong> Linux tray — which desktops?</div>
+        <div class="rec">Rec: Linux: StatusNotifierItem / AppIndicator. GNOME: notifications still work if tray is hidden; document that.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q22" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q22" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q22" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q22" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q23</strong> macOS menu bar vs dock?</div>
+        <div class="rec">Rec: macOS: menu bar extra + optional dock. Default: menu bar, no dock bounce unless priority ≥4.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q23" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q23" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q23" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q23" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q24</strong> Signed/notarized installers in MVP?</div>
+        <div class="rec">Rec: MVP: unsigned/raw binaries + Homebrew-style script. Notarize when we have the Apple account.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q24" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q24" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q24" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q24" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q25</strong> Who owns Apple/Google developer accounts?</div>
+        <div class="rec">Rec: Operator’s personal Apple/Google accounts until a company exists. Don’t block desktop on store listings.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q25" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q25" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q25" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q25" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q26</strong> UnifiedPush / ntfy-as-distributor on Android?</div>
+        <div class="rec">Rec: No UnifiedPush in v1. FCM when we have an Android app. Until then ntfy distributor is the user’s problem.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q26" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q26" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q26" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q26" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q27</strong> Web portal as billing system of record for CLI-only users?</div>
+        <div class="rec">Rec: Yes — web portal is system of record for billing even if the user only uses CLI.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q27" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q27" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q27" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q27" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <h3>Notification policy</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q28</strong> If Mac is unlocked, suppress phone?</div>
+        <div class="rec">Rec: No cross-device suppression in v1. Each device honors its own prefs. Presence is a later project.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q28" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q28" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q28" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q28" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q29</strong> Global DND vs per-topic mute vs publisher priority — who wins?</div>
+        <div class="rec">Rec: Subscriber always wins: global DND &gt; per-topic mute &gt; publisher priority (priority only affects how loud if not muted).</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q29" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q29" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q29" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q29" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q30</strong> Can publishers mark un-muteable urgent?</div>
+        <div class="rec">Rec: No un-muteable urgent. Subscriber always sovereign, including security-ish pings.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q30" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q30" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q30" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q30" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q31</strong> Digest algorithm?</div>
+        <div class="rec">Rec: Digest = time bucket (hourly/daily) of envelopes, not a new body. Off by default.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q31" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q31" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q31" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q31" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q32</strong> Install ntfy for v0 phone push — BYO topic or Orb-hosted relay?</div>
+        <div class="rec">Rec: v0 humans may install ntfy and paste a topic URL into Orb (BYO). Orb-hosted ntfy relay is extra ops — skip until native apps.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q32" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q32" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q32" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q32" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q33</strong> Postcard / lock-screen contents?</div>
+        <div class="rec">Rec: Lock-screen postcard = title only (or title + 80 chars if user enables preview). Default title-only for private topics.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q33" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q33" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q33" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q33" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <h3>Architecture / infra</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q34</strong> NATS on ECS vs Synadia Cloud vs skip broker?</div>
+        <div class="rec">Rec: Self-run NATS JetStream on ECS for envelopes (3-node) when we outgrow a single box. Spike may be Postgres LISTEN + Redis. Not Synadia Cloud on day one.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q34" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q34" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q34" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q34" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q35</strong> Single region which city?</div>
+        <div class="rec">Rec: us-west-2 unless operator is closer to us-east-1. Single region v1.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q35" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q35" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q35" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q35" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q36</strong> Isolate JetStream per tenant now?</div>
+        <div class="rec">Rec: No per-tenant JetStream accounts in v1. One stream with subject per topic id. Isolate later if noisy.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q36" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q36" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q36" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q36" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q37</strong> Max subscribers per topic in v1?</div>
+        <div class="rec">Rec: Soft cap 10k subscribers/topic in v1. Envelope fanout is cheap; don’t promise millions.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q37" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q37" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q37" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q37" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q38</strong> VPC / PrivateLink for enterprise agents?</div>
+        <div class="rec">Rec: No PrivateLink in v1.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q38" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q38" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q38" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q38" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q39</strong> IaC: Terraform or CDK? Existing AWS org?</div>
+        <div class="rec">Rec: Terraform. New AWS account orb-prod separate from personal junk.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q39" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q39" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q39" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q39" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q40</strong> Observability vendor?</div>
+        <div class="rec">Rec: CloudWatch + one Grafana Cloud or nothing fancy. OpenTelemetry traces on publish/fetch.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q40" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q40" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q40" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q40" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <h3>Billing &amp; legal</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q41</strong> Who is the legal entity charging cards?</div>
+        <div class="rec">Rec: No charges until a legal entity exists. Free caps only. Stripe later under that entity.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q41" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q41" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q41" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q41" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q42</strong> Free cap numbers?</div>
+        <div class="rec">Rec: Free: 3 public + 1 private topic, 10k envelopes/month, 2GB body-fetch, 1GB stored bodies.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q42" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q42" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q42" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q42" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q43</strong> Price points?</div>
+        <div class="rec">Rec: Defer price points until we have usage. No public pricing page in spike.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q43" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q43" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q43" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q43" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q44</strong> Data residency / EU region?</div>
+        <div class="rec">Rec: No EU region in v1. Disclose US processing in privacy policy.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q44" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q44" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q44" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q44" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q45</strong> E2E encrypt agent traces?</div>
+        <div class="rec">Rec: No E2E in v1. Server can read bodies. Optional E2E is phase 2.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q45" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q45" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q45" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q45" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q46</strong> Content moderation / CSAM if public markdown?</div>
+        <div class="rec">Rec: Public topics: ToS + abuse report + freeze. No image hosting reduces CSAM surface. Hash/report if we ever allow uploads.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q46" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q46" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q46" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q46" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <h3>Agent-specific</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q47</strong> First-class MCP server for Orb?</div>
+        <div class="rec">Rec: Yes, a small MCP server (publish, list envelopes, fetch body) once HTTP API exists. Not a blocker for spike.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q47" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q47" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q47" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q47" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q48</strong> Bidirectional replies / agent.ask Accept-Deny?</div>
+        <div class="rec">Rec: v1 one-way. Human reply / agent.ask callbacks are v2 (auth on callback so a stolen notification cannot approve).</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q48" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q48" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q48" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q48" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q49</strong> Schema registry or freeform markdown forever?</div>
+        <div class="rec">Rec: Encourage orb.agent.v1 front matter. No enforced schema registry in v1.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q49" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q49" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q49" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q49" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q50</strong> Agent feedback loops across topics?</div>
+        <div class="rec">Rec: X-Orb-Path hop list + max 8 hops. Drop publish if cycle detected. Document it.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q50" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q50" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q50" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q50" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q51</strong> Replace email/Telegram in Marble, or sit beside them?</div>
+        <div class="rec">Rec: Orb sits beside email/Telegram in Marble as another sink. Do not rip out existing channels in v1.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q51" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q51" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q51" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q51" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q52</strong> ntfy-compatible publish URL on api.orbnet.app?</div>
+        <div class="rec">Rec: Optional ntfy-compatible POST https://api.orbnet.app/ntfy/{topic} that maps to envelope+body. Nice-to-have after native API.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q52" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q52" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q52" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q52" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <h3>Ops / team</h3>
+      <div class="q">
+        <div class="qhead"><strong>Q53</strong> Who runs on-call?</div>
+        <div class="rec">Rec: Operator is on-call. No pager rotation. Best-effort SLA.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q53" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q53" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q53" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q53" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q54</strong> Budget ceiling first 90 days?</div>
+        <div class="rec">Rec: Keep first 90 days under a few hundred USD (single region, tiny RDS/Fargate). No Apple/Google fees until store apps.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q54" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q54" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q54" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q54" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q55</strong> Open source clients / server / neither?</div>
+        <div class="rec">Rec: Keep server+clients closed until there’s a product. Protocol/docs can be public later.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q55" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q55" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q55" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q55" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+      <div class="q">
+        <div class="qhead"><strong>Q56</strong> Success for a 6-week spike?</div>
+        <div class="rec">Rec: Success: Marble publishes to a private orbnet.app topic; Mac tray shows envelope; opening fetches markdown body; one publish key. Phone optional via BYO ntfy.</div>
+        <div class="adr-choices">
+          <label><input type="radio" name="ans-Q56" value="rec" checked /> Use rec</label>
+          <label><input type="radio" name="ans-Q56" value="custom" /> Custom (edit dump below)</label>
+          <label><input type="radio" name="ans-Q56" value="defer" /> Defer</label>
+        </div>
+        <textarea class="adr-notes" name="notes-Q56" placeholder="If Custom or Defer: type the decision here, then edit that line in the dump at the bottom."></textarea>
+      </div>
+    </section>
+    <section id="dump-wrap">
+      <h2>Answer dump — copy this into chat</h2>
+      <p class="muted">Pre-filled as “use rec” for every open item. Edit lines you customized, then Ctrl/Cmd+A in the box and copy.</p>
+      <textarea id="dump" spellcheck="false">ADR-orb-0001 answers
+Please apply these Orb decisions to mpub orb-design.
+
+Q0a [LOCKED]: Canonical domain orbnet.app (apex portal, www→apex, api.orbnet.app, gw.orbnet.app).
+Q0b [LOCKED]: Fan-out ≤2KB envelope everywhere; body stored once, GET on open, hard cap 1MB UTF-8. No 128KB vs 1MB fetch tiers. Bots default envelopes-only. Meter envelope count + body-fetch GB.
+Q1 [ANSWERED]: First user is you + Marble (API-first, one private topic, desktop tray + optional ntfy for phone). Homelab/public later.
+Q2 [ANSWERED]: Hosted SaaS only in v1 (orbnet.app). Self-host binary is phase 3.
+Q3 [ANSWERED]: Do not compete as a ntfy clone. Optional BYO ntfy topic as a 2KB wakeup sink. Optional ntfy-compatible POST gateway on api.orbnet.app later.
+Q4 [ANSWERED]: Public topics are listen-only. Only keyed publishers may POST. Topic URL is not a password.
+Q5 [ANSWERED]: No paid topics / subscriber marketplace in v1. Bill publishers for usage only (or free until it hurts).
+Q6 [ANSWERED]: Ops-terminal tone: dense markdown inbox, not chat bubbles, not consumer-calm marketing.
+Q7 [ANSWERED]: No attachments in v1. Markdown subset, no raw HTML. Images only as https links (client renders, server does not fetch).
+Q8 [ANSWERED]: Markdown/text is the product. Optional YAML front matter (orb.agent.v1). JSON body allowed if Content-Type is application/json but still stored as the blob; not a second product.
+Q9 [ANSWERED]: ntfy-style priority 1–5 on the envelope. Map to Android channels / iOS interruption later.
+Q10 [ANSWERED]: Free: 7d body retention private, 24h public. Envelope index 7d both. Tune with plan later.
+Q11 [ANSWERED]: Same topic. Humans and bots both get envelopes. Bots opt into body fetch / durable offsets. No separate topic type.
+Q12 [ANSWERED]: v1 flat feed grouped only by topic. Optional client-side group by run_id if present. No threads-as-product.
+Q13 [ANSWERED]: No read receipts in v1. Body-fetch logs are for metering/abuse, not shown to publishers.
+Q14 [ANSWERED]: Server truncates preview from title + first markdown lines to fit remaining envelope budget. Publisher cannot override with a longer preview.
+Q15 [ANSWERED]: Email magic link required to create topics. GitHub/Google OIDC optional in addition, not instead, until passkeys.
+Q16 [ANSWERED]: v1 keys are topic-scoped. Account-level admin key (orb_ak_) manages topics/keys but does not publish unless explicitly granted.
+Q17 [ANSWERED]: Anonymous OK for public subscribe. Optional subscriber key only for private/paid or for bots that want higher rate limits / durable cursor.
+Q18 [ANSWERED]: Invite is single-topic. Org bundles are v1.5.
+Q19 [ANSWERED]: Invite: max uses default 10, expiry 7d, cap 5 devices per grant. Owner can revoke.
+Q20 [ANSWERED]: Anonymous device key signs a merge to the new account; subscriptions unioned. Conflicts: account prefs win.
+Q21 [ANSWERED]: v1: web SPA/PWA + Tauri desktop (macOS/Linux first, Windows next). Phone: BYO ntfy until native. Flutter Android then iOS after Apple/Google accounts exist.
+Q22 [ANSWERED]: Linux: StatusNotifierItem / AppIndicator. GNOME: notifications still work if tray is hidden; document that.
+Q23 [ANSWERED]: macOS: menu bar extra + optional dock. Default: menu bar, no dock bounce unless priority ≥4.
+Q24 [ANSWERED]: MVP: unsigned/raw binaries + Homebrew-style script. Notarize when we have the Apple account.
+Q25 [ANSWERED]: Operator’s personal Apple/Google accounts until a company exists. Don’t block desktop on store listings.
+Q26 [ANSWERED]: No UnifiedPush in v1. FCM when we have an Android app. Until then ntfy distributor is the user’s problem.
+Q27 [ANSWERED]: Yes — web portal is system of record for billing even if the user only uses CLI.
+Q28 [ANSWERED]: No cross-device suppression in v1. Each device honors its own prefs. Presence is a later project.
+Q29 [ANSWERED]: Subscriber always wins: global DND &gt; per-topic mute &gt; publisher priority (priority only affects how loud if not muted).
+Q30 [ANSWERED]: No un-muteable urgent. Subscriber always sovereign, including security-ish pings.
+Q31 [ANSWERED]: Digest = time bucket (hourly/daily) of envelopes, not a new body. Off by default.
+Q32 [ANSWERED]: v0 humans may install ntfy and paste a topic URL into Orb (BYO). Orb-hosted ntfy relay is extra ops — skip until native apps.
+Q33 [ANSWERED]: Lock-screen postcard = title only (or title + 80 chars if user enables preview). Default title-only for private topics.
+Q34 [ANSWERED]: Self-run NATS JetStream on ECS for envelopes (3-node) when we outgrow a single box. Spike may be Postgres LISTEN + Redis. Not Synadia Cloud on day one.
+Q35 [ANSWERED]: us-west-2 unless operator is closer to us-east-1. Single region v1.
+Q36 [ANSWERED]: No per-tenant JetStream accounts in v1. One stream with subject per topic id. Isolate later if noisy.
+Q37 [ANSWERED]: Soft cap 10k subscribers/topic in v1. Envelope fanout is cheap; don’t promise millions.
+Q38 [ANSWERED]: No PrivateLink in v1.
+Q39 [ANSWERED]: Terraform. New AWS account orb-prod separate from personal junk.
+Q40 [ANSWERED]: CloudWatch + one Grafana Cloud or nothing fancy. OpenTelemetry traces on publish/fetch.
+Q41 [ANSWERED]: No charges until a legal entity exists. Free caps only. Stripe later under that entity.
+Q42 [ANSWERED]: Free: 3 public + 1 private topic, 10k envelopes/month, 2GB body-fetch, 1GB stored bodies.
+Q43 [ANSWERED]: Defer price points until we have usage. No public pricing page in spike.
+Q44 [ANSWERED]: No EU region in v1. Disclose US processing in privacy policy.
+Q45 [ANSWERED]: No E2E in v1. Server can read bodies. Optional E2E is phase 2.
+Q46 [ANSWERED]: Public topics: ToS + abuse report + freeze. No image hosting reduces CSAM surface. Hash/report if we ever allow uploads.
+Q47 [ANSWERED]: Yes, a small MCP server (publish, list envelopes, fetch body) once HTTP API exists. Not a blocker for spike.
+Q48 [ANSWERED]: v1 one-way. Human reply / agent.ask callbacks are v2 (auth on callback so a stolen notification cannot approve).
+Q49 [ANSWERED]: Encourage orb.agent.v1 front matter. No enforced schema registry in v1.
+Q50 [ANSWERED]: X-Orb-Path hop list + max 8 hops. Drop publish if cycle detected. Document it.
+Q51 [ANSWERED]: Orb sits beside email/Telegram in Marble as another sink. Do not rip out existing channels in v1.
+Q52 [ANSWERED]: Optional ntfy-compatible POST https://api.orbnet.app/ntfy/{topic} that maps to envelope+body. Nice-to-have after native API.
+Q53 [ANSWERED]: Operator is on-call. No pager rotation. Best-effort SLA.
+Q54 [ANSWERED]: Keep first 90 days under a few hundred USD (single region, tiny RDS/Fargate). No Apple/Google fees until store apps.
+Q55 [ANSWERED]: Keep server+clients closed until there’s a product. Protocol/docs can be public later.
+Q56 [ANSWERED]: Success: Marble publishes to a private orbnet.app topic; Mac tray shows envelope; opening fetches markdown body; one publish key. Phone optional via BYO ntfy.
+</textarea>
+    </section>
+  </main>
+  <footer>Orb · ADR-0001 · no script (mpub CSP) · <a href="/mpub/orb-design">orb-design</a></footer>
+</body>
+</html>

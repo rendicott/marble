@@ -33,10 +33,10 @@ type AttachmentRow struct {
 	CreatedAt string
 	Name      string
 	MIME      string
-	Kind      string // image | document
+	Kind      string // image | document | audio (audio via trusted TTS path only; SniffAttachment still rejects uploads)
 	ByteSize  int64
 	SHA256    string
-	Source    string // staged | user_upload | agent_attach
+	Source    string // staged | user_upload | agent_attach | tts
 	Path      string // rel under $MEMORY
 	MessageID string // empty if staged
 	MetaJSON  string
@@ -151,8 +151,13 @@ func SniffAttachment(name string, data []byte) (mime, kind string, err error) {
 		return "image/webp", "image", nil
 	case sniff == "image/gif" || ext == ".gif":
 		return "image/gif", "image", nil
-	case strings.HasPrefix(sniff, "image/svg") || ext == ".svg":
-		return "", "", fmt.Errorf("file type not allowed")
+	case ext == ".svg" || strings.HasPrefix(sniff, "image/svg"):
+		// Document, not image: never inline as image/svg+xml (XSS). Same GET
+		// policy as stored text/html — download / text preview only.
+		if !isSVGDocument(ext, sniff, data) {
+			return "", "", fmt.Errorf("file type not allowed")
+		}
+		return "image/svg+xml", "document", nil
 	case strings.HasPrefix(sniff, "audio/") || strings.HasPrefix(sniff, "video/"):
 		return "", "", fmt.Errorf("file type not allowed")
 	case sniff == "application/pdf" || ext == ".pdf":
@@ -204,6 +209,20 @@ func min(a, b int) int {
 	return b
 }
 
+// isSVGDocument reports whether name/sniff/bytes are an SVG we can store as a
+// document (downloadable chip). Requires a real <svg> tag so a random .svg
+// binary is rejected. Never classified as kind=image.
+func isSVGDocument(ext, sniff string, data []byte) bool {
+	if ext != ".svg" && !strings.HasPrefix(sniff, "image/svg") {
+		return false
+	}
+	if len(data) == 0 || !utf8.Valid(data) {
+		return false
+	}
+	head := strings.ToLower(string(data[:min(len(data), 4096)]))
+	return strings.Contains(head, "<svg")
+}
+
 // WriteAttachmentFile writes bytes to disk (immutable). Works in limp mode.
 func (d *DB) WriteAttachmentFile(sessionID, attID string, data []byte) (rel string, sum string, err error) {
 	abs, err := d.AttachmentAbsPath(sessionID, attID)
@@ -248,6 +267,56 @@ func (d *DB) GetAttachment(id string) (*AttachmentRow, error) {
 SELECT id, session_id, created_at, name, mime, kind, byte_size, sha256, source, path, message_id, meta_json
 FROM session_attachments WHERE id = ?`, strings.TrimSpace(id))
 	return scanAttachment(row)
+}
+
+// ListTTSAttachments returns recent TTS audio attachments for a session (newest first).
+func (d *DB) ListTTSAttachments(sessionID string, limit int) ([]AttachmentRow, error) {
+	if d == nil || d.SQL == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return nil, fmt.Errorf("session id required")
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	rows, err := d.SQL.Query(`
+SELECT id, session_id, created_at, name, mime, kind, byte_size, sha256, source, path, message_id, meta_json
+FROM session_attachments
+WHERE session_id = ? AND (source = 'tts' OR kind = 'audio')
+ORDER BY created_at DESC
+LIMIT ?`, sid, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AttachmentRow
+	for rows.Next() {
+		r, err := scanAttachment(rows)
+		if err != nil {
+			return out, err
+		}
+		if r != nil {
+			out = append(out, *r)
+		}
+	}
+	return out, rows.Err()
+}
+
+// CountTTSAttachments returns how many TTS/audio attachments a session has.
+func (d *DB) CountTTSAttachments(sessionID string) (int, error) {
+	if d == nil || d.SQL == nil {
+		return 0, fmt.Errorf("database unavailable")
+	}
+	var n int
+	err := d.SQL.QueryRow(`
+SELECT COUNT(*) FROM session_attachments
+WHERE session_id = ? AND (source = 'tts' OR kind = 'audio')`, strings.TrimSpace(sessionID)).Scan(&n)
+	return n, err
 }
 
 // CommitAttachments sets message_id and source for staged attachments.

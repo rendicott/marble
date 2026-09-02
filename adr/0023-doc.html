@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0023</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0023</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0023-clerk.md">Markdown</a>
+      <a href="0023-review.html">Review</a>
+      <a href="0023-answers.json">Answers</a>
+      <a href="0022-doc.html">← 0022</a>
+      <a href="0024-doc.html">0024 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0023-clerk-session-attention-dashboard">ADR-0023: Clerk — Session Attention Dashboard</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-08-03</td>
+</tr>
+<tr>
+<td><strong>Accepted</strong></td>
+<td>2026-08-03</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>clerk, dashboard, sessions, summary, action-items, UX, mobile</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (harness loop), ADR-0003 (SQLite), ADR-0005 (tools/loop), ADR-0008 (session info), ADR-0010 (turn transparency / busy), ADR-0013 (system prompt / soul), ADR-0018 (models), session title auto-update (last message / <code>title_custom</code>)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0023-answers.json</code> (<code>2026-08-03T08:06:16.955Z</code>) — all Q1–Q12 locked</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0023-review.html">0023-review.html</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="overview">Overview</h2>
+<p>Operators run <strong>many parallel Marble sessions</strong>. The session list shows a truncated title (now last user message unless renamed) and metadata, but does <strong>not</strong> surface:</p>
+<ul>
+<li>which idle sessions are <strong>waiting on a human decision</strong></li>
+<li>a <strong>short summary</strong> of what the agent last concluded</li>
+<li><strong>action items</strong> extracted for the user</li>
+<li>a single <strong>dashboard</strong> sorted so the longest-idle, attention-needing work floats up</li>
+</ul>
+<p><strong>Clerk</strong> is a first-class attention surface: an icon next to the Marble logo (desktop and mobile) that opens an interactive <strong>session wizard / dashboard</strong>. It is the place the user returns to after diving in and out of sessions so they always pick the next human-attention item efficiently.</p>
+<h3 id="product-story-example">Product story (example)</h3>
+<p>Five sessions:</p>
+<table>
+<thead>
+<tr>
+<th>Order (longest idle first among idle)</th>
+<th>Status</th>
+<th>Clerk line</th>
+<th>Icon</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Idle, <strong>needs user action</strong></td>
+<td>“foo or bar?”</td>
+<td>user-action</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Idle, no action required</td>
+<td>“foo done”</td>
+<td>idle</td>
+</tr>
+<tr>
+<td>3–5</td>
+<td>Working</td>
+<td>snippet of last <strong>user</strong> message (same spirit as session titles)</td>
+<td>spinner / active</td>
+</tr>
+</tbody>
+</table>
+<p>Working sessions are <strong>not</strong> LLM-summarized while busy—only a cheap title-style snippet of the user’s last message. Idle sessions get continuous summaries (default process model) plus optional action-item extraction.</p>
+<h2 id="background-motivation">Background &amp; Motivation</h2>
+<h3 id="current-state">Current state</h3>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session list</td>
+<td>Title, id, msg count, time, system/cron flags</td>
+</tr>
+<tr>
+<td>Session header</td>
+<td>Title · id, model picker, status pill (idle / running / iter)</td>
+</tr>
+<tr>
+<td>Turn progress</td>
+<td>Live phase inside an open session</td>
+</tr>
+<tr>
+<td>Session info</td>
+<td>Deep metadata for one session</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pain">Pain</h3>
+<ol>
+<li>Many sessions → hard to know <strong>which idle thread needs a reply first</strong>.  </li>
+<li>Agent “ended with a question” looks the same as “ended with a status dump.”  </li>
+<li>Diving into every session to re-read the last assistant message is slow on mobile.  </li>
+<li>Titles track last <strong>user</strong> message, not last <strong>agent ask</strong>.</li>
+</ol>
+<h3 id="non-goals-v1">Non-goals (v1)</h3>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full second product / separate app</td>
+<td>Clerk is a panel in the existing harness UI</td>
+</tr>
+<tr>
+<td>Summarizing <strong>working</strong> sessions with the LLM</td>
+<td>Cost + churn; user said snippet only</td>
+</tr>
+<tr>
+<td>Auto-jumping or auto-replying</td>
+<td>User remains in control</td>
+</tr>
+<tr>
+<td>Replacing session list or titles</td>
+<td>Complementary surface</td>
+</tr>
+<tr>
+<td>Perfect multi-user team inbox</td>
+<td>Single operator / allowlist auth as today</td>
+</tr>
+<tr>
+<td>Summarizing system-agent sessions as first-class rows</td>
+<td>Default <strong>hide</strong> system sessions (open Q)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Entry point:</strong> icon beside the Marble logo on <strong>desktop and mobile</strong> opens Clerk.  </li>
+<li><strong>Roster:</strong> all (or filtered) <strong>user</strong> sessions with:
+   - continuous <strong>idle summary</strong> (LLM, default process model)
+   - <strong>busy</strong> vs <strong>idle</strong>
+   - <strong>needs user action</strong> vs not (when idle)
+   - last-user-message <strong>snippet</strong> for busy sessions (and as fallback)
+   - extracted <strong>action items</strong> when idle and applicable  </li>
+<li><strong>Sort:</strong> longest <strong>idle</strong> first (among idle / action-needed); working sessions after or in a separate group (<strong>Q2</strong>).  </li>
+<li><strong>Deep link:</strong> each row jumps into that session.  </li>
+<li><strong>Cheap + correct:</strong> no LLM traffic for busy sessions’ activity feed; only re-summarize on meaningful idle transitions.  </li>
+<li><strong>Durable enough</strong> to survive harness restart (SQLite) without requiring the user to re-open every session.</li>
+</ol>
+<h2 id="key-product-rules-from-operator-intent">Key product rules (from operator intent)</h2>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Spec</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>R1 Working</strong></td>
+<td>Show active/spinner; line = last <strong>user</strong> message snippet (title-like). <strong>No</strong> LLM summary of tool thrash.</td>
+</tr>
+<tr>
+<td><strong>R2 Idle + decision</strong></td>
+<td>User-action icon; short summary of the choice (e.g. “foo or bar?”); link to session.</td>
+</tr>
+<tr>
+<td><strong>R3 Idle + done</strong></td>
+<td>Idle icon; short “done” / status line (e.g. “foo done”).</td>
+</tr>
+<tr>
+<td><strong>R4 Sort</strong></td>
+<td>Longest idle first among sessions that need human attention / are idle.</td>
+</tr>
+<tr>
+<td><strong>R5 Summarizer model</strong></td>
+<td>Default process model (same as <code>--model</code> / process catalog entry) unless overridden (<strong>Q5</strong>).</td>
+</tr>
+<tr>
+<td><strong>R6 Continuous</strong></td>
+<td>Summaries refresh when a turn ends idle—not only on Clerk open.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="proposed-design">Proposed design</h2>
+<h3 id="1-entry-ux">1. Entry UX</h3>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Icon</td>
+<td>Next to logo in <code>.brand</code> / sidebar head (desktop + mobile). Suggested glyph: clipboard / desk / “clerk” mark — final icon <strong>Q1</strong>.</td>
+</tr>
+<tr>
+<td>Panel</td>
+<td>Modal or full-height drawer (mobile-first drawer recommended). Title: <strong>Clerk</strong>.</td>
+</tr>
+<tr>
+<td>Empty</td>
+<td>“No sessions yet” / “All quiet.”</td>
+</tr>
+<tr>
+<td>Close</td>
+<td>Esc, backdrop, ×</td>
+</tr>
+</tbody>
+</table>
+<h3 id="2-row-model-api-ui">2. Row model (API + UI)</h3>
+<pre><code class="language-text">ClerkSessionRow {
+  session_id
+  title                 // current session title (custom or last-user)
+  kind                  // user | system (filter)
+  status                // active | closed
+  busy                  // live
+  attention             // working | idle | needs_user
+  idle_since            // RFC3339 when last turn became non-busy; null if busy
+  idle_for_sec
+  last_user_snippet     // truncated last user message
+  summary               // LLM one-liner / short paragraph when idle; empty if working
+  action_items[]        // strings; may be empty
+  summary_updated_at
+  jump_url              // /s/{id}
+}
+</code></pre>
+<p><strong>Attention classification (proposal):</strong></p>
+<table>
+<thead>
+<tr>
+<th><code>attention</code></th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>working</code></td>
+<td><code>busy == true</code></td>
+</tr>
+<tr>
+<td><code>needs_user</code></td>
+<td>idle <strong>and</strong> summarizer marked <code>needs_user</code> / non-empty action_items that are questions, <strong>or</strong> heuristic fallback (<strong>Q6</strong>)</td>
+</tr>
+<tr>
+<td><code>idle</code></td>
+<td>idle and not needs_user</td>
+</tr>
+</tbody>
+</table>
+<h3 id="3-sort-order-proposal-q2">3. Sort order (proposal — <strong>Q2</strong>)</h3>
+<ol>
+<li><code>needs_user</code> ordered by <strong>longest idle first</strong>  </li>
+<li><code>idle</code> ordered by longest idle first  </li>
+<li><code>working</code> ordered by most recently updated (or longest running — <strong>Q2b</strong>)  </li>
+<li>Closed sessions: hide by default; optional toggle (<strong>Q3</strong>)</li>
+</ol>
+<h3 id="4-summarization-pipeline">4. Summarization pipeline</h3>
+<pre><code class="language-mermaid">flowchart TD
+  endTurn[Turn ends idle] --&gt; queue[Enqueue clerk summarize job]
+  queue --&gt; skipBusy{Session busy again?}
+  skipBusy --&gt;|yes| drop[Drop / defer]
+  skipBusy --&gt;|no| llm[Process model: summary + needs_user + action_items]
+  llm --&gt; store[(SQLite clerk_session_state)]
+  store --&gt; sse[Optional SSE clerk_updated]
+  open[Clerk panel open] --&gt; poll[GET /api/clerk]
+  poll --&gt; store
+</code></pre>
+<p><strong>Trigger (R6):</strong> when a user session’s turn ends with <code>busy → false</code> (normal complete, error, stop, hard wall / auto-continue edge cases: <strong>Q7</strong>).</p>
+<p><strong>Do not trigger</strong> on every tool step.</p>
+<p><strong>Working sessions:</strong> never call summarizer; row uses live <code>busy</code> + <code>last_user_snippet</code> only.</p>
+<p><strong>Prompt sketch (idle only):</strong></p>
+<pre><code class="language-text">You maintain a short operator dashboard entry for one Marble session.
+Given recent transcript (last N messages or post-compact tail):
+Return JSON:
+{
+  &quot;summary&quot;: &quot;≤120 chars, plain language&quot;,
+  &quot;needs_user&quot;: true|false,
+  &quot;action_items&quot;: [&quot;…&quot;]  // empty if none; prefer questions the human must answer
+}
+Rules:
+- needs_user=true if the agent is waiting on a choice, approval, OTP, missing input, or explicit question.
+- needs_user=false if the agent delivered a status/report with nothing to decide.
+- summary for needs_user should state the decision crisply (&quot;foo or bar?&quot;).
+- summary for idle done should be outcome-oriented (&quot;foo done&quot;).
+</code></pre>
+<p><strong>Context window for summarizer:</strong> last K UI messages or last assistant + last user + last tool errors (<strong>Q8</strong>). Prefer small prompts.</p>
+<p><strong>Concurrency:</strong> one summarizer job at a time globally, or per-session queue (<strong>Q9</strong>)—avoid stampedes when many sessions go idle.</p>
+<p><strong>Failure:</strong> keep previous summary; mark <code>summary_stale</code>; never block endTurn.</p>
+<h3 id="5-persistence-sqlite">5. Persistence (SQLite)</h3>
+<p>New table (schema v6 sketch):</p>
+<pre><code class="language-sql">CREATE TABLE clerk_session_state (
+  session_id TEXT PRIMARY KEY,
+  summary TEXT NOT NULL DEFAULT '',
+  needs_user INTEGER NOT NULL DEFAULT 0,
+  action_items_json TEXT NOT NULL DEFAULT '[]',
+  last_user_snippet TEXT NOT NULL DEFAULT '',
+  idle_since TEXT,              -- RFC3339 or NULL if busy unknown
+  summary_updated_at TEXT,
+  summary_model TEXT,
+  summary_error TEXT,
+  FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+</code></pre>
+<p>Live <code>busy</code> always from session registry, not SQLite.</p>
+<p>Optional: store <code>idle_since</code> only when transitioning busy→idle; clear when busy.</p>
+<h3 id="6-api">6. API</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/clerk</code></td>
+<td>Full roster for UI (sorted)</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/clerk/refresh</code></td>
+<td>Optional force re-summarize one or all idle (<strong>Q10</strong>)</td>
+</tr>
+<tr>
+<td>SSE</td>
+<td>existing session events + optional <code>clerk</code> event type on summary update</td>
+<td>Live dashboard while open</td>
+</tr>
+</tbody>
+</table>
+<p>Auth: same as other <code>/api/*</code> (open or Google allowlist).</p>
+<h3 id="7-integration-points-in-harness">7. Integration points in harness</h3>
+<table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>endTurn</code> / finalize progress when <code>busy</code> clears</td>
+<td>Update <code>idle_since</code>, <code>last_user_snippet</code>; enqueue summarize if user session</td>
+</tr>
+<tr>
+<td><code>tryBeginTurn</code> / busy true</td>
+<td>Clear needs_user display as working; cancel pending summarize for that id</td>
+</tr>
+<tr>
+<td>User message</td>
+<td>Refresh <code>last_user_snippet</code> (even if still busy)</td>
+</tr>
+<tr>
+<td>Session close</td>
+<td>Remove or hide from Clerk (<strong>Q3</strong>)</td>
+</tr>
+<tr>
+<td>Session rename</td>
+<td>Title in Clerk follows <code>title</code> / <code>title_custom</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="8-ui-sketch">8. UI sketch</h3>
+<pre><code class="language-text">┌ Clerk                              ✕ ┐
+│ Sort: needs you · idle · working     │
+│                                      │
+│ ⚠ 0wc7…  12m idle                    │
+│    foo or bar?                       │
+│    • Confirm option foo or bar       │
+│    [Open]                            │
+│                                      │
+│ ○ 0wc75…  4m idle                    │
+│    foo done                          │
+│    [Open]                            │
+│                                      │
+│ ◌ 0wc5…   working                    │
+│    &quot;Build Princess Dance store…&quot;     │
+│    [Open]                            │
+└──────────────────────────────────────┘
+</code></pre>
+<p>Mobile: full-screen sheet; large Open buttons; same logo-adjacent icon (logo-only mobile brand remains).</p>
+<h3 id="9-relationship-to-existing-features">9. Relationship to existing features</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Relationship</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session list</td>
+<td>Unchanged; Clerk is the attention dashboard</td>
+</tr>
+<tr>
+<td>Auto title (last user msg)</td>
+<td>Supplies busy-row snippets; Clerk idle summary is separate</td>
+</tr>
+<tr>
+<td><code>session_compact</code></td>
+<td>Clerk summarizer uses tail of transcript; compact still reduces cost</td>
+</tr>
+<tr>
+<td>System agents</td>
+<td>Default exclude from Clerk (<strong>Q4</strong>)</td>
+</tr>
+<tr>
+<td>Cron sessions</td>
+<td>Include if user-facing; badge optional</td>
+</tr>
+</tbody>
+</table>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Why not default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Only enhance session list rows</td>
+<td>Too cramped on mobile; no action-item space</td>
+</tr>
+<tr>
+<td>Summarize every N minutes always</td>
+<td>Waste; thrash on long tool loops</td>
+</tr>
+<tr>
+<td>Summarize working sessions</td>
+<td>Operator explicitly rejected</td>
+</tr>
+<tr>
+<td>Client-only JS summaries</td>
+<td>Needs model; must be server-side</td>
+</tr>
+<tr>
+<td>Separate “inbox” DB product</td>
+<td>Overkill for v1</td>
+</tr>
+</tbody>
+</table>
+<h2 id="locked-decisions-q1q12-2026-08-03t080616955z">Locked decisions (Q1–Q12 · 2026-08-03T08:06:16.955Z)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>KD1</strong></td>
+<td>Entry: clipboard / desk-clerk glyph next to logo; <code>aria-label</code> / title <strong>Clerk — session dashboard</strong></td>
+<td><strong>Q1</strong></td>
+</tr>
+<tr>
+<td><strong>KD2</strong></td>
+<td>Sort: <code>needs_user</code> (longest idle first) → <code>idle</code> (longest idle first) → <code>working</code> (most recently updated first)</td>
+<td><strong>Q2</strong></td>
+</tr>
+<tr>
+<td><strong>KD3</strong></td>
+<td>Closed sessions hidden by default; optional <strong>Show closed</strong> in Clerk header</td>
+<td><strong>Q3</strong></td>
+</tr>
+<tr>
+<td><strong>KD4</strong></td>
+<td>Exclude <strong>system-agent</strong> sessions entirely in v1</td>
+<td><strong>Q4</strong></td>
+</tr>
+<tr>
+<td><strong>KD5</strong></td>
+<td>Summarizer always <strong>process default</strong> model; no per-session override in v1</td>
+<td><strong>Q5</strong></td>
+</tr>
+<tr>
+<td><strong>KD6</strong></td>
+<td><code>needs_user</code>: LLM flag primary; fallback if LLM fails: last assistant ends with <code>?</code> or choose/option/confirm language</td>
+<td><strong>Q6</strong></td>
+</tr>
+<tr>
+<td><strong>KD7</strong></td>
+<td>Summarize on <strong>any</strong> busy→idle: complete, error, stop, timeout</td>
+<td><strong>Q7</strong></td>
+</tr>
+<tr>
+<td><strong>KD8</strong></td>
+<td>Summarizer input: last ~<strong>12</strong> UI messages or ~<strong>8k</strong> chars; prefer last user + last assistant + recent tool errors; skip image bytes</td>
+<td><strong>Q8</strong></td>
+</tr>
+<tr>
+<td><strong>KD9</strong></td>
+<td>Global queue: <strong>one</strong> summarizer at a time; coalesce per session (latest idle wins); drop if session busy again</td>
+<td><strong>Q9</strong></td>
+</tr>
+<tr>
+<td><strong>KD10</strong></td>
+<td>Manual <strong>Refresh</strong> (rate-limited) for idle rows; auto path remains primary</td>
+<td><strong>Q10</strong></td>
+</tr>
+<tr>
+<td><strong>KD11</strong></td>
+<td>Mobile: <strong>full-screen sheet</strong>. Desktop: <strong>modal or right drawer</strong>. No separate <code>/clerk</code> route in v1</td>
+<td><strong>Q11</strong></td>
+</tr>
+<tr>
+<td><strong>KD12</strong></td>
+<td>Live updates while open: <strong>poll</strong> <code>GET /api/clerk</code> every <strong>3–5s</strong>; optional SSE if easy; poll-only OK for v1</td>
+<td><strong>Q12</strong></td>
+</tr>
+</tbody>
+</table>
+<p>No open questions remain for v1.</p>
+<h2 id="implementation-plan-after-answers">Implementation plan (after answers)</h2>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C0</strong></td>
+<td>Schema <code>clerk_session_state</code> + repository</td>
+</tr>
+<tr>
+<td><strong>C1</strong></td>
+<td>Hooks on busy transitions + last_user_snippet</td>
+</tr>
+<tr>
+<td><strong>C2</strong></td>
+<td>Summarizer worker + process model client</td>
+</tr>
+<tr>
+<td><strong>C3</strong></td>
+<td><code>GET /api/clerk</code> sorted roster</td>
+</tr>
+<tr>
+<td><strong>C4</strong></td>
+<td>UI icon + panel + row components (desktop/mobile)</td>
+</tr>
+<tr>
+<td><strong>C5</strong></td>
+<td>SSE/poll live updates + jump links</td>
+</tr>
+<tr>
+<td><strong>C6</strong></td>
+<td>Force refresh, closed toggle, polish</td>
+</tr>
+</tbody>
+</table>
+<h2 id="success-metrics">Success metrics</h2>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Time-to-find “session waiting on me”</td>
+<td>Seconds via Clerk vs scanning list</td>
+</tr>
+<tr>
+<td>Summarizer calls while session busy</td>
+<td>~0</td>
+</tr>
+<tr>
+<td>False needs_user rate</td>
+<td>Low enough that icons stay trusted</td>
+</tr>
+<tr>
+<td>Mobile usability</td>
+<td>One-thumb Open to correct session</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security-cost">Security &amp; cost</h2>
+<ul>
+<li>Summaries may include sensitive trip/cloud content—same trust boundary as session MD.  </li>
+<li>Bound summarizer max tokens and rate.  </li>
+<li>Do not send full screenshot blobs into summarizer by default.</li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-08-03</td>
+<td>Proposed — Clerk attention dashboard from operator product description</td>
+</tr>
+<tr>
+<td>2026-08-03</td>
+<td><strong>Accepted</strong> — all Q1–Q12 locked; KD1–KD12 written; ready to implement C0→C6</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0023-clerk.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

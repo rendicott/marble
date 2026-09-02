@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0024</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0024</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0024-wonderstand-client.md">Markdown</a>
+      <a href="0023-doc.html">← 0023</a>
+      <a href="0025-doc.html">0025 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0024-wonderstand-native-android-client-pointer">ADR-0024: Wonderstand — Native Android client (pointer)</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (canonical design in peer repo; Q1–Q12 locked 2026-08-07)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-08-07</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>wonderstand, android, client, pointer</td>
+</tr>
+<tr>
+<td><strong>Canonical design</strong></td>
+<td><strong><code>marble-wonderstand</code></strong> repo / folder: <a href="0001-doc.html"><code>adr/0001-wonderstand-client.md</code></a> (path relative when trees are siblings under <code>projects/</code>)</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0010, ADR-0017, ADR-0019; optional Clerk ADR-0023 later</td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p><strong>Wonderstand</strong> is a separate Android application that uses <strong>this harness</strong> as the agent engine over HTTP/SSE (typically Tailscale). It optimizes for:</p>
+<ul>
+<li>multi-session bounce on a phone  </li>
+<li>camera / share / upload image intake  </li>
+<li>voice in (STT) and spoken replies (TTS)  </li>
+<li><strong>immersion mode</strong>: visual-first artifacts full-screen, prose as audio, swipe between visual beats  </li>
+</ul>
+<p>The web UI remains the operator cockpit (settings, models, peer, cron). Wonderstand does <strong>not</strong> replace it.</p>
+<h2 id="harness-impact-mvp">Harness impact (MVP)</h2>
+<p><strong>None required</strong> for a first client: existing sessions/messages/attachments/SSE APIs suffice. Optional later:</p>
+<ul>
+<li><code>X-Marble-Client: wonderstand</code> for metrics  </li>
+<li>Wonderstand-oriented soul snippet  </li>
+<li>Structured <code>artifacts[]</code> metadata on assistant messages  </li>
+</ul>
+<h2 id="pointer-only">Pointer only</h2>
+<p>Do not duplicate the full design here. Lock decisions and implement in:</p>
+<pre><code>projects/marble-wonderstand/
+  README.md
+  adr/0001-wonderstand-client.md
+  adr/0001-answers.json
+  docs/immersion-timeline.md
+</code></pre>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="0025-doc.html">ADR-0025 Wonderstand Protocol</a> — structured <code>presentation</code> / client advertise (<strong>Accepted</strong>, Q1–Q8 locked)</li>
+<li><a href="../docs/wonderstand-protocol-sketch.md">docs/wonderstand-protocol-sketch.md</a></li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0024-wonderstand-client.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

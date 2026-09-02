@@ -22,7 +22,7 @@ func (r *Registry) modelList(_ string) (string, error) {
 	}
 	return mustJSON(map[string]interface{}{
 		"models": list,
-		"note":   "Use model_add / model_update to create catalog entries (never put secrets in tools — only api_key_env names). Put KEY=… in ~/.config/marble/env or $MEMORY/env. session_set_model only selects an existing id.",
+		"note":   "Use model_add / model_update to create catalog entries (never put secrets in tools — only api_key_env names). Put KEY=… in $MEMORY/env (Settings → Secrets). session_set_model only selects an existing id.",
 		"env_file_paths": config.EnvFilePaths(),
 	}), nil
 }

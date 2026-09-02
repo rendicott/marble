@@ -2,24 +2,25 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Proposed** (awaiting review Q1–Q10) |
+| **Status** | **Accepted** (ready to implement) |
 | **Date** | 2026-08-08 |
+| **Accepted** | 2026-08-13 |
 | **Author** | — |
 | **Deciders** | Project owner |
 | **Tags** | ui, transcript, tools, timestamps, progress, density, web |
 | **Extends** | ADR-0010 (turn progress / step log), ADR-0005 (agent loop), ADR-0001 (inner loop) |
 | **Review UI** | [0026-review.html](0026-review.html) |
-| **Answers** | *(none yet — fill `0026-answers.json` after review)* |
+| **Answers** | [0026-answers.json](0026-answers.json) (`2026-08-13T13:57:11.405Z`) — all Q1–Q10 locked |
 
 ## Summary
 
 Make long multi-tool sessions readable in the web transcript:
 
 1. **Compact tool result rows by default** (one-line chips; expand on demand).  
-2. **Visible timestamps** on user and assistant messages (and optionally tools).  
-3. **Lightweight “thinking / working” status lines** during a turn so the chat feels alive between tool bubbles and the final answer—without dumping another wall of text.
+2. **Visible timestamps** on user, assistant, and tool headers.  
+3. **Live “thinking / working” status** during a turn **plus** **persisted, collapsed thinking rows** in history (same expand pattern as tools).
 
-Wire/API stays additive. Primary work is **web UI** (`internal/web/static/`); harness already has `created_at`, tool messages, turn progress SSE, and harness advisories.
+Wire/API stays additive where possible. Primary work is **web UI** (`internal/web/static/`); harness already has `created_at`, tool messages, turn progress SSE, and harness advisories. Persisted thinking may need a small durable channel (see Design C).
 
 ## Context & pain
 
@@ -48,32 +49,34 @@ After a 15–40 tool turn the transcript is **mostly green tool boxes**. The hum
 ## Goals
 
 1. **Default-compact tools** in the web transcript: one line summary; click/tap to expand full body.  
-2. **Timestamps** on user and assistant bubbles (readable, locale-friendly).  
-3. **Thinking / working statuses** visible in-chat from time to time during a busy turn (not only the header pill).  
-4. **Remember expand preference** optionally (session or localStorage).  
-5. **No harness API break**: hydrate still returns full tool messages; compaction is UI.  
-6. **Keep diagnostics**: Session Info, expand-all, and copy remain possible.
+2. **Timestamps** on user, assistant, and tool compact headers (readable, locale-friendly).  
+3. **Thinking / working statuses** live during a busy turn **and** retained in history as collapsed rows (like tools).  
+4. **Expand all / collapse all** for tools **and** thinking rows; single-row click expands only that row.  
+5. **Remember expand preference** in localStorage first.  
+6. **Keep diagnostics**: Session Info, expand-all, and copy remain possible.  
+7. **No breaking GET/SSE** for older clients; additive fields only if thinking is dual-written.
 
 ## Non-goals
 
 | Non-goal | Rationale |
 |----------|-----------|
-| Remove tool messages from MD / SQLite | Audit trail stays; this ADR is presentation |
+| Remove tool messages from MD / SQLite | Audit trail stays; tool compaction is presentation |
 | Token streaming of assistant drafts | Separate concern |
 | Wonderstand immersion chrome | Android has its own surfaces |
 | Hiding tools from the model history | Transcript UI only |
 | Full activity dashboard across sessions | Out of scope |
 | Replacing ADR-0010 turn card | Card stays; density work is complementary |
+| Turn-level “N tools” mega-accordion in v1 | Per-tool compact rows only (**Q2**) |
 
 ## Design
 
-### A. Compact tool rows (default)
+### A. Compact tool rows (default) — **Q1 locked**
 
 **Collapsed (default):**
 
 ```text
 ┌─────────────────────────────────────────────────────────┐
-│ ▸ shell_execute · 0.4s · exit 0 · “ls -la …”     [expand]│
+│ ▸ shell_execute · 3:40 PM · “ls -la …”            [expand]│
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -81,7 +84,7 @@ After a 15–40 tool turn the transcript is **mostly green tool boxes**. The hum
 
 ```text
 ┌─────────────────────────────────────────────────────────┐
-│ ▾ shell_execute · 0.4s                            [collapse]
+│ ▾ shell_execute · 3:40 PM                       [collapse]
 │ shell_execute → total 12 … (full body as today)         │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -90,81 +93,90 @@ After a 15–40 tool turn the transcript is **mostly green tool boxes**. The hum
 |---------|--------|
 | Tool name | `message.tool_name` or leading token of content |
 | One-line preview | First ~120 chars of content, single-line |
-| Duration | Optional: only if we add timing later; **v1 may omit** and use count only |
+| Timestamp | `created_at` subtle on header (**Q6**) |
 | Expand | Click header row or chevron; body toggles |
 
-**Grouping (optional, Q):** after a turn completes, optionally fold **all tools since last user message** into one “N tools” strip with nested expand. Recommendation: **v1 per-tool compact rows**; group strip as stretch goal if density still high.
+**Grouping:** **No** turn-level accordion in v1 (**Q2**).
 
-**Settings:**
+**Controls (**Q3**):** Expand all / Collapse all in transcript toolbar near session actions. Expands/collapses **tools and thinking** rows.
 
-- Default: **collapsed**  
-- “Expand tools by default” toggle in session chrome or Settings (**Q**)  
-- “Expand all / collapse all” for current transcript  
+**Settings (**Q4**):** Default collapsed; remember expand-default in **localStorage** first.
 
-**Attachments on tool messages** (screenshots): keep a **thumbnail chip always visible** even when body collapsed (**Q**).
+**Attachments (**Q10**):** image chips **always visible** on the header even when body collapsed.
 
-### B. Message timestamps
+### B. Message timestamps — **Q5 / Q6 locked**
 
-Wire already has `created_at` (RFC3339) on UI messages. **Render in the bubble chrome:**
-
-```text
-assistant                    12:31 PM · Aug 8
-────────────────────────────────────────────
-Markdown body…
-```
+Wire already has `created_at` (RFC3339) on UI messages.
 
 | Role | Show time? |
 |------|------------|
 | user | **Yes** |
 | assistant | **Yes** |
-| tool | Optional small time on compact row (**Q**) |
-| harness / error | Optional or omit |
+| tool | **Yes**, subtle on compact header |
+| thinking (history) | **Yes**, subtle on compact header |
+| harness / error | optional / omit |
 
-**Format (recommendation):**
+**Format (**Q5**):**
 
-- Same calendar day as “now”: **time only** (`3:42 PM`)  
-- Else: **short date + time** (`Aug 8, 3:42 PM`)  
-- Full ISO on `title` tooltip for copy/debug  
-- Use browser locale via `Intl.DateTimeFormat`  
+- Same calendar day as “now”: **time only** (locale)  
+- Else: **short date + time**  
+- Full ISO on `title` tooltip  
 
-Do **not** require backend changes for v1.
+Use browser locale via `Intl.DateTimeFormat`. No backend change for timestamps.
 
-### C. Thinking / working statuses
+### C. Thinking / working status — **Q7 / Q8 locked**
 
-Operators want intermittent “the agent is thinking” feedback **in the transcript stream**, not only:
+#### Live (while busy) — **Q7**
 
-- header pill (`calling_model` / `running`)  
-- ADR-0010 turn card at the bottom  
-
-**Recommendation: ephemeral status strip** pinned near the live turn card (or as lightweight inline chips), driven by existing **`turn` SSE** + coarse **`status`**, not new durable messages.
+Keep ADR-0010 **turn progress card**.  
+**Plus** one live “⋯ thinking / running tool” line **above** the turn card, driven by `turn` / `status` SSE (update in place).
 
 ```text
 … tool chip …
-… tool chip …
-  ⋯ thinking · calling model · i7 · 12s
-  ⋯ running shell_execute · “grep -R …”
+  ⋯ thinking · calling model · i7 · 12s     ← live, updates in place
 [ turn progress card ]
 ```
 
-| Kind | Source today | Transcript treatment |
-|------|----------------|----------------------|
-| Phase | `turn.phase` / `status` | “Thinking…” / “Calling model…” / “Running tool…” |
-| Tool | `turn.current_tool` | Name + short args |
-| Harness advisory | `type: harness` | Keep as today or demote into status strip (**Q**) |
-| Step log | `turn.steps` | Still in expandable turn card; do not mirror every step into transcript |
+Harness advisories stay as **full bubbles** today (**Q9**); only phase/tool noise uses the live line.
 
-**Cadence:** update in place (single live status line), not a new bubble every second—avoids clutter equal to tools. On turn idle: **remove** the live line (or leave last line grayed for 2s then drop).
+#### History after turn — **Q8 (custom, locked)**
 
-**Optional later (not p1):** model “reasoning” / provider thinking tokens if/when exposed—separate ADR.
+**Persist** thinking segments in the transcript, **collapsed by default** like tool rows:
+
+- **Expand all** expands tools **and** thinking rows.  
+- **Click one thinking row** expands only that row.  
+- Collapsed header: short summary (e.g. `thinking · calling model · 4s` or last phase text).  
+- Expanded body: fuller phase/detail text for that segment (not the entire step log dump).
+
+```text
+user ………………… 3:40 PM
+  ▸ thinking · calling model · 3.2s
+  ▸ file_read · 3:40 PM · …
+  ▸ thinking · calling model · 1.1s
+  ▸ shell_execute · 3:40 PM · …
+assistant …………… 3:41 PM
+```
+
+**Persistence approach (implementation choice, prefer additive):**
+
+| Option | Notes |
+|--------|--------|
+| **A (preferred for v1 UI-only)** | Client materializes thinking rows from live SSE into **session-scoped local state**, then on idle **appends collapsed history chips** that rehydrate only while tab is open — **lost on full page reload** unless B |
+| **B (durable)** | Dual-write lightweight rows: UI-only `role: thinking` (or harness subtype) **not** injected into model history; MD HTML comment or skip MD body; SQLite event optional |
+
+**Recommendation for implement:** start with **client-side history chips from the live stream** so tools stay zero-backend; if reload loss is unacceptable in QA, add **B** (UI message with `role: thinking` excluded from model prompt rebuild). Do **not** put thinking text into model-facing history.
+
+**Cadence while live:** still **one** updating live line (not a bubble per second). On meaningful phase transitions (e.g. calling_model → running_tool → calling_model), **commit** the previous live segment as a collapsed history row, then continue the live line for the new phase. On turn idle, commit final segment and clear the live line.
 
 ### D. Visual hierarchy (target)
 
 ```
 user ………………… 3:40 PM
-  tools ▸ file_read · …
-  tools ▸ grep · …          ← compact
-  tools ▸ shell_execute · …
-  ⋯ thinking · calling model   ← live only while busy
+  ▸ thinking · calling model · 2s
+  ▸ file_read · 3:40 PM · …
+  ▸ thinking · calling model · 1s
+  ▸ shell_execute · 3:40 PM · …
+  ⋯ thinking · calling model · i3 · 4s   ← live only while busy
 assistant …………… 3:41 PM
   (answer markdown)
 ```
@@ -173,35 +185,38 @@ assistant …………… 3:41 PM
 
 | Layer | Change |
 |-------|--------|
-| **CSS** | `.bubble.tool.collapsed`, `.msg-time`, `.thinking-status` |
-| **app.js `bubbleEl`** | Timestamp span; tool header + details/`<details>` or JS toggle |
-| **app.js SSE** | Maintain one `#thinking-status` node from `turn` / `status` events |
-| **Settings** | Optional `ui.tools_expanded_default` (localStorage first; Settings key later) |
-| **Harness** | None required for v1; optional later: tool duration on tool messages |
+| **CSS** | `.bubble.tool.collapsed`, `.bubble.thinking`, `.msg-time`, `.thinking-live` |
+| **app.js `bubbleEl`** | Timestamps; tool header + expand; thinking row same pattern |
+| **app.js SSE** | Live thinking line from `turn`/`status`; on phase change / idle commit collapsed thinking rows |
+| **Expand all** | Toolbar control; toggles all `.tool` + `.thinking` collapsibles |
+| **localStorage** | `marble.toolsExpandedDefault` (or similar) |
+| **Harness** | Optional later for durable thinking rows; not required if client-only history is accepted |
 
 ### Suggested PR slice
 
 | PR | Scope |
 |----|--------|
-| **T1** | Timestamps on user/assistant |
-| **T2** | Compact tool rows + expand/collapse + expand-all |
-| **T3** | Live thinking status line from turn/status SSE |
-| **T4** | Preference + polish (attachments on collapsed tools, tool timestamps) |
+| **T1** | Timestamps on user/assistant (+ tool headers) |
+| **T2** | Compact tools + expand/collapse + expand-all/collapse-all |
+| **T3** | Live thinking line + commit collapsed thinking history on phase/idle |
+| **T4** | localStorage pref + attachment chips on collapsed tools |
 
-## Open questions (Q1–Q10)
+## Decisions locked (Q1–Q10)
 
-| ID | Question | Recommendation |
-|----|----------|----------------|
-| **Q1** | Default tool density? | **Collapsed** one-line; click to expand body |
-| **Q2** | Group tools per turn into one “N tools” accordion? | **No in v1** — per-tool compact rows; revisit if still too tall |
-| **Q3** | Expand-all control placement? | Transcript toolbar near session actions + keyboard optional later |
-| **Q4** | Persist “tools expanded by default”? | **localStorage** first; Settings key if we already have UI prefs pattern |
-| **Q5** | Timestamp style? | Relative-to-today: time only same day; else short date+time; full ISO in `title` |
-| **Q6** | Timestamps on tool rows too? | **Yes, subtle** on the compact header (helps multi-hour turns) |
-| **Q7** | Thinking status: in-transcript line vs only turn card? | **Both** — keep turn card; add single live “⋯ thinking / running tool” line above it |
-| **Q8** | Persist thinking lines after turn ends? | **No** — ephemeral; history is tools + final assistant (+ harness if kept) |
-| **Q9** | Demote harness advisories into the status strip? | **Keep harness bubbles** for now (errors/important); only phase noise is ephemeral |
-| **Q10** | Screenshots / attachments on collapsed tools? | **Always show image chips** in header even when body collapsed |
+| ID | Decision | Locked |
+|----|----------|--------|
+| **Q1** | Default tool density | **Collapsed** one-line chip; click header to expand body |
+| **Q2** | Group tools into one accordion? | **No in v1** — per-tool compact rows only |
+| **Q3** | Expand-all placement | Transcript toolbar near session actions |
+| **Q4** | Remember expand-default | **localStorage** first; Settings only if needed |
+| **Q5** | Timestamp format | Same day: time only (locale); else short date+time; ISO in `title` |
+| **Q6** | Tool row timestamps? | **Yes**, subtle on compact header |
+| **Q7** | Thinking live surface | **Both** — ADR-0010 turn card + live “⋯ thinking / running tool” line above it |
+| **Q8** | Persist thinking after turn? | **Yes** — collapsed in history like tools; expand-all includes thinking; single click expands one row only |
+| **Q9** | Harness advisories | **Keep bubbles** as today; phase/tool noise only on status/thinking path |
+| **Q10** | Screenshots when tool collapsed | **Always show** attachment/image chips on header |
+
+*Source: [0026-answers.json](0026-answers.json) (`2026-08-13T13:57:11.405Z`).*
 
 ## Alternatives considered
 
@@ -210,8 +225,9 @@ assistant …………… 3:41 PM
 | Hide tools entirely unless Session Info | Loses mid-turn narrative and post-hoc debug |
 | Only turn-card steps (no tool bubbles) | Breaks “what did it just run?” after collapse; MD still has tools |
 | Server-side omit tool content from GET | Breaks other clients / rehydrate fidelity |
-| New durable “status” role messages | Pollutes MD and hydrate; use ephemeral DOM |
+| Ephemeral-only thinking (old rec) | Rejected by **Q8** — operators want collapsed history |
 | Relative-only times (“2m ago”) | Harder for multi-day sessions; absolute preferred |
+| Turn-level tool accordion | Deferred; per-tool compact first (**Q2**) |
 
 ## Risks
 
@@ -220,14 +236,17 @@ assistant …………… 3:41 PM
 | Operators miss a failed tool | Expanded state on error / non-zero exit if detectable; else expand-all |
 | Click fatigue | Expand-all; optional default-expand setting |
 | Timezone confusion | Browser local zone + ISO tooltip |
-| Status line + turn card redundancy | Status = one glanceable sentence; card = full detail |
+| Status line + turn card redundancy | Live line = one glanceable sentence; card = full detail |
+| Thinking history noise | Collapse by default; commit on phase boundaries only, not every SSE tick |
+| Reload loses client-only thinking | Optional durable role later if needed |
 
 ## Success metrics
 
 - Multi-tool turn (20+ tools) keeps user+assistant messages on screen without endless scroll through green boxes.  
-- User and assistant bubbles show a clear local timestamp.  
+- User, assistant, and tool headers show clear local timestamps.  
 - During a live turn, an operator sees updating “thinking / running X” without opening Session Info.  
-- Full tool body still one click away; Session Info / MD unchanged.
+- After the turn, collapsed thinking rows remain inspectable via expand-all or single expand.  
+- Full tool body still one click away; Session Info / model history unchanged.
 
 ## See also
 
@@ -240,3 +259,4 @@ assistant …………… 3:41 PM
 | Date | Note |
 |------|------|
 | 2026-08-08 | **Proposed** — transcript density: compact tools, timestamps, thinking status; Q1–Q10 open |
+| 2026-08-13 | **Accepted** — locked Q1–Q10 (`2026-08-13T13:57:11.405Z`); Q8 = persist collapsed thinking like tools |

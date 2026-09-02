@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0010</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0010</span>
+      <span class="status accepted">Accepted / Implemented</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0010-agent-loop-transparency.md">Markdown</a>
+      <a href="0010-review.html">Review</a>
+      <a href="0010-answers.json">Answers</a>
+      <a href="0009-doc.html">← 0009</a>
+      <a href="0011-doc.html">0011 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0010-agent-loop-transparency-turn-control">ADR-0010: Agent Loop Transparency &amp; Turn Control</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted / Implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-18</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>ui, agent-loop, observability, control, sse</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (inner loop), ADR-0005 (tool rounds / advisories), ADR-0008 (session diagnostics)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0010-answers.json</code> (<code>2026-07-18T08:20:10.670Z</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>When a user message kicks off a non-trivial turn, the agent loop may:</p>
+<ul>
+<li>Call the model many times (up to hard max tool iterations, default <strong>80</strong>)</li>
+<li>Run tools (shell, FS, MCP, background tasks, …)</li>
+<li>Sit in long model calls or long tool executions</li>
+</ul>
+<p>Today the UI mostly surfaces a header status pill (<code>running</code> / <code>calling_model</code> / <code>idle</code>). That is not enough to answer:</p>
+<ul>
+<li><strong>Which iteration / tool round</strong> are we on (e.g. 7 / soft 65 / hard 80)?</li>
+<li><strong>What phase</strong> — waiting on model vs executing a tool vs finishing?</li>
+<li><strong>Which tool</strong> is running, and with what short args preview?</li>
+<li><strong>How long</strong> has this phase / the whole turn been running (is it hung)?</li>
+<li><strong>Can I stop</strong> before it runs <code>rm</code> / a bad MCP call / burns another 30s model call?</li>
+</ul>
+<p>Tool start/result SSE events already exist (<code>type: "tool"</code>), and compact tool bubbles appear <em>after</em> a tool finishes. Mid-flight and multi-round progress are effectively opaque. There is <strong>no cancel/stop-turn</strong> API: <code>runTurn</code> uses a 15-minute context timeout only; <code>busy</code> blocks new messages until the goroutine ends.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>In-chat progress</strong> for the active turn: phase, iteration, elapsed times, current tool, context usage, last model latency.  </li>
+<li><strong>Header / pill enrichment</strong> so glanceable status matches the progress card.  </li>
+<li><strong>Stop turn</strong> control: cooperative cancel of the current turn (model wait + tool when possible).  </li>
+<li><strong>Live updates</strong> over existing SSE (extend event shape; no second stream).  </li>
+<li><strong>Turn step history:</strong> accumulate steps during the turn; <strong>collapse at turn end</strong> with UI expand to inspect (<strong>Q3</strong>). Not dumped into session Markdown body as full assistant prose.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<ul>
+<li>Token streaming of model tokens (partial assistant draft) — separate ADR if needed  </li>
+<li>Per-tool interactive approval gates (“allow this shell?”) — stop is coarse cancel  </li>
+<li>Pausing and later resuming the same turn mid-tool  </li>
+<li>Cross-session global activity dashboard  </li>
+<li>Killing arbitrary host processes outside the harness-managed tool/shell path  </li>
+<li>Auto stop-and-close when closing a busy session (defer — <strong>Q11</strong>)  </li>
+</ul>
+<h2 id="decision">Decision</h2>
+<ol>
+<li><strong>Surfaces:</strong> transcript <strong>footer progress card</strong> (detail) <strong>and</strong> enriched <strong>header pill</strong> (<strong>Q1</strong>).  </li>
+<li><strong>System agents:</strong> same progress UI + Stop (<strong>Q2</strong>).  </li>
+<li><strong>Step log:</strong> append structured steps during the turn; when the turn ends, <strong>collapse</strong> the card to a compact summary; operator can <strong>expand</strong> to inspect steps for that turn (<strong>Q3</strong>). Do not write the full step log into session Markdown transcript body (tool bubbles remain as today).  </li>
+<li>Emit structured <strong><code>turn</code> SSE events</strong>; keep coarse <code>status</code> events (<strong>Q13</strong>).  </li>
+<li><strong><code>GET /api/sessions/{id}/progress</code></strong> for hydrate + <strong><code>POST /api/sessions/{id}/stop</code></strong> for cancel (<strong>Q14</strong>, <strong>Q8</strong>, <strong>Q10</strong>).  </li>
+<li>Progress content: args preview <strong>200</strong> chars (<strong>Q4</strong>); last model latency (<strong>Q5</strong>); context usage % (<strong>Q6</strong>); last tool name + <strong>120</strong>-char result tail (<strong>Q7</strong>).  </li>
+<li><strong>Stop:</strong> immediate, no confirm (<strong>Q8</strong>); label <strong>Stop</strong> (<strong>Q10</strong>); mid-shell <strong>kill process group</strong> SIGTERM→SIGKILL best-effort (<strong>Q9</strong>); keep partial tool bubbles (<strong>Q12</strong>).  </li>
+<li><strong>Close while busy:</strong> remain <strong>409</strong>; document Stop first (<strong>Q11</strong>).  </li>
+<li>Loop checks <code>ctx.Done()</code> between model/tool steps; pass cancel into model client + shell (and other tools as wired).</li>
+</ol>
+<h2 id="decisions-locked-q1q14">Decisions locked (Q1–Q14)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Both — footer card + enriched header pill</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Same progress + stop for system-agent sessions</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Steps persist during turn; <strong>collapse at end</strong>; expand to inspect</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>200-char single-line args preview</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Show last completed model latency</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Show estimated context usage %</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Last tool: name + 120-char result tail</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>No confirm on Stop</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Kill shell process group (SIGTERM → SIGKILL)</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Button label: <strong>Stop</strong></td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>Keep 409 on close while busy; Stop first</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Keep partial tool bubbles on stop</td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>New SSE type <code>turn</code>; keep coarse <code>status</code></td>
+</tr>
+<tr>
+<td><strong>Q14</strong></td>
+<td>GET <code>/progress</code> + SSE <code>turn</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="ui-sketch">UI sketch</h2>
+<h3 id="while-busy-transcript-footer">While busy (transcript footer)</h3>
+<pre><code>┌ Turn in progress ──────────────────────────── [■ Stop] ┐
+│ Phase:  calling model · iter 4 / hard 80               │
+│ Tools:  round 3 · soft 65                              │
+│ Elapsed turn: 1m 12s · phase: 18s                      │
+│ Context: ~42%   · last model: 820 ms                   │
+│ Last tool: shell_execute                               │
+│   $ apt-get install -y nginx     [args ≤200]           │
+│   → …done reading package lists…  [result ≤120]        │
+│ Steps: 7 (live)                                        │
+│   · i3 model 410ms                                     │
+│   · tool shell_execute start                           │
+│   · …                                                  │
+└────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="after-turn-ends-collapsed">After turn ends (collapsed)</h3>
+<pre><code>┌ Turn complete · 1m 12s · 4 iters · 3 tools  [▸ expand] ┐
+└────────────────────────────────────────────────────────┘
+</code></pre>
+<p>Expanded shows the step list for inspection (same session view; not necessarily forever across reloads unless we persist — see implementation note).</p>
+<h3 id="header-pill-enrich">Header pill (enrich)</h3>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Pill text (example)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>idle</td>
+<td><code>idle</code></td>
+</tr>
+<tr>
+<td>calling model</td>
+<td><code>model · i4/80 · 18s</code></td>
+</tr>
+<tr>
+<td>running tool</td>
+<td><code>tool shell_execute · i4</code></td>
+</tr>
+<tr>
+<td>stopping</td>
+<td><code>stopping…</code></td>
+</tr>
+<tr>
+<td>error</td>
+<td><code>error</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="data-model">Data model</h2>
+<h3 id="live-turn-snapshot">Live turn snapshot</h3>
+<pre><code class="language-go">type TurnProgress struct {
+    SessionID      string     `json:&quot;session_id&quot;`
+    Active         bool       `json:&quot;active&quot;`
+    Phase          string     `json:&quot;phase&quot;` // starting | calling_model | running_tool | finishing | stopping | idle | error | complete
+    Iter           int        `json:&quot;iter&quot;`
+    IterHard       int        `json:&quot;iter_hard&quot;`
+    ToolRounds     int        `json:&quot;tool_rounds&quot;`
+    ToolSoft       int        `json:&quot;tool_soft&quot;`
+    TurnStartedAt  time.Time  `json:&quot;turn_started_at&quot;`
+    PhaseStartedAt time.Time  `json:&quot;phase_started_at&quot;`
+    LastEventAt    time.Time  `json:&quot;last_event_at&quot;`
+    TurnEndedAt    *time.Time `json:&quot;turn_ended_at,omitempty&quot;`
+    ContextUsage   *float64   `json:&quot;context_usage,omitempty&quot;` // 0..1
+    LastModelLatencyMs *int   `json:&quot;last_model_latency_ms,omitempty&quot;`
+    CurrentTool    *ToolProg  `json:&quot;current_tool,omitempty&quot;`
+    LastTool       *ToolProg  `json:&quot;last_tool,omitempty&quot;`
+    Steps          []TurnStep `json:&quot;steps,omitempty&quot;`
+    Collapsed      bool       `json:&quot;collapsed&quot;` // true after turn end until user expands in UI
+    StopRequested  bool       `json:&quot;stop_requested&quot;`
+    Message        string     `json:&quot;message,omitempty&quot;`
+}
+
+type ToolProg struct {
+    ID           string `json:&quot;id,omitempty&quot;`
+    Name         string `json:&quot;name&quot;`
+    ArgsPreview  string `json:&quot;args_preview,omitempty&quot;`  // ≤200
+    ResultTail   string `json:&quot;result_tail,omitempty&quot;`   // ≤120
+    Phase        string `json:&quot;phase&quot;` // start | result
+}
+
+type TurnStep struct {
+    At      string `json:&quot;at&quot;`
+    Kind    string `json:&quot;kind&quot;` // model_call | tool_start | tool_result | advisory | stop | error | done
+    Iter    int    `json:&quot;iter,omitempty&quot;`
+    Detail  string `json:&quot;detail,omitempty&quot;`
+    Latency *int   `json:&quot;latency_ms,omitempty&quot;`
+    Tool    string `json:&quot;tool,omitempty&quot;`
+}
+</code></pre>
+<h3 id="persistence-of-steps-q3">Persistence of steps (<strong>Q3</strong>)</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Live</strong></td>
+<td>Steps array grows during turn; SSE <code>turn</code> includes steps (or delta — impl choice; full array OK if capped)</td>
+</tr>
+<tr>
+<td><strong>Turn end</strong></td>
+<td>Progress remains queryable briefly / until next turn; UI shows <strong>collapsed</strong> summary</td>
+</tr>
+<tr>
+<td><strong>Session reload</strong></td>
+<td>Prefer retaining <strong>last completed turn</strong> progress in memory on the session object until next turn starts; optional DB event <code>turn_summary</code> later if needed (not required v1)</td>
+</tr>
+<tr>
+<td><strong>Session MD</strong></td>
+<td>Do <strong>not</strong> dump full step log into Markdown body</td>
+</tr>
+</tbody>
+</table>
+<p>Cap steps (e.g. last <strong>100</strong>) to avoid huge SSE payloads.</p>
+<h3 id="sse">SSE</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;turn&quot;,
+  &quot;session_id&quot;: &quot;…&quot;,
+  &quot;turn&quot;: { /* TurnProgress */ },
+  &quot;at&quot;: &quot;…Z&quot;
+}
+</code></pre>
+<p>Emit on: turn start, each iter boundary, before/after model call, tool start/result, stop request, turn end (with <code>collapsed</code> hint / <code>active:false</code> + phase <code>complete</code>).</p>
+<p>Keep existing <code>status</code> / <code>tool</code> / <code>message</code> events.</p>
+<h3 id="http">HTTP</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/sessions/{id}/progress</code></td>
+<td>Current or last-turn <code>TurnProgress</code> (or <code>{active:false}</code>)</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/sessions/{id}/stop</code></td>
+<td>Cancel turn context; <strong>202</strong> if accepted; <strong>409</strong> if not busy; <strong>404</strong> if missing</td>
+</tr>
+</tbody>
+</table>
+<h2 id="stop-cancel-semantics">Stop / cancel semantics</h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Granularity</td>
+<td>Whole turn cancel</td>
+</tr>
+<tr>
+<td>Confirm</td>
+<td>None (<strong>Q8</strong>)</td>
+</tr>
+<tr>
+<td>Label</td>
+<td><strong>Stop</strong> (<strong>Q10</strong>)</td>
+</tr>
+<tr>
+<td>Model in-flight</td>
+<td>Cancel request context</td>
+</tr>
+<tr>
+<td>Tool mid-shell</td>
+<td>Kill process group SIGTERM → SIGKILL (<strong>Q9</strong>)</td>
+</tr>
+<tr>
+<td>Between steps</td>
+<td>Check <code>ctx.Done()</code> / stop flag</td>
+</tr>
+<tr>
+<td>Transcript</td>
+<td>Keep partial tool bubbles (<strong>Q12</strong>)</td>
+</tr>
+<tr>
+<td>Close while busy</td>
+<td><strong>409</strong>; Stop first (<strong>Q11</strong>)</td>
+</tr>
+<tr>
+<td>Continuations / system agents</td>
+<td>Same stop API by session id (<strong>Q2</strong>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-sketch">Implementation sketch</h2>
+<ol>
+<li><strong><code>Session</code> turn state</strong> — progress, steps, <code>turnCancel</code>, <code>stopRequested</code>.  </li>
+<li><strong><code>runTurn</code></strong> — cancellable ctx; update+publish at each phase; append steps; on end mark complete/collapsed.  </li>
+<li><strong><code>Registry.Stop(id)</code></strong> — cancel + phase <code>stopping</code>.  </li>
+<li><strong>API</strong> — <code>progress</code> + <code>stop</code>.  </li>
+<li><strong>Shell</strong> — process group kill on ctx cancel.  </li>
+<li><strong>UI</strong> — live card + pill; Stop; collapse/expand for last turn; hydrate GET progress.  </li>
+<li><strong>Tests</strong> — stop between iters; step accumulation; 409 when idle.</li>
+</ol>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Operators supervise multi-step turns without logs.  </li>
+<li>Runaway/dangerous loops can be interrupted.  </li>
+<li>Post-turn expand retains “what just happened” without MD clutter.</li>
+</ul>
+<h3 id="trade-offs">Trade-offs</h3>
+<ul>
+<li>More SSE traffic; step list must be capped.  </li>
+<li>Cooperative cancel not instant until all tools take ctx.  </li>
+<li>Collapsed history is primarily in-memory for v1 (reload may lose expand detail unless last progress retained on session).</li>
+</ul>
+<h3 id="risks">Risks</h3>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stuck <code>busy</code> after cancel</td>
+<td>Always <code>defer endTurn()</code></td>
+</tr>
+<tr>
+<td>Orphan shell</td>
+<td>Process group kill + timeout</td>
+</tr>
+<tr>
+<td>UI desync</td>
+<td>GET <code>/progress</code> on select + SSE</td>
+</tr>
+<tr>
+<td>Huge step payloads</td>
+<td>Cap steps (100); truncate args/results</td>
+</tr>
+</tbody>
+</table>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Open questions answered (<code>0010-answers.json</code>)  </li>
+<li>[x] Progress + pill + Stop + collapse/expand agreed  </li>
+<li>[x] API/SSE shape agreed  </li>
+<li>[x] Implemented (turn SSE, GET/POST progress/stop, UI card, shell cancel)  </li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><code>internal/session/loop.go</code>  </li>
+<li>ADR-0005 soft 65 / hard 80  </li>
+<li>ADR-0008 session info (historical)  </li>
+<li><code>adr/0010-answers.json</code>  </li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0010-agent-loop-transparency.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

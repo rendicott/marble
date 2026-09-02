@@ -4,7 +4,13 @@
       "enabled": true,
       "command": "grok",
       "default_output_format": "json",
-      "default_args": [],
+      "default_args": [
+        "--no-plan",
+        "--effort",
+        "medium",
+        "--max-turns",
+        "40"
+      ],
       "auto_approve": true
     },
     "claude": {
@@ -15,9 +21,11 @@
       "auto_approve": true
     }
   },
-  "default_timeout_sec": 1800,
-  "max_timeout_sec": 7200,
+  "default_timeout_sec": 900,
+  "max_timeout_sec": 1800,
   "max_per_session": 10,
   "max_output_bytes": 1048576,
-  "system_agents_enabled": false
+  "system_agents_enabled": false,
+  "stuck_after_sec": 480,
+  "stuck_kill": false
 }

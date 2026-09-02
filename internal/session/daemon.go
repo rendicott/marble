@@ -139,7 +139,6 @@ func (d *Daemon) tick() {
 // Health for /api/health.
 func (d *Daemon) Health() map[string]interface{} {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	errStr := ""
 	if d.lastError != nil {
 		errStr = d.lastError.Error()
@@ -151,15 +150,20 @@ func (d *Daemon) Health() map[string]interface{} {
 		"last_daemon_prune":    d.lastPrune,
 		"last_daemon_blobs":    d.lastBlobs,
 		"last_daemon_err":      errStr,
-		"dirty_sessions":       d.reg.DirtyCount(),
 	}
-	if d.reg.sqldb != nil {
-		for k, v := range d.reg.sqldb.Health() {
-			out[k] = v
-		}
-		if st, err := d.reg.sqldb.ReadDaemonState(); err == nil {
-			for k, v := range st {
+	d.mu.Unlock()
+	// DirtyCount / sqlite must not run while holding d.mu — they take session
+	// locks. A stuck session mutex used to wedge every /api/health behind this.
+	if d.reg != nil {
+		out["dirty_sessions"] = d.reg.DirtyCount()
+		if d.reg.sqldb != nil {
+			for k, v := range d.reg.sqldb.Health() {
 				out[k] = v
+			}
+			if st, err := d.reg.sqldb.ReadDaemonState(); err == nil {
+				for k, v := range st {
+					out[k] = v
+				}
 			}
 		}
 	}

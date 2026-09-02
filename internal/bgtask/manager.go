@@ -230,6 +230,38 @@ func (m *Manager) KillSession(sessionID string) {
 	}
 }
 
+// KillAllRunning signals every running background task's process group.
+// Non-blocking: SIGTERM immediately, SIGKILL escalate in a short-lived goroutine.
+// Intended for harness shutdown / restart so children are not left orphaned.
+func (m *Manager) KillAllRunning() int {
+	m.mu.Lock()
+	var running []*Task
+	for _, t := range m.tasks {
+		if t.Status == StatusRunning && t.cmd != nil && t.cmd.Process != nil {
+			running = append(running, t)
+		}
+	}
+	m.mu.Unlock()
+	for _, t := range running {
+		pgid := t.cmd.Process.Pid
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		// cancel context if present
+		if t.cancel != nil {
+			t.cancel()
+		}
+		go func(pid int, task *Task) {
+			time.Sleep(2 * time.Second)
+			m.mu.Lock()
+			still := task.Status == StatusRunning
+			m.mu.Unlock()
+			if still {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}(pgid, t)
+	}
+	return len(running)
+}
+
 // MarkOrphansOnBoot marks all running as failed (no restart survival).
 func (m *Manager) MarkOrphansOnBoot() {
 	// in-memory only; nothing to recover

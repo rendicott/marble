@@ -7,9 +7,44 @@ Architecture Decision Records live here as Markdown plus an optional HTML review
 | File | Role |
 |------|------|
 | `NNNN-short-title.md` | Canonical ADR text |
+| `NNNN-doc.html` | **Readable HTML** of the ADR (generated; browse via the ADR server) |
 | `NNNN-review.html` | Human review UI (goals, mocks, open questions) |
 | `NNNN-answers.json` | **Structured answers** from the review UI (agent reads this) |
+| `index.html` | Catalog of all ADRs (generated) |
+| `doc-kit.css` | Shared styles for generated doc pages |
+| `render_docs.py` | Regenerates `*-doc.html` + `index.html` from markdown |
 | `review-kit.js` / `review-kit.css` | Shared inline Q&A controls for review pages |
+
+## Browse on the web
+
+**Recommended: user systemd unit** (stays up without an agent/shell bg task):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp adr/marble-adr.service.example ~/.config/systemd/user/marble-adr.service
+# edit WorkingDirectory / ExecStart paths if your clone isn’t ~/projects/marble
+systemctl --user daemon-reload
+systemctl --user enable --now marble-adr
+systemctl --user status marble-adr
+```
+
+Ad-hoc (no systemd):
+
+```bash
+python3 adr/serve.py          # http://127.0.0.1:8791/adr/
+```
+
+Then open:
+
+- [http://127.0.0.1:8791/adr/](http://127.0.0.1:8791/adr/) — catalog (`index.html`)
+- `http://127.0.0.1:8791/adr/NNNN-doc.html` — full ADR text
+- `http://127.0.0.1:8791/adr/NNNN-review.html` — Q&A review UI
+
+After editing any `NNNN-….md` (or adding a new ADR), refresh HTML:
+
+```bash
+python3 adr/render_docs.py
+```
 
 ## Review workflow
 
@@ -104,11 +139,12 @@ Answers also autosave to **localStorage** in the browser (key `marble-adr-NNNN-a
 ## New ADR checklist
 
 1. Write `NNNN-….md` (proposed).
-2. Copy an existing `*-review.html` or start from the kit pattern above.
-3. Set `data-adr` / `data-adr-title` on `<body>`.
-4. Mark every open question with `class="q"` + `data-qid` + `data-rec`.
-5. Link `review-kit.css` + `review-kit.js` (relative paths).
-6. After review: commit `NNNN-answers.json` with the ADR when decisions land.
+2. Run `python3 adr/render_docs.py` so `NNNN-doc.html` + `index.html` include it.
+3. Copy an existing `*-review.html` or start from the kit pattern above.
+4. Set `data-adr` / `data-adr-title` on `<body>`; link the doc page (`NNNN-doc.html`) in the review nav.
+5. Mark every open question with `class="q"` + `data-qid` + `data-rec`.
+6. Link `review-kit.css` + `review-kit.js` (relative paths).
+7. After review: commit `NNNN-answers.json` with the ADR when decisions land; re-run `render_docs.py` if the markdown status/body changed.
 
 ## Agent instructions (short)
 

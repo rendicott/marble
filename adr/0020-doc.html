@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0020</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0020</span>
+      <span class="status accepted">Accepted (ready to implement)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0020-marble-peer.md">Markdown</a>
+      <a href="0020-review.html">Review</a>
+      <a href="0020-answers.json">Answers</a>
+      <a href="0019-doc.html">← 0019</a>
+      <a href="0021-doc.html">0021 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0020-marble-peer-remote-computer-use-browser-cdp-desktop">ADR-0020: Marble Peer — Remote Computer Use (Browser CDP + Desktop)</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td>Accepted (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-07-26</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>computer-use, peer, playwright, CDP, robotgo, tray, registration, tools, MCP, multi-repo</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0001 (agent loop), ADR-0003 (SQLite), ADR-0005 (tools), ADR-0006 (MCP), ADR-0007 (Settings), ADR-0017 (auth), ADR-0018 (model caps / vision), ADR-0019 (attachments / screenshots in chat)</td>
+</tr>
+<tr>
+<td><strong>Related research</strong></td>
+<td><a href="computer-use-remote-desktop.html"><code>adr/computer-use-remote-desktop.html</code></a></td>
+</tr>
+<tr>
+<td><strong>Peer implementation</strong></td>
+<td><a href="0021-doc.html"><strong>ADR-0021</strong></a> — process, browser, desktop, tray, packaging</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><code>adr/0020-answers.json</code> (<code>2026-07-27T02:40:13.716Z</code>)</td>
+</tr>
+<tr>
+<td><strong>Peer repo</strong></td>
+<td><strong><code>marble-desktop-peer</code></strong> (binary <strong><code>marble-peer</code></strong>) — separate repository; not inlined in harness monorepo</td>
+</tr>
+</tbody>
+</table>
+<h2 id="overview">Overview</h2>
+<p>Marble needs <strong>remote “hands and eyes”</strong> on an operator’s <strong>personal computer</strong> so the agent can complete real-world web tasks (travel, food, tax portals, etc.) while <strong>inheriting the user’s existing browser sessions</strong> — without Marble implementing on-behalf-of OAuth, card vaults, or per-site scrapers.</p>
+<p>This ADR defines:</p>
+<ol>
+<li><strong><code>marble-desktop-peer</code></strong> — a <strong>separate repository</strong> shipping the multi-platform desktop agent (Windows / macOS / Linux). Binary name: <strong><code>marble-peer</code></strong> (<strong>Q9</strong>).  </li>
+<li><strong>Browser control</strong> via <strong>Playwright MCP/helper + CDP</strong> first (<strong>Q1</strong>); dedicated <strong>Marble debug browser profile</strong> the user logs into once (<strong>Q2</strong>).  </li>
+<li><strong>Desktop control</strong> via <strong><a href="https://github.com/go-vgo/robotgo">robotgo</a></strong> (screenshot + mouse/keyboard) as a secondary computer-use path; <strong>primary display only</strong> (<strong>Q5</strong>).  </li>
+<li><strong>Mutual handshake registration</strong> (CLI and/or local mini browser on the peer).  </li>
+<li><strong>Minimal UI:</strong> no full native GUI app; <strong>system tray</strong> (<a href="https://github.com/getlantern/systray"><code>getlantern/systray</code></a> or maintained fork — <strong>Q8</strong>) for status + stop / restart / re-pair; <strong>start at user login</strong>.  </li>
+<li><strong>Harness (this monorepo)</strong> owns tools + Settings UX + pairing API + SQLite registry so sessions can bind a peer and the model can call a stable tool surface.  </li>
+<li><strong>Wire contract</strong> documented as <strong>OpenAPI/JSON in marble docs</strong> (<strong>Q10</strong>); extract a shared Go module only if duplication hurts later.</li>
+</ol>
+<p><strong>Architecture principle:</strong> robotgo/Playwright run <strong>only in the desktop-peer process</strong>. Marble harness is the <strong>brain</strong> (tool loop + model). The wire is authenticated JSON (HTTP/WebSocket) over a private network path (Tailscale preferred; reverse dial-out allowed). <strong>Peer code does not live under <code>github.com/rendicott/marble</code></strong>.</p>
+<h2 id="background-motivation">Background &amp; Motivation</h2>
+<h3 id="current-state">Current state</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tools</td>
+<td>Filesystem, shell, MCP, <code>web_fetch</code>, <code>call_agent_process</code>, etc. — <strong>no</strong> remote GUI/browser control of a personal PC</td>
+</tr>
+<tr>
+<td>MCP</td>
+<td>Process-local stdio/HTTP servers from <code>$MEMORY/mcp.json</code> (ADR-0006) — cannot reach a home PC behind NAT unless operator configures tunnels by hand</td>
+</tr>
+<tr>
+<td>Multimodal</td>
+<td>ADR-0019 can put <strong>images into chat</strong> for vision models; nothing <strong>captures</strong> a remote desktop or drives clicks</td>
+</tr>
+<tr>
+<td>Auth inherit</td>
+<td><code>web_fetch</code> and cloud browsers do <strong>not</strong> see the user’s Amazon/airline cookies</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pain-points">Pain points</h3>
+<ol>
+<li>Operators want the agent to act <strong>as them</strong> on sites where they are already logged in.  </li>
+<li>Cloud computer-use products run <strong>isolated</strong> browsers — wrong default for personal commerce/admin.  </li>
+<li>Writing three OS-specific agents is unnecessary if browser uses CDP/Playwright and desktop uses one library (robotgo).  </li>
+<li>Pairing must be <strong>mutual and explicit</strong> (high privilege surface), not a hard-coded auth key in a unit file.</li>
+</ol>
+<h2 id="goals-non-goals">Goals &amp; Non-Goals</h2>
+<h3 id="goals">Goals</h3>
+<ol>
+<li><strong>Separate repo <code>marble-desktop-peer</code></strong> owning all desktop agent code, CI, and multi-arch peer releases (Windows, macOS, Linux).  </li>
+<li><strong>Browser path (primary):</strong> Playwright-driven CDP attach / launch-with-debug so agent sees <strong>real logged-in sessions</strong> when the operator chooses that mode.  </li>
+<li><strong>Desktop path (secondary):</strong> robotgo screenshot + click/type/key for OS dialogs and non-DOM UI.  </li>
+<li><strong>Mutual registration handshake</strong> from:
+   - <strong>CLI</strong> on either side, and/or<br />
+   - <strong>Mini browser</strong> served by the peer (localhost HTML — not a native GUI toolkit app).  </li>
+<li><strong>System tray</strong> only for ongoing UX: peered/offline status, <strong>Stop</strong>, <strong>Restart</strong>, <strong>Re-pair</strong>, open mini browser / logs.  </li>
+<li><strong>Autostart at user login</strong> (OS login item / user systemd / Run key — per platform, documented).  </li>
+<li><strong>Harness integration (marble monorepo only):</strong> SQLite registry of computers, Settings UI, session bind, agent tools, safety gates (confirm money/high-risk), screenshot → ADR-0019 attachment when vision needed.  </li>
+<li><strong>Capability advertisement:</strong> peer reports <code>browser</code> / <code>desktop</code> / <code>confirm</code> so tools can fail closed when offline.  </li>
+<li><strong>Versioned wire protocol</strong> (<code>peer_protocol_version</code>) negotiated at connect so harness and peer can release on independent schedules.</li>
+</ol>
+<h3 id="non-goals-v1">Non-goals (v1)</h3>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full native GUI app (Electron/Wails window chrome beyond tray + optional local HTTP pages)</td>
+<td>Owner: avoid native GUI; mini browser + tray + CLI suffice</td>
+</tr>
+<tr>
+<td>Inlining peer sources inside the Marble harness monorepo</td>
+<td>Owner: dedicated <strong><code>marble-desktop-peer</code></strong> repo for release isolation, native deps (robotgo/CGO, Playwright), and desktop CI</td>
+</tr>
+<tr>
+<td>Cloud Browserbase/Operator as primary path</td>
+<td>Wrong auth-inheritance model (research note)</td>
+</tr>
+<tr>
+<td>Export cookies/passwords into Marble or the model</td>
+<td>Catastrophic credential exfil risk</td>
+</tr>
+<tr>
+<td>Unattended high-value payments without human confirm</td>
+<td>Safety</td>
+</tr>
+<tr>
+<td>Mobile (iOS/Android) peers</td>
+<td>Desktop only</td>
+</tr>
+<tr>
+<td>Controlling a machine without an interactive user session</td>
+<td>Login-time start implies user session / seat</td>
+</tr>
+<tr>
+<td>Cron / unattended peer drives</td>
+<td><strong>Q4:</strong> interactive sessions only in v1</td>
+</tr>
+<tr>
+<td>Multi-monitor desktop control</td>
+<td><strong>Q5:</strong> primary display only</td>
+</tr>
+<tr>
+<td>Replacing <code>call_agent_process</code> / coding harnesses</td>
+<td>Different tool (ADR-0014)</td>
+</tr>
+<tr>
+<td>Perfect Wayland coverage on day one</td>
+<td>Document X11 preference; degrade gracefully</td>
+</tr>
+<tr>
+<td>Shared Go <code>peerprotocol</code> module in v1</td>
+<td><strong>Q10:</strong> OpenAPI/JSON docs first</td>
+</tr>
+</tbody>
+</table>
+<h2 id="key-decisions">Key Decisions</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>KD1</strong></td>
+<td>Ship the desktop agent from a <strong>separate repository <code>marble-desktop-peer</code></strong>, binary <strong><code>marble-peer</code></strong> (<strong>Q9</strong>) — not inside harness process or monorepo tree</td>
+<td>Peer on user desktop; harness may be remote. Isolates CGO/robotgo/Playwright CI, release, signing.</td>
+</tr>
+<tr>
+<td><strong>KD2</strong></td>
+<td><strong>Browser v1 = Playwright MCP/helper + CDP</strong> (<strong>Q1</strong>). Default auth inherit via <strong>dedicated Marble debug profile</strong> user logs into once (<strong>Q2</strong>). Isolated Playwright context is opt-in/demo only. chromedp later if Node weight hurts.</td>
+<td>Fast path to CDP ecosystem; dedicated profile avoids Chrome default-profile CDP locks.</td>
+</tr>
+<tr>
+<td><strong>KD3</strong></td>
+<td><strong>Desktop = robotgo</strong> behind a thin package; one codebase, three GOOS builds; <strong>primary monitor only</strong> (<strong>Q5</strong>)</td>
+<td>Avoid three OS agents; multi-monitor deferred.</td>
+</tr>
+<tr>
+<td><strong>KD4</strong></td>
+<td><strong>Mutual handshake registration</strong> with short-lived codes on <strong>both</strong> sides (see § Registration)</td>
+<td>Neither side trusts a static shared secret alone.</td>
+</tr>
+<tr>
+<td><strong>KD5</strong></td>
+<td>Pairing UX: <strong>CLI</strong> and/or <strong>peer-local mini HTTP UI</strong> (<code>127.0.0.1</code> by default). <strong>No</strong> full native settings window</td>
+<td>Operator requirement.</td>
+</tr>
+<tr>
+<td><strong>KD6</strong></td>
+<td><strong>System tray</strong> via <strong><code>getlantern/systray</code> or maintained fork</strong> (<strong>Q8</strong>): status, Stop, Restart, Re-pair, Open mini UI, Quit</td>
+<td>Only allowed native surface.</td>
+</tr>
+<tr>
+<td><strong>KD7</strong></td>
+<td>Peer <strong>starts at user login</strong> (user-level autostart, not root boot)</td>
+<td>Needs graphical seat for browser + input.</td>
+</tr>
+<tr>
+<td><strong>KD8</strong></td>
+<td>Wire: <strong>authenticated WebSocket</strong> + REST for pairing/health; peer <strong>dial-out</strong> default. Pairing may use <strong>HTTP on private mesh with operator confirm</strong>; <strong>prefer HTTPS</strong> (<strong>Q6</strong>)</td>
+<td>NAT-friendly; honest about Tailscale HTTP.</td>
+</tr>
+<tr>
+<td><strong>KD9</strong></td>
+<td>Agent-facing <strong>Marble-native <code>computer_*</code> tools</strong> proxy to peer; peer may run Playwright MCP <strong>internally</strong></td>
+<td>Stable tool names; impl can swap.</td>
+</tr>
+<tr>
+<td><strong>KD10</strong></td>
+<td>Screenshots → ADR-0019 attachments / vision when <code>cap_images</code></td>
+<td>Existing multimodal path.</td>
+</tr>
+<tr>
+<td><strong>KD11</strong></td>
+<td><strong>No cookie export APIs</strong></td>
+<td>Security non-negotiable.</td>
+</tr>
+<tr>
+<td><strong>KD12</strong></td>
+<td>High-risk → <strong><code>computer_confirm</code></strong>; timeout <strong>120s, deny on timeout</strong> (<strong>Q3</strong>)</td>
+<td>Money/auth human gate.</td>
+</tr>
+<tr>
+<td><strong>KD13</strong></td>
+<td>Schema <strong>v5</strong>: <code>computers</code> + session <code>computer_id</code></td>
+<td>Durable registry.</td>
+</tr>
+<tr>
+<td><strong>KD14</strong></td>
+<td>Max <strong>8</strong> computers; <strong>1</strong> bound per session; <strong>1 action queue</strong> (serialize) per computer (<strong>Q7</strong>)</td>
+<td>Simple ops + safety.</td>
+</tr>
+<tr>
+<td><strong>KD15</strong></td>
+<td>Google auth: only <strong>allowlisted admins</strong> register/bind peers</td>
+<td>Full admin surface.</td>
+</tr>
+<tr>
+<td><strong>KD16</strong></td>
+<td><strong>Repo split</strong> + protocol as <strong>OpenAPI/JSON in marble docs</strong> (<strong>Q10</strong>); optional Go module later. Harness never imports robotgo.</td>
+<td>Independent releases; clear ownership.</td>
+</tr>
+<tr>
+<td><strong>KD17</strong></td>
+<td><strong>No cron → peer</strong> in v1 (<strong>Q4</strong>)</td>
+<td>Unattended computer-use risk.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="proposed-design">Proposed Design</h2>
+<h3 id="architecture">Architecture</h3>
+<pre><code class="language-mermaid">flowchart LR
+  subgraph Harness[&quot;Marble harness&quot;]
+    UI[Settings · session chip]
+    Tools[computer_* tools]
+    Reg[computers table]
+    Loop[Agent loop]
+  end
+
+  subgraph Wire[&quot;Private network&quot;]
+    WS[Auth WebSocket / REST]
+  end
+
+  subgraph PeerHost[&quot;User PC&quot;]
+    Peer[marble-peer]
+    Tray[System tray]
+    Mini[Mini HTTP :local]
+    PW[Playwright / CDP]
+    RG[robotgo]
+    Chrome[User Chrome/Edge]
+    Tray --&gt; Peer
+    Mini --&gt; Peer
+    Peer --&gt; PW
+    Peer --&gt; RG
+    PW --&gt; Chrome
+  end
+
+  Loop --&gt; Tools
+  Tools --&gt; WS
+  UI --&gt; Reg
+  Reg --&gt; WS
+  WS &lt;--&gt; Peer
+</code></pre>
+<h3 id="components">Components</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Repo</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>cmd/marble-peer</code></strong> (or <code>marble-desktop-peer</code>)</td>
+<td><strong>marble-desktop-peer</strong></td>
+<td>Daemon: tray, autostart, pairing client, WS, action executor</td>
+</tr>
+<tr>
+<td><strong><code>internal/browser</code>, <code>internal/desktop</code>, <code>internal/tray</code>, <code>internal/miniui</code></strong></td>
+<td><strong>marble-desktop-peer</strong></td>
+<td>Playwright/CDP, robotgo, tray, embedded pair/status HTML</td>
+</tr>
+<tr>
+<td><strong>Protocol types / version</strong></td>
+<td>Shared contract (doc + optional small module)</td>
+<td>Message shapes, auth headers, <code>peer_protocol_version</code></td>
+</tr>
+<tr>
+<td><strong><code>internal/api/computers.go</code></strong></td>
+<td><strong>marble</strong></td>
+<td>CRUD, pairing codes, proxy tool RPCs, health, WS hub</td>
+</tr>
+<tr>
+<td><strong><code>computer_*</code> tools</strong></td>
+<td><strong>marble</strong></td>
+<td>Agent-facing tools that RPC to bound peer</td>
+</tr>
+<tr>
+<td><strong>Settings → Computers</strong></td>
+<td><strong>marble</strong></td>
+<td>List peers, pair, revoke, policy</td>
+</tr>
+<tr>
+<td><strong>Session chrome</strong></td>
+<td><strong>marble</strong></td>
+<td>Peer picker / status pill</td>
+</tr>
+</tbody>
+</table>
+<h3 id="browser-subsystem-playwright-cdp">Browser subsystem (Playwright / CDP)</h3>
+<p><strong>Locked implementation (</strong>Q1<strong>):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A — v1</strong></td>
+<td>Peer runs <strong>Playwright MCP or a pinned Playwright Node helper</strong> against CDP (<code>--cdp-endpoint</code> / profile launch); peer translates Marble tool RPCs ↔ MCP/JSON</td>
+</tr>
+<tr>
+<td><strong>B — later</strong></td>
+<td><strong>chromedp</strong> (Go) if Node install weight or packaging becomes painful</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Normative operator modes (</strong>Q2<strong>):</strong></p>
+<ol>
+<li><strong>Dedicated Marble debug profile (default for auth inherit):</strong> peer launches/manages a Chromium user-data dir (e.g. <code>~/.marble-peer/chrome-profile</code>) with remote debugging; operator logs into sites <strong>once</strong> in that profile.  </li>
+<li><strong>Isolated (optional):</strong> clean context — demos only; UI must label “no personal logins.”</li>
+</ol>
+<p><strong>Browser tools (agent-facing names):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>computer_browser_tabs</code></td>
+<td>List open tabs (title, url, id)</td>
+</tr>
+<tr>
+<td><code>computer_browser_open</code></td>
+<td>Navigate / new tab</td>
+</tr>
+<tr>
+<td><code>computer_browser_snapshot</code></td>
+<td>Accessibility / simplified DOM text (cheap for LLM)</td>
+</tr>
+<tr>
+<td><code>computer_browser_act</code></td>
+<td><code>click</code> / <code>type</code> / <code>press</code> / <code>select</code> / <code>scroll</code> by role, text, or ref from snapshot</td>
+</tr>
+<tr>
+<td><code>computer_browser_eval</code></td>
+<td><strong>Forbidden in v1</strong> (or heavily sandboxed) — XSS / exfil risk</td>
+</tr>
+</tbody>
+</table>
+<p>Prefer <strong>snapshot + act</strong> over pure vision for web tasks; fall back to desktop/screenshot when DOM is useless (canvas, weird widgets).</p>
+<h3 id="desktop-subsystem-robotgo">Desktop subsystem (robotgo)</h3>
+<p>Long-running peer maps JSON ops → local calls:</p>
+<table>
+<thead>
+<tr>
+<th>Op</th>
+<th>robotgo (conceptual)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>screenshot</code></td>
+<td><code>CaptureScreen</code> → JPEG/PNG (scaled max edge e.g. 1280)</td>
+</tr>
+<tr>
+<td><code>click</code></td>
+<td><code>MoveClick(x, y)</code></td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td><code>TypeStr</code> / clipboard paste for unicode</td>
+</tr>
+<tr>
+<td><code>key</code></td>
+<td><code>KeyTap</code> / modifiers</td>
+</tr>
+<tr>
+<td><code>move</code></td>
+<td><code>Move</code> / relative optional</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Coordinate space:</strong> report <code>screen_w</code>, <code>screen_h</code>, <code>scale</code> with every screenshot; model actions use that space. Multi-monitor v1: <strong>primary display only</strong> (<strong>Q5</strong>).</p>
+<p><strong>Desktop tools:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>computer_screenshot</code></td>
+<td>Capture → attachment id + meta</td>
+</tr>
+<tr>
+<td><code>computer_desktop_act</code></td>
+<td>click / type / key / move (gated by policy)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="registration-mutual-handshake">Registration — mutual handshake</h3>
+<p><strong>Threat:</strong> peer is remote code execution on the user’s desktop. Registration must be <strong>interactive and mutual</strong>.</p>
+<h4 id="artifacts">Artifacts</h4>
+<table>
+<thead>
+<tr>
+<th>Artifact</th>
+<th>Lifetime</th>
+<th>Storage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Pairing session id</strong></td>
+<td>≤ 10 minutes</td>
+<td>Harness memory + peer memory</td>
+</tr>
+<tr>
+<td><strong>Harness code</strong> <code>H-XXXXXX</code></td>
+<td>≤ 10 minutes, single use</td>
+<td>Shown in Marble Settings</td>
+</tr>
+<tr>
+<td><strong>Peer code</strong> <code>P-XXXXXX</code></td>
+<td>≤ 10 minutes, single use</td>
+<td>Shown in peer CLI or mini browser</td>
+</tr>
+<tr>
+<td><strong>Device credential</strong></td>
+<td>Long-lived</td>
+<td>Peer: OS keychain / DPAPI / libsecret / file mode 0600; Harness: SQLite hash of device public key or opaque token hash</td>
+</tr>
+<tr>
+<td><strong>Device id</strong></td>
+<td>Permanent until revoke</td>
+<td>UUID slug</td>
+</tr>
+</tbody>
+</table>
+<h4 id="flow-normative">Flow (normative)</h4>
+<pre><code class="language-text">1. Operator opens Marble Settings → Computers → &quot;Pair new computer&quot;
+   → harness creates pairing_session, displays H-code + optional QR of
+     { harness_url, pairing_session_id }
+
+2. On desktop, operator runs ONE of:
+   a) marble-peer pair --harness https://… --code H-XXXXXX
+   b) marble-peer pair --serve   # opens http://127.0.0.1:7xxx/pair
+      (paste harness URL + H-code in mini form)
+
+3. Peer connects to harness pairing endpoint (prefer HTTPS; **HTTP allowed
+   on private mesh only after operator confirm** — Q6).
+   Peer authenticates with H-code + pairing_session_id.
+   Peer displays P-code (CLI print + mini UI).
+
+4. Operator enters P-code in Marble Settings (same pairing session).
+   Harness verifies peer’s attested device pubkey + P-code.
+
+5. Both sides seal:
+   - harness stores computer row (enabled, caps, endpoint hint)
+   - peer stores device credential + harness base URL
+   - pairing codes invalidated
+
+6. Steady state: peer dials WebSocket / harness connects if reachable;
+   mutual TLS-or-token heartbeat every 30s.
+</code></pre>
+<p><strong>Mutual</strong> means: harness alone knowing a code is insufficient; peer alone knowing a code is insufficient; operator must complete <strong>both</strong> code entries (or equivalent confirm buttons on both UIs).</p>
+<p><strong>Re-pair:</strong> tray → Re-pair clears local device credential and starts flow again; old harness row marked <code>revoked</code> or replaced.</p>
+<p><strong>Revoke:</strong> Settings → Revoke computer invalidates device credential server-side; peer goes offline on next heartbeat.</p>
+<h3 id="peer-runtime-ux-no-full-native-gui">Peer runtime UX (no full native GUI)</h3>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>System tray</strong></td>
+<td>Icon color: green peered / yellow degraded / red offline / gray stopped. Menu: Status, Open mini UI, Stop actions, Restart, Re-pair, Quit</td>
+</tr>
+<tr>
+<td><strong>Mini HTTP UI</strong></td>
+<td><code>127.0.0.1</code> only (default): pair form, status, recent actions log, confirm prompts, policy read-only</td>
+</tr>
+<tr>
+<td><strong>CLI</strong></td>
+<td><code>marble-peer run</code>, <code>pair</code>, <code>status</code>, <code>unpair</code>, <code>install-autostart</code>, <code>version</code></td>
+</tr>
+<tr>
+<td><strong>Confirm prompt</strong></td>
+<td>Mini UI + tray notification; timeout <strong>120s → deny</strong> (<strong>Q3</strong>)</td>
+</tr>
+</tbody>
+</table>
+<p>Native GUI frameworks (Qt, Electron full window, Wails main window) are <strong>out of scope</strong>. Tray + localhost HTML is the product UX.</p>
+<h3 id="autostart-user-login">Autostart (user login)</h3>
+<table>
+<thead>
+<tr>
+<th>OS</th>
+<th>Mechanism (v1)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Windows</strong></td>
+<td><code>marble-peer install-autostart</code> → HKCU Run <strong>or</strong> Startup folder shortcut (user scope)</td>
+</tr>
+<tr>
+<td><strong>macOS</strong></td>
+<td>LaunchAgent <code>~/Library/LaunchAgents/com.rendicott.marble-peer.plist</code></td>
+</tr>
+<tr>
+<td><strong>Linux</strong></td>
+<td><code>~/.config/systemd/user/marble-peer.service</code> <strong>or</strong> XDG autostart <code>.desktop</code></td>
+</tr>
+</tbody>
+</table>
+<p>Must <strong>not</strong> require root. Document that peer needs an <strong>unlocked graphical session</strong> for desktop/browser control.</p>
+<h3 id="network-topology">Network topology</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A. Peer dial-out (default)</strong></td>
+<td>Peer maintains outbound WS to harness <code>/api/computers/ws</code> — works through home NAT</td>
+</tr>
+<tr>
+<td><strong>B. Harness dial-in</strong></td>
+<td>If peer publishes Tailscale IP + port and harness can reach it — lower latency optional</td>
+</tr>
+</tbody>
+</table>
+<p>Prefer <strong>A</strong> for least router config. Auth token on every frame.</p>
+<h3 id="harness-data-model-schema-v5">Harness data model (schema v5)</h3>
+<pre><code class="language-sql">-- migrateV4toV5
+CREATE TABLE computers (
+  id            TEXT PRIMARY KEY,          -- slug e.g. home-laptop
+  display_name  TEXT NOT NULL,
+  device_id     TEXT NOT NULL UNIQUE,      -- peer-generated UUID
+  token_hash    TEXT NOT NULL,             -- harness verifies peer
+  os            TEXT NOT NULL,             -- windows|darwin|linux
+  caps_json     TEXT NOT NULL,             -- {&quot;browser&quot;:true,&quot;desktop&quot;:true,&quot;confirm&quot;:true}
+  endpoint_hint TEXT,                      -- last known ts IP / empty if dial-out only
+  policy_json   TEXT,                      -- domain allow/deny, require_confirm_money
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  revoked_at    INTEGER,
+  last_seen_at  INTEGER,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+
+-- session bind
+ALTER TABLE sessions ADD COLUMN computer_id TEXT;  -- empty = unbound
+</code></pre>
+<p>Ephemeral pairing sessions may be <strong>memory-only</strong> or a small <code>computer_pairings</code> table with TTL GC.</p>
+<h3 id="agent-tools-normative-catalog">Agent tools (normative catalog)</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Args (sketch)</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>computer_list</code></td>
+<td>—</td>
+<td>id, name, os, online, caps, last_seen</td>
+</tr>
+<tr>
+<td><code>computer_bind</code></td>
+<td><code>computer_id</code> | <code>""</code></td>
+<td>Session bind; empty clears</td>
+</tr>
+<tr>
+<td><code>computer_screenshot</code></td>
+<td><code>computer_id?</code></td>
+<td>Uses bound peer; returns attachment ref</td>
+</tr>
+<tr>
+<td><code>computer_browser_tabs</code></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>computer_browser_open</code></td>
+<td><code>url</code>, <code>new_tab?</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>computer_browser_snapshot</code></td>
+<td></td>
+<td>text snapshot</td>
+</tr>
+<tr>
+<td><code>computer_browser_act</code></td>
+<td><code>action</code>, <code>target</code>, <code>text?</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>computer_desktop_act</code></td>
+<td><code>action</code>, <code>x?</code>, <code>y?</code>, <code>text?</code></td>
+<td>Requires <code>caps.desktop</code></td>
+</tr>
+<tr>
+<td><code>computer_confirm</code></td>
+<td><code>prompt</code>, <code>risk</code></td>
+<td>Blocks until user accepts/denies on peer</td>
+</tr>
+<tr>
+<td><code>computer_stop</code></td>
+<td></td>
+<td>Cancel in-flight peer actions for session</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Default computer:</strong> session <code>computer_id</code> if set; else if exactly one online peer, tools may use it with advisory; if multiple online and unbound → tool error “bind a computer first.”</p>
+<h3 id="safety-policy">Safety &amp; policy</h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Domain policy</strong></td>
+<td>Optional allowlist/denylist on peer + harness; browser_open checks host</td>
+</tr>
+<tr>
+<td><strong>Money / auth risk</strong></td>
+<td>Heuristic URL/path patterns + explicit <code>risk=money|auth</code> on confirm; checkout flows should call <code>computer_confirm</code></td>
+</tr>
+<tr>
+<td><strong>Action queue</strong></td>
+<td><strong>Serialize: depth 1</strong> per computer (<strong>Q7</strong>) — no parallel peer acts</td>
+</tr>
+<tr>
+<td><strong>Cron</strong></td>
+<td><strong>Must not</strong> invoke peer tools / bound computer (<strong>Q4</strong>)</td>
+</tr>
+<tr>
+<td><strong>Rate limit</strong></td>
+<td>Additional soft cap optional; queue already serializes</td>
+</tr>
+<tr>
+<td><strong>Stop</strong></td>
+<td>Marble turn Stop + <code>computer_stop</code> + tray Stop all cancel peer ops</td>
+</tr>
+<tr>
+<td><strong>Audit</strong></td>
+<td><code>session_events</code> meta: computer_id, op, url host (not full secrets)</td>
+</tr>
+<tr>
+<td><strong>No cookie dump</strong></td>
+<td>Hard reject any internal API that serializes cookie jars to the model</td>
+</tr>
+</tbody>
+</table>
+<h3 id="settings-chat-ux">Settings &amp; chat UX</h3>
+<p><strong>Settings → Computers</strong></p>
+<ul>
+<li>List: name, OS, online, last seen, caps, Revoke, Edit policy  </li>
+<li><strong>Pair computer</strong> → show H-code + harness URL + wait for P-code field  </li>
+<li>Copy-friendly for mobile operators</li>
+</ul>
+<p><strong>Session header</strong></p>
+<ul>
+<li>Pill: <code>PC: home-laptop ●</code> / <code>PC: none</code> / <code>PC: offline</code>  </li>
+<li>Dropdown to bind (same pattern as model picker ADR-0018)</li>
+</ul>
+<p><strong>Confirm</strong></p>
+<ul>
+<li>When tool waits on confirm, turn progress shows “Waiting for confirm on home-laptop…”  </li>
+<li>Peer mini UI + tray notification</li>
+</ul>
+<h3 id="repository-layout">Repository layout</h3>
+<h4 id="marble-this-monorepo-brain-only"><code>marble</code> (this monorepo) — brain only</h4>
+<pre><code>internal/api/computers.go      # pairing + WS hub + proxy
+internal/db/computers.go       # schema v5
+internal/tools/computer.go     # computer_* tools
+internal/web/static/           # Settings Computers + session pill
+docs/peer-protocol.md          # or openapi/peer-v1.yaml — contract source of truth (Q10)
+</code></pre>
+<p>Does <strong>not</strong> contain robotgo, systray, or Playwright runtime code.</p>
+<h4 id="marble-desktop-peer-new-repo-hands-only"><code>marble-desktop-peer</code> (new repo) — hands only</h4>
+<pre><code>github.com/rendicott/marble-desktop-peer
+├── cmd/marble-peer/           # main (tray + daemon)
+├── internal/
+│   ├── protocol/              # client impl of shared contract
+│   ├── browser/               # Playwright / CDP bridge
+│   ├── desktop/               # robotgo wrapper
+│   ├── tray/                  # getlantern/systray (Q8)
+│   ├── miniui/                # embedded static HTML
+│   ├── autostart/
+│   └── pair/
+├── README.md                  # install, pair, autostart, OS permissions
+└── .github/workflows/release.yml
+</code></pre>
+<p>Go module path: <code>github.com/rendicott/marble-desktop-peer</code>. Binary: <strong><code>marble-peer</code></strong> (<strong>Q9</strong>).</p>
+<p><strong>Cross-repo discipline:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Wire break</td>
+<td>Bump <code>peer_protocol_version</code>; both sides tolerate N and N−1 for one release if practical</td>
+</tr>
+<tr>
+<td>Docs</td>
+<td>Peer README for install/tray/permissions; harness docs link to peer releases</td>
+</tr>
+<tr>
+<td>Secrets</td>
+<td>Device credential only on peer disk/keychain; harness stores hash only</td>
+</tr>
+<tr>
+<td>Issues</td>
+<td>Desktop bugs → peer repo; tool/Settings bugs → marble repo</td>
+</tr>
+</tbody>
+</table>
+<h3 id="release">Release</h3>
+<p><strong>Peer binaries</strong> ship from <strong><code>marble-desktop-peer</code></strong> Actions (not marble harness release workflow):</p>
+<table>
+<thead>
+<tr>
+<th>Asset</th>
+<th>Platform</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>marble-peer-linux-amd64</code></td>
+<td>Linux x86_64</td>
+</tr>
+<tr>
+<td><code>marble-peer-linux-arm64</code></td>
+<td>Linux aarch64</td>
+</tr>
+<tr>
+<td><code>marble-peer-darwin-arm64</code></td>
+<td>macOS Apple Silicon</td>
+</tr>
+<tr>
+<td><code>marble-peer-darwin-amd64</code></td>
+<td>macOS Intel (optional)</td>
+</tr>
+<tr>
+<td><code>marble-peer-windows-amd64.exe</code></td>
+<td>Windows x64</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Harness</strong> continues to release <code>marble-harness-*</code> from the marble repo. Settings → Computers UI should deep-link to the peer repo’s latest release.</p>
+<p>Document Node/Playwright dependency (locked v1 browser path) in peer README.</p>
+<h2 id="decisions-locked-q1q10">Decisions locked (Q1–Q10)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+<th>Locked</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Browser impl</td>
+<td><strong>Playwright MCP/helper first</strong>; chromedp later if Node hurts</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Chrome profile</td>
+<td><strong>Dedicated debug profile</strong> user logs into once</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Confirm timeout</td>
+<td><strong>120s, deny on timeout</strong></td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>Cron + peer</td>
+<td><strong>No in v1</strong> — interactive sessions only</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Multi-monitor</td>
+<td><strong>Primary display only</strong></td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Pairing HTTP</td>
+<td><strong>Allow on private net with operator confirm; prefer HTTPS</strong></td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Concurrent acts</td>
+<td><strong>Serialize — 1 action queue per computer</strong></td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Tray library</td>
+<td><strong><code>getlantern/systray</code> or maintained fork</strong> (verify 3 OS in P0)</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Naming</td>
+<td><strong>Binary <code>marble-peer</code>; repo <code>marble-desktop-peer</code></strong></td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Protocol packaging</td>
+<td><strong>OpenAPI/JSON in marble docs</strong>; extract Go module later if needed</td>
+</tr>
+</tbody>
+</table>
+<p><em>Source: <code>adr/0020-answers.json</code> (<code>2026-07-27T02:40:13.716Z</code>).</em></p>
+<h2 id="risks-mitigations">Risks &amp; Mitigations</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prompt injection → malicious clicks</td>
+<td>Domain policy, confirm for money, Stop, no eval</td>
+</tr>
+<tr>
+<td>Peer compromise = desktop RCE</td>
+<td>Mutual pair, revoke, short-lived codes, no static global keys</td>
+</tr>
+<tr>
+<td>Wayland input broken</td>
+<td>Document X11/XWayland; browser path still works via CDP</td>
+</tr>
+<tr>
+<td>Playwright install weight</td>
+<td>Optional browser component; desktop-only mode if Node missing</td>
+</tr>
+<tr>
+<td>DPI / scale wrong clicks</td>
+<td>Send scale meta; prefer browser snapshot acts over pixels</td>
+</tr>
+<tr>
+<td>Operator leaves peer running forever</td>
+<td>Tray Quit; clear offline status; optional idle lock (future)</td>
+</tr>
+<tr>
+<td>Protocol drift between repos</td>
+<td>Version field + CI contract tests; document N/N−1 policy</td>
+</tr>
+<tr>
+<td>Two release pipelines to maintain</td>
+<td>Acceptable cost of CGO/signing isolation</td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-plan-cross-repo">Implementation plan (cross-repo)</h2>
+<h3 id="marble-monorepo-prs">Marble monorepo PRs</h3>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Title</th>
+<th>Acceptance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M1</strong></td>
+<td><code>db: schema v5 computers + session computer_id</code></td>
+<td>migrate; tests</td>
+</tr>
+<tr>
+<td><strong>M2</strong></td>
+<td><code>docs: peer-protocol v1 (OpenAPI/JSON)</code></td>
+<td>contract frozen enough for peer to implement</td>
+</tr>
+<tr>
+<td><strong>M3</strong></td>
+<td><code>api: pairing mutual handshake + computer CRUD + WS hub</code></td>
+<td>H/P codes; revoke; no secrets in GET</td>
+</tr>
+<tr>
+<td><strong>M4</strong></td>
+<td><code>tools + loop: computer_* tools + bind + stop</code></td>
+<td>RPC to online peer</td>
+</tr>
+<tr>
+<td><strong>M5</strong></td>
+<td><code>ui: Settings Computers + session pill + confirm wait</code></td>
+<td>pair UX; bind; offline states</td>
+</tr>
+<tr>
+<td><strong>M6</strong></td>
+<td><code>docs: link peer install from README / Settings</code></td>
+<td>points at marble-desktop-peer releases</td>
+</tr>
+</tbody>
+</table>
+<h3 id="marble-desktop-peer-repo-parallel-after-m2">marble-desktop-peer repo (parallel after M2)</h3>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Title</th>
+<th>Acceptance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P0</strong></td>
+<td>Bootstrap repo, module, LICENSE, CI</td>
+<td>builds on 3 OS</td>
+</tr>
+<tr>
+<td><strong>P1</strong></td>
+<td><code>pair</code> CLI + miniui + tray stubs + dial-out WS</td>
+<td>mutual pair against harness</td>
+</tr>
+<tr>
+<td><strong>P2</strong></td>
+<td>robotgo desktop ops + screenshot</td>
+<td>click/type/screenshot</td>
+</tr>
+<tr>
+<td><strong>P3</strong></td>
+<td>Playwright/CDP browser bridge</td>
+<td>tabs/open/snapshot/act; attach mode</td>
+</tr>
+<tr>
+<td><strong>P4</strong></td>
+<td><code>install-autostart</code> + OS permission docs</td>
+<td>login start works</td>
+</tr>
+<tr>
+<td><strong>P5</strong></td>
+<td>Release workflow multi-arch binaries</td>
+<td>GitHub Releases assets</td>
+</tr>
+</tbody>
+</table>
+<h2 id="success-criteria">Success criteria</h2>
+<ol>
+<li>Operator pairs a laptop via <strong>mutual codes</strong> using <strong>CLI or mini browser</strong>.  </li>
+<li>Peer shows <strong>tray green</strong> and survives <strong>user login autostart</strong>.  </li>
+<li>Chat tool <code>computer_browser_open</code> hits a site <strong>already logged in</strong> in the attached profile.  </li>
+<li><code>computer_screenshot</code> appears in transcript as attachment; vision model can describe it when <code>cap_images</code>.  </li>
+<li>Checkout-like flow can force <strong><code>computer_confirm</code></strong> on the peer before proceeding.  </li>
+<li>Tray <strong>Stop</strong> and Marble turn Stop cancel peer actions.  </li>
+<li>Revoke on harness forces peer offline.</li>
+</ol>
+<h2 id="references">References</h2>
+<ul>
+<li>Research: <a href="computer-use-remote-desktop.html"><code>adr/computer-use-remote-desktop.html</code></a>  </li>
+<li>Playwright CDP attach / MCP  </li>
+<li>robotgo: https://github.com/go-vgo/robotgo  </li>
+<li>Anthropic computer-use tool shape (screenshot + coords) — conceptual only; Marble uses own tools  </li>
+<li>ADR-0006 MCP, ADR-0018 models, ADR-0019 attachments  </li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-07-26</td>
+<td>Initial proposed draft from owner requirements (peer, Playwright CDP, robotgo, mutual handshake, tray, autostart)</td>
+</tr>
+<tr>
+<td>2026-07-26</td>
+<td><strong>KD16:</strong> desktop agent lives in separate repo <strong><code>marble-desktop-peer</code></strong>; harness keeps brain/API/tools only; cross-repo PR plan</td>
+</tr>
+<tr>
+<td>2026-07-27</td>
+<td><strong>Accepted</strong> — locked Q1–Q10 from <code>0020-answers.json</code> (<code>2026-07-27T02:40:13.716Z</code>); KD2/6/8/12/14/16/17 + body aligned</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0020-marble-peer.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

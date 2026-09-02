@@ -157,7 +157,20 @@
         const snoozeBtn = snoozed
           ? `<button type="button" class="icon-btn clerk-unsnooze" data-unsnooze="${esc(row.session_id)}" title="Unsnooze">Wake</button>`
           : `<button type="button" class="icon-btn clerk-snooze" data-snooze-menu="${esc(row.session_id)}" title="Snooze">💤</button>`;
-        return `<article class="clerk-row clerk-${ic.cls}${snoozed ? " clerk-is-snoozed" : ""}" data-id="${esc(row.session_id)}">
+        const closed = (row.status || "").toLowerCase() === "closed";
+        const busy = !!row.busy;
+        const closeDisabled = closed || busy;
+        const closeTitle = closed
+          ? "Already closed"
+          : busy
+            ? "Session busy — stop the turn first"
+            : "Close session";
+        const closeBtn = `<button type="button" class="icon-btn clerk-close-sess danger"${
+          closeDisabled ? " disabled" : ""
+        } data-close-sess="${esc(row.session_id)}" title="${esc(closeTitle)}">Close</button>`;
+        return `<article class="clerk-row clerk-${ic.cls}${snoozed ? " clerk-is-snoozed" : ""}${
+          closed ? " clerk-is-closed" : ""
+        }" data-id="${esc(row.session_id)}">
           <div class="clerk-row-top">
             <span class="clerk-icon" title="${esc(ic.label)}">${ic.glyph}</span>
             <div class="clerk-main">
@@ -166,14 +179,49 @@
               ${itemsHtml}
               ${err}
             </div>
-            <div class="clerk-row-actions">
-              ${snoozeBtn}
-              <button type="button" class="icon-btn clerk-open" data-open="${esc(row.session_id)}">Open</button>
-            </div>
+          </div>
+          <div class="clerk-row-actions">
+            ${snoozeBtn}
+            <button type="button" class="icon-btn clerk-open" data-open="${esc(row.session_id)}">Open</button>
+            ${closeBtn}
           </div>
         </article>`;
       })
       .join("");
+  }
+
+  async function closeSessionFromClerk(sessionId) {
+    if (!sessionId) return;
+    const article = els.body && els.body.querySelector(`.clerk-row[data-id="${CSS.escape(sessionId)}"]`);
+    const line =
+      (article && article.querySelector(".clerk-line") && article.querySelector(".clerk-line").textContent) ||
+      sessionId;
+    if (!confirm(`Close session “${line.slice(0, 80)}”?`)) return;
+    try {
+      await api(`/api/sessions/${encodeURIComponent(sessionId)}/close`, {
+        method: "POST",
+        body: "{}",
+      });
+      if (els.status) {
+        els.status.hidden = false;
+        els.status.textContent = "Closed " + sessionId;
+        setTimeout(() => {
+          if (els.status && els.status.textContent.indexOf("Closed ") === 0) {
+            els.status.hidden = true;
+            els.status.textContent = "";
+          }
+        }, 2500);
+      }
+      // Keep sidebar in sync if the main app is on this page
+      if (window.MarbleAPI && typeof window.MarbleAPI.refreshSessions === "function") {
+        try {
+          await window.MarbleAPI.refreshSessions();
+        } catch (_) {}
+      }
+      await load();
+    } catch (e) {
+      alert("Close failed: " + (e.message || e));
+    }
   }
 
   function updateSnoozedBadge(n) {
@@ -320,6 +368,13 @@
         e.preventDefault();
         e.stopPropagation();
         doSnooze(unsnooze.dataset.unsnooze, "clear");
+        return;
+      }
+      const closeBtn = e.target.closest("[data-close-sess]");
+      if (closeBtn && closeBtn.dataset.closeSess) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!closeBtn.disabled) closeSessionFromClerk(closeBtn.dataset.closeSess);
         return;
       }
       const btn = e.target.closest("[data-open]");

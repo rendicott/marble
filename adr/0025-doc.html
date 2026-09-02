@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0025</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0025</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0025-wonderstand-protocol.md">Markdown</a>
+      <a href="0025-review.html">Review</a>
+      <a href="0025-answers.json">Answers</a>
+      <a href="0024-doc.html">← 0024</a>
+      <a href="0026-doc.html">0026 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0025-wonderstand-protocol-structured-io-between-harness-and-android-client">ADR-0025: Wonderstand Protocol — Structured I/O between harness and Android client</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (ready to implement)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-08-08</td>
+</tr>
+<tr>
+<td><strong>Accepted</strong></td>
+<td>2026-08-08</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>wonderstand, protocol, presentation, immersion, TTS, SSE, android, client</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0024 (Wonderstand pointer), ADR-0010 (turn/SSE), ADR-0019 (attachments), ADR-0013 (soul/system); peer design in <strong>marble-wonderstand</strong> ADR-0001</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0025-review.html">0025-review.html</a></td>
+</tr>
+<tr>
+<td><strong>Sketch</strong></td>
+<td><a href="../docs/wonderstand-protocol-sketch.md">docs/wonderstand-protocol-sketch.md</a></td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><a href="0025-answers.json">0025-answers.json</a> (<code>2026-08-08T16:07:31.856Z</code>) — all Q1–Q8 locked</td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p>Define a <strong>versioned, optional presentation block</strong> on <strong>assistant</strong> messages so Wonderstand can drive immersion (TTS + full-screen visuals + scrubber) without fragile markdown heuristics. The wire contract is <strong>additive</strong>: existing <code>content</code> markdown remains the source of truth for the web UI and older clients. Wonderstand advertises capability; the harness may enrich replies later; both sides tolerate missing fields.</p>
+<h2 id="context-device-pain">Context &amp; device pain</h2>
+<p>Wonderstand (ADR-0024 / marble-wonderstand ADR-0001) already ships against today&rsquo;s harness APIs:</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Shape today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Create session</td>
+<td><code>POST /api/sessions</code> body <code>{"title":"…"}</code></td>
+</tr>
+<tr>
+<td>Send turn</td>
+<td><code>POST /api/sessions/{id}/messages</code> <code>{"content":"…","attachment_ids":[…]}</code></td>
+</tr>
+<tr>
+<td>Hydrate</td>
+<td><code>GET /api/sessions/{id}</code> → <code>messages[]</code> with <code>id</code>, <code>role</code>, <code>content</code>, <code>attachments[]</code>, …</td>
+</tr>
+<tr>
+<td>Live</td>
+<td><code>GET /api/sessions/{id}/events</code> SSE <code>Event{type, message?, tool?, turn?, status?, …}</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>session.Message</code> (harness):</p>
+<pre><code class="language-go">type Message struct {
+    ID, Role, Content string
+    Attachments []UIAttachment `json:&quot;attachments,omitempty&quot;`
+    // … tool fields, actor, timestamps
+}
+</code></pre>
+<p>Immersion is <strong>client-side only</strong>: prompt envelope on every turn + <code>ArtifactParser</code> over raw markdown/fences/attachments (<a href="../../marble-wonderstand/docs/immersion-timeline.md">immersion-timeline.md</a>).</p>
+<h3 id="observed-pain">Observed pain</h3>
+<table>
+<thead>
+<tr>
+<th>Pain</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TTS reads raw markdown</strong></td>
+<td>System TTS speaks <code>**bold**</code>, <code># headings</code>, table pipes, fence markers</td>
+</tr>
+<tr>
+<td><strong>SVG fences blank on app</strong></td>
+<td>Fence parse / WebView load races; no first-class visual payload</td>
+</tr>
+<tr>
+<td><strong>Heuristic ArtifactParser</strong></td>
+<td>Order/rank of prose vs table vs image drifts; hard to test; model format changes break UX</td>
+</tr>
+<tr>
+<td><strong>No stable phase IDs</strong></td>
+<td>Scrubber / swipe cannot address “beat 2” across rehydrate and partial SSE</td>
+</tr>
+<tr>
+<td><strong>Prompt envelope only</strong></td>
+<td>Visual bias is client-prepended text; harness does not know client capabilities; web sessions get the same envelope if shared</td>
+</tr>
+</tbody>
+</table>
+<p>ADR-0024 already listed optional later work: <code>X-Marble-Client</code>, soul snippet, structured <code>artifacts[]</code>. This ADR makes that <strong>contract-first</strong>.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Stable immersion contract:</strong> ordered <strong>phases</strong> with stable <code>id</code>s for scrubber, swipe, and rehydrate.  </li>
+<li><strong>TTS-safe speech:</strong> plain <code>speech_text</code> per phase (no markdown).  </li>
+<li><strong>First-class visuals:</strong> <code>svg</code> | <code>html</code> | <code>image_attachment_id</code> | <code>table</code> (structured) without depending on fence heuristics.  </li>
+<li><strong>Optional prose:</strong> <code>prose_markdown</code> when studio / captions need rich text.  </li>
+<li><strong>Client advertise:</strong> Wonderstand declares <code>client: {name, protocol}</code> on createSession and postMessage so the harness can branch later.  </li>
+<li><strong>Backward compatible:</strong> omit <code>presentation</code> → behavior unchanged; web UI ignores unknown fields; markdown <code>content</code> still required for web.  </li>
+<li><strong>Additive storage/SSE:</strong> optional JSON column / field on messages and the same object on SSE <code>message</code> events.  </li>
+<li><strong>Phased delivery:</strong> design (this ADR) → advertise/passthrough → prompt pack → validate/enrich — no big-bang harness rewrite.</li>
+</ol>
+<h2 id="non-goals">Non-goals</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full harness implementation in this ADR</td>
+<td>Contract + plan only</td>
+</tr>
+<tr>
+<td>Breaking change to <code>content</code> or attachment APIs</td>
+<td>Web + older Wonderstand must keep working</td>
+</tr>
+<tr>
+<td>Replacing web transcript rendering</td>
+<td>Markdown remains primary for operator cockpit</td>
+</tr>
+<tr>
+<td>Forcing models to emit JSON on every turn in M1</td>
+<td>Passthrough first; prompt/enrich later</td>
+</tr>
+<tr>
+<td>Secrets, OAuth redesign, new auth modes</td>
+<td>Unrelated</td>
+</tr>
+<tr>
+<td>iOS / multi-client protocol negotiation beyond advertise</td>
+<td>Wonderstand v1 focus</td>
+</tr>
+<tr>
+<td>Streaming token-level presentation</td>
+<td>Turn-complete / final assistant message only in p1 (<strong>Q5</strong> locked); progressive mid-turn deferred</td>
+</tr>
+<tr>
+<td>User-message presentation</td>
+<td>Protocol 1 is <strong>assistant only</strong> (<strong>Q4</strong> locked)</td>
+</tr>
+<tr>
+<td>Perfect auto-extraction of phases from arbitrary markdown</td>
+<td>M3 may offer best-effort enrich; heuristics stay client fallback</td>
+</tr>
+<tr>
+<td>New tool required for presentation in p1</td>
+<td>No — fence extract + enrich path (<strong>Q2</strong> locked)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="protocol-overview">Protocol overview</h2>
+<pre><code>Wonderstand                         marble-harness
+    │                                      │
+    │  POST /sessions  + client advertise  │
+    │  POST …/messages + client advertise  │
+    │ ──────────────────────────────────►  │
+    │                                      │  runTurn (markdown content as today)
+    │                                      │  optional: enrich presentation (M2+)
+    │  SSE message { content, presentation?}│
+    │  GET session { messages[].presentation?}
+    │ ◄──────────────────────────────────  │
+    │  ImmersionPlayer prefers presentation│
+    │  else ArtifactParser fallback        │
+</code></pre>
+<p><strong>Version:</strong> integer <code>protocol_version</code> inside the presentation object. Wire advertise uses <code>client.protocol</code> (same major). This ADR defines <strong>protocol 1</strong>.</p>
+<h2 id="wire-shapes">Wire shapes</h2>
+<h3 id="1-client-advertise-request-body-additive">1. Client advertise (request body, additive)</h3>
+<p>On <strong><code>POST /api/sessions</code></strong> and <strong><code>POST /api/sessions/{id}/messages</code></strong>, optional:</p>
+<pre><code class="language-json">{
+  &quot;title&quot;: &quot;ws: package status&quot;,
+  &quot;client&quot;: {
+    &quot;name&quot;: &quot;wonderstand&quot;,
+    &quot;protocol&quot;: 1
+  }
+}
+</code></pre>
+<pre><code class="language-json">{
+  &quot;content&quot;: &quot;…user text…&quot;,
+  &quot;attachment_ids&quot;: [&quot;att_…&quot;],
+  &quot;client&quot;: {
+    &quot;name&quot;: &quot;wonderstand&quot;,
+    &quot;protocol&quot;: 1
+  }
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>client.name</code></td>
+<td>string</td>
+<td>e.g. <code>wonderstand</code>; web may omit or send <code>web</code></td>
+</tr>
+<tr>
+<td><code>client.protocol</code></td>
+<td>int</td>
+<td>Max presentation protocol the client understands (1)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Header (optional, complementary):</strong> keep/extend <code>X-Marble-Client: wonderstand</code> for logs/metrics (ADR-0024). <strong>Body <code>client</code> is normative</strong> for protocol negotiation (<strong>Q8</strong>). Header-only ⇒ name without protocol (no enrichment assumptions).</p>
+<p><strong>Sticky client (</strong>Q7<strong>):</strong> <code>createSession</code> sets the session default; each <code>postMessage</code> may override for that turn (last post wins for enrichment).</p>
+<p>Harness <strong>must ignore</strong> unknown <code>client</code> fields. If absent → treat as classic client (no presentation expectations).</p>
+<h3 id="2-presentation-block-message-field-additive">2. Presentation block (message field, additive)</h3>
+<p>Optional on UI <code>Message</code> with <strong><code>role: assistant</code> only</strong> in protocol 1 (<strong>Q4</strong>):</p>
+<pre><code class="language-json">{
+  &quot;id&quot;: &quot;msg_…&quot;,
+  &quot;role&quot;: &quot;assistant&quot;,
+  &quot;content&quot;: &quot;# Status\n\nPackage **in transit**…\n\n| Field | Value |\n|---|---|\n| Carrier | USPS |\n\n```svg\n&lt;svg…/&gt;\n```\n&quot;,
+  &quot;attachments&quot;: [
+    { &quot;id&quot;: &quot;att_abc&quot;, &quot;name&quot;: &quot;tracking.png&quot;, &quot;mime&quot;: &quot;image/png&quot;, &quot;kind&quot;: &quot;image&quot; }
+  ],
+  &quot;presentation&quot;: {
+    &quot;protocol_version&quot;: 1,
+    &quot;phases&quot;: [
+      {
+        &quot;id&quot;: &quot;p1&quot;,
+        &quot;speech_text&quot;: &quot;Your package is in transit with USPS.&quot;,
+        &quot;prose_markdown&quot;: &quot;Package **in transit** with USPS.&quot;,
+        &quot;visual&quot;: {
+          &quot;kind&quot;: &quot;table&quot;,
+          &quot;table&quot;: {
+            &quot;headers&quot;: [&quot;Field&quot;, &quot;Value&quot;],
+            &quot;rows&quot;: [[&quot;Carrier&quot;, &quot;USPS&quot;], [&quot;ETA&quot;, &quot;Thu&quot;]]
+          }
+        }
+      },
+      {
+        &quot;id&quot;: &quot;p2&quot;,
+        &quot;speech_text&quot;: &quot;Here is the tracking page screenshot.&quot;,
+        &quot;visual&quot;: {
+          &quot;kind&quot;: &quot;image_attachment_id&quot;,
+          &quot;image_attachment_id&quot;: &quot;att_abc&quot;
+        }
+      },
+      {
+        &quot;id&quot;: &quot;p3&quot;,
+        &quot;speech_text&quot;: &quot;Route sketch from origin to local hub.&quot;,
+        &quot;visual&quot;: {
+          &quot;kind&quot;: &quot;svg&quot;,
+          &quot;svg&quot;: &quot;&lt;svg xmlns=\&quot;http://www.w3.org/2000/svg\&quot; viewBox=\&quot;0 0 100 40\&quot;&gt;…&lt;/svg&gt;&quot;
+        }
+      }
+    ]
+  }
+}
+</code></pre>
+<h3 id="3-schema-normative-for-protocol-1">3. Schema (normative for protocol 1)</h3>
+<pre><code class="language-text">Presentation {
+  protocol_version: int          // 1
+  phases: Phase[]                // ordered immersion beats; may be empty
+}
+
+Phase {
+  id: string                     // stable within message; client scrubber key
+  speech_text: string            // plain text for TTS (required if phase is spoken)
+  prose_markdown?: string        // optional rich caption / studio
+  visual?: Visual                // omit = speech-only / hold previous visual (Q3 locked)
+}
+
+Visual {
+  kind: &quot;svg&quot; | &quot;html&quot; | &quot;image_attachment_id&quot; | &quot;table&quot;
+  // exactly one payload field matching kind:
+  svg?: string                   // full &lt;svg&gt;…&lt;/svg&gt; document fragment
+  html?: string                  // sandboxed HTML card (no scripts expected)
+  image_attachment_id?: string   // must reference message.attachments[] or session attachment
+  table?: {
+    headers: string[]
+    rows: string[][]             // rectangular; cells plain text
+  }
+}
+</code></pre>
+<p><strong>Rules (p1):</strong></p>
+<ol>
+<li><code>content</code> markdown <strong>remains required</strong> for assistant turns that the web UI will show; presentation is enrichment, not a replacement.  </li>
+<li><code>speech_text</code> must be plain language suitable for TTS (no fences, minimal punctuation noise).  </li>
+<li><code>phase.id</code> unique within the message; recommend short opaque ids (<code>p1</code>, <code>p2</code> or ULIDs).  </li>
+<li><code>image_attachment_id</code> must resolve via existing attachment GET; do not embed base64 in presentation.  </li>
+<li>Unknown <code>visual.kind</code> → client skips visual, still speaks <code>speech_text</code> if present.  </li>
+<li>Higher <code>protocol_version</code> than client supports → <strong>ignore entire <code>presentation</code></strong> and fall back to ArtifactParser (<strong>Q1</strong> locked — fail closed).</li>
+</ol>
+<h3 id="4-sse">4. SSE</h3>
+<p>Existing <code>Event</code> with <code>type: "message"</code> carries the full <code>Message</code> object today. <strong>Additive only:</strong> when <code>presentation</code> is set on the stored message, it appears on the same <code>message</code> payload. No new SSE event type required for M1–M2.</p>
+<p><strong>p1:</strong> attach <code>presentation</code> only on the <strong>final assistant message</strong> of the turn (<strong>Q5</strong> locked). Progressive mid-turn phase deltas deferred.</p>
+<h3 id="5-persistence-sqlite-additive">5. Persistence (SQLite, additive)</h3>
+<p>Prefer a nullable column or JSON blob on the dual-write path used for UI messages, e.g.:</p>
+<pre><code class="language-sql">-- sketch; exact migration number TBD at implement time
+ALTER TABLE … ADD COLUMN presentation_json TEXT;  -- NULL = absent
+</code></pre>
+<p>Or store inside existing message JSON if messages are already blobbed. <strong>Must not</strong> require rewriting old rows; NULL/absent ≡ no presentation.</p>
+<p>Session-level optional cache of last advertised client:</p>
+<pre><code class="language-text">Session.client_name, Session.client_protocol  // optional, for soul/metrics
+</code></pre>
+<p>No requirement that advertise is durable across process restart for M1 (in-memory on Session is enough).</p>
+<h2 id="production-behavior-by-milestone">Production behavior by milestone</h2>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>Client</th>
+<th>Harness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M0</strong></td>
+<td>—</td>
+<td>This ADR + sketch + review</td>
+</tr>
+<tr>
+<td><strong>M1</strong></td>
+<td>Send <code>client</code> on create + postMessage; prefer <code>presentation</code> if present else ArtifactParser</td>
+<td>Accept/ignore <code>client</code>; pass through / store <code>presentation</code> if model or tool already produced it (no requirement to generate yet)</td>
+</tr>
+<tr>
+<td><strong>M2</strong></td>
+<td>Keep envelope; optionally slim when protocol≥1</td>
+<td>When <code>client.name=wonderstand</code> &amp;&amp; <code>protocol≥1</code>, inject <strong>Wonderstand prompt pack</strong> (soul snippet or turn preamble) steering markdown quality + TTS-friendly structure (<strong>Q2</strong>)</td>
+</tr>
+<tr>
+<td><strong>M3</strong></td>
+<td>Prefer validated presentation; parser is fallback</td>
+<td>Prefer optional <strong><code>```presentation</code></strong> fence in <code>content</code> (debuggable) → parse into <code>presentation</code> field; heuristic enrich as backup; <strong>validate/normalize</strong> (ids, attachment refs, size caps). No new tool required in p1 (<strong>Q2</strong>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="prompt-pack-m2-sketch">Prompt pack (M2 sketch)</h3>
+<p>Not a separate API: harness system/soul branch when client advertises Wonderstand, e.g.:</p>
+<pre><code class="language-text">If the user is on Wonderstand (immersion client), structure the final answer so a
+presentation JSON could be derived: short TTS-friendly paragraphs; concrete
+visuals (svg fence / table / image attachment). Prefer lead-with-visual.
+Do not omit normal markdown — web and logs still need content.
+Optional: emit a single ```presentation fenced JSON block matching protocol 1
+(phases with id, speech_text, visual) for harness M3 extract.
+</code></pre>
+<p><strong>Production path (</strong>Q2<strong> locked):</strong> M2 prompt pack steers quality; M3 prefers fence-in-content → <code>presentation</code> field (strip fence from spoken path); heuristic enrich backup; no new tool in p1.</p>
+<h3 id="size-safety-caps-q6-locked">Size / safety caps (<strong>Q6</strong> locked)</h3>
+<table>
+<thead>
+<tr>
+<th>Cap</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Max phases per message</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>Max <code>speech_text</code> per phase</td>
+<td><strong>2 KiB</strong></td>
+</tr>
+<tr>
+<td>Max <code>svg</code> / <code>html</code> bytes per phase</td>
+<td><strong>256 KiB</strong></td>
+</tr>
+<tr>
+<td>Max total <code>presentation_json</code></td>
+<td><strong>1 MiB</strong></td>
+</tr>
+<tr>
+<td>On overflow</td>
+<td><strong>Clamp + log</strong>; do <strong>not</strong> fail the whole turn</td>
+</tr>
+<tr>
+<td>HTML</td>
+<td>Client WebView no-JS (existing Wonderstand policy); harness does not execute</td>
+</tr>
+</tbody>
+</table>
+<h2 id="client-algorithm-normative-sketch">Client algorithm (normative sketch)</h2>
+<pre><code class="language-text">on assistant message M:
+  if M.presentation exists AND M.presentation.protocol_version &lt;= client.supported:
+    timeline = phases_to_timeline(M.presentation.phases)
+    // phase without visual → hold previous visual (Q3)
+    // phase.id → scrubber index; speech_text → TTS; visual → screen
+  else:
+    // missing, invalid, or newer protocol_version (Q1 fail closed)
+    timeline = ArtifactParser.parseAssistant(M)
+  play(timeline)
+</code></pre>
+<p>Parser remains for: older harness, web-authored sessions, failed validation, protocol mismatch.</p>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Why not default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Client-only forever (envelope + parser)</td>
+<td>Already pain; scrubber/TTS/SVG reliability blocked</td>
+</tr>
+<tr>
+<td>Replace <code>content</code> with structured-only</td>
+<td>Breaks web UI and tools that expect markdown</td>
+</tr>
+<tr>
+<td>New <code>/api/wonderstand/*</code> surface</td>
+<td>Duplicates sessions/messages; prefer additive fields</td>
+</tr>
+<tr>
+<td>SSE-only presentation (not on GET hydrate)</td>
+<td>Scrubber/reopen session would lose beats</td>
+</tr>
+<tr>
+<td>XML/SSML in content</td>
+<td>Harder for web; TTS engines vary; keep plain <code>speech_text</code></td>
+</tr>
+<tr>
+<td>Force JSON tool <code>emit_presentation</code> only</td>
+<td>Useful later; not required for M1 passthrough</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisions-locked-q1q8">Decisions locked (Q1–Q8)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+<th>Locked</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Newer <code>protocol_version</code> than client</td>
+<td><strong>Ignore entire presentation</strong> + ArtifactParser fallback (fail closed)</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>How presentation is produced (M2/M3)</td>
+<td><strong>M2 prompt pack</strong> steers markdown; <strong>M3</strong> prefer optional <code>```presentation</code> fence → field, heuristic enrich backup; <strong>no new tool in p1</strong></td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Phase without <code>visual</code></td>
+<td><strong>Hold previous</strong> visual (immersion-timeline spirit)</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>User-message presentation</td>
+<td><strong>No in protocol 1</strong> — assistant only</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Progressive mid-turn phases via SSE</td>
+<td><strong>Defer</strong> — presentation on <strong>final assistant message</strong> only in p1</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Size caps</td>
+<td><strong>32</strong> phases; <strong>2 KiB</strong> speech_text/phase; <strong>256 KiB</strong> svg/html/phase; <strong>1 MiB</strong> total; <strong>clamp + log</strong>, do not fail turn</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Sticky client</td>
+<td><strong>createSession</strong> sets default; each <strong>postMessage</strong> may override (last post wins for enrichment)</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Body <code>client</code> vs <code>X-Marble-Client</code></td>
+<td><strong>Body normative</strong> for protocol; header optional metrics; header-only ⇒ name without protocol (no enrichment assumptions)</td>
+</tr>
+</tbody>
+</table>
+<p><em>Source: <a href="0025-answers.json">0025-answers.json</a> (<code>2026-08-08T16:07:31.856Z</code>).</em></p>
+<h2 id="implementation-plan">Implementation plan</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Scope</th>
+<th>Owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M0</strong></td>
+<td>This ADR, review HTML, sketch doc, link from 0024</td>
+<td>Docs</td>
+</tr>
+<tr>
+<td><strong>M1</strong></td>
+<td>API: accept <code>client</code> on create/postMessage; optional store on Session; <code>presentation</code> passthrough on Message + SQLite + SSE + GET hydrate; no generation</td>
+<td>Harness + Wonderstand client consume</td>
+</tr>
+<tr>
+<td><strong>M2</strong></td>
+<td>Wonderstand prompt pack / soul branch when advertised; client may reduce envelope duplication</td>
+<td>Harness prompt + Wonderstand settings</td>
+</tr>
+<tr>
+<td><strong>M3</strong></td>
+<td>Validate phases (ids, caps, attachment refs); optional fence extract / enrich; metrics</td>
+<td>Harness; client hardened player</td>
+</tr>
+</tbody>
+</table>
+<h3 id="suggested-pr-slice-post-accept">Suggested PR slice (post-accept)</h3>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>W0</strong></td>
+<td>Types + JSON tags; ignore unknown; tests for decode</td>
+</tr>
+<tr>
+<td><strong>W1</strong></td>
+<td>Persist <code>presentation_json</code>; UIMessages + SSE include field</td>
+</tr>
+<tr>
+<td><strong>W2</strong></td>
+<td>Advertise plumbing + session sticky client</td>
+</tr>
+<tr>
+<td><strong>W3</strong></td>
+<td>Prompt pack when wonderstand+protocol≥1</td>
+</tr>
+<tr>
+<td><strong>W4</strong></td>
+<td>Validate/caps + optional fence extract</td>
+</tr>
+<tr>
+<td><strong>W5</strong></td>
+<td>Wonderstand app: prefer presentation, scrubber by <code>phase.id</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="success-metrics">Success metrics</h2>
+<ul>
+<li>Immersion scrubber can jump to phase <code>id</code> after full rehydrate without re-parsing markdown.  </li>
+<li>TTS speaks <code>speech_text</code> without markdown tokens on protocol-1 messages.  </li>
+<li>SVG/HTML phases render from structured fields (not only fence scan).  </li>
+<li>Web UI unchanged when <code>presentation</code> absent or present (ignores field).  </li>
+<li>Old Wonderstand builds still work (no required request fields).</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model omits presentation</td>
+<td>Parser fallback; M2 prompt; M3 enrich</td>
+</tr>
+<tr>
+<td>Huge SVG in JSON</td>
+<td>Caps (<strong>Q6</strong> locked); attachment for large rasters</td>
+</tr>
+<tr>
+<td>Dual source of truth (content vs phases) drift</td>
+<td>content remains canonical for web; presentation is view model</td>
+</tr>
+<tr>
+<td>Protocol drift Android vs harness</td>
+<td><code>protocol_version</code> + advertise; fail closed (<strong>Q1</strong> locked)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="0024-doc.html">ADR-0024 Wonderstand client (pointer)</a>  </li>
+<li>marble-wonderstand <a href="0001-doc.html">ADR-0001</a>, <a href="../../marble-wonderstand/docs/immersion-timeline.md">immersion-timeline.md</a>, <a href="../../marble-wonderstand/docs/api-client.md">api-client.md</a>  </li>
+<li><a href="0019-doc.html">ADR-0019 Multimodal attachments</a>  </li>
+<li><a href="0010-doc.html">ADR-0010 Agent loop transparency / SSE</a>  </li>
+<li><a href="../docs/wonderstand-protocol-sketch.md">docs/wonderstand-protocol-sketch.md</a></li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-08-08</td>
+<td><strong>Proposed</strong> — protocol 1 sketch; M0–M3 plan; Q1–Q8 open for review</td>
+</tr>
+<tr>
+<td>2026-08-08</td>
+<td><strong>Accepted</strong> — locked Q1–Q8 (<code>2026-08-08T16:07:31.856Z</code>); ready for W0–W5 implementation</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0025-wonderstand-protocol.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

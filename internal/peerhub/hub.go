@@ -66,8 +66,11 @@ type PendingConfirm struct {
 	ComputerID string    `json:"computer_id"`
 	Prompt     string    `json:"prompt"`
 	Risk       string    `json:"risk,omitempty"`
+	URL        string    `json:"url,omitempty"` // harness Accept/Deny page (Tailscale-reachable)
 	CreatedAt  time.Time `json:"created_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
+	// Expired is set in ListConfirms copies after ExpiresAt (kept briefly so UI can dismiss).
+	Expired bool `json:"expired,omitempty"`
 }
 
 // Hub tracks online peers by computer id.
@@ -335,7 +338,11 @@ func (h *Hub) GetConfirm(id string) *PendingConfirm {
 	return &cp
 }
 
+// staleConfirmKeep is how long expired confirms stay listable for UI dismiss.
+const staleConfirmKeep = 30 * time.Minute
+
 // ListConfirms returns pending confirms, optionally filtered by session_id.
+// Expired confirms are kept for staleConfirmKeep so the harness can surface and dismiss them.
 func (h *Hub) ListConfirms(sessionID string) []PendingConfirm {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -345,46 +352,52 @@ func (h *Hub) ListConfirms(sessionID string) []PendingConfirm {
 		if p == nil {
 			continue
 		}
-		if !p.ExpiresAt.IsZero() && now.After(p.ExpiresAt) {
+		expired := !p.ExpiresAt.IsZero() && now.After(p.ExpiresAt)
+		if expired && now.After(p.ExpiresAt.Add(staleConfirmKeep)) {
 			delete(h.confirms, id)
 			continue
 		}
 		if sessionID != "" && p.SessionID != sessionID {
 			continue
 		}
-		out = append(out, *p)
+		cp := *p
+		cp.Expired = expired
+		out = append(out, cp)
 	}
 	return out
 }
 
 // ResolveConfirmFromHarness tells the peer the human accepted/denied via Marble UI.
-// The peer unblocks waitConfirm; the original Call then returns.
+// Always removes the pending confirm locally. If the peer is offline / already timed
+// out, dismiss still succeeds so stale cards can be purged from the harness UI.
 func (h *Hub) ResolveConfirmFromHarness(id string, accept bool) error {
 	h.mu.Lock()
 	p := h.confirms[id]
 	var computerID string
 	if p != nil {
 		computerID = p.ComputerID
+		delete(h.confirms, id)
 	}
 	h.mu.Unlock()
 	if computerID == "" {
-		// Still try to find an online peer? Fail clearly.
-		return fmt.Errorf("unknown or expired confirm id %q", id)
+		return fmt.Errorf("unknown confirm id %q (already dismissed?)", id)
 	}
 	c := h.Get(computerID)
 	if c == nil {
-		return fmt.Errorf("computer %q offline", computerID)
+		// Local dismiss OK — peer already timed out or offline.
+		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return fmt.Errorf("computer %q offline", computerID)
+		return nil
 	}
-	return c.ws.WriteJSON(Envelope{
+	_ = c.ws.WriteJSON(Envelope{
 		Type: "confirm_resolve",
 		ID:   id,
 		OK:   accept,
 	})
+	return nil
 }
 
 // Cancel asks peer to stop current action (best effort).
