@@ -4,7 +4,39 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.2
+## What's new in v0.4.3
+
+Highlights since **[v0.4.2](https://github.com/rendicott/marble/releases/tag/v0.4.2)**:
+
+### Server-side TTS (ADR-0027)
+- Optional neural narration (`$MEMORY/tts.json` + `ELEVENLABS_API_KEY` / OpenAI-compatible TTS)
+- `GET /api/tts/status`, `POST /api/sessions/{id}/tts`; audio stored as session attachments (inline GET)
+- Off by default; see [`adr/tts.json.example`](adr/tts.json.example)
+
+### Secrets UI
+- **Settings → Secrets** edits `$MEMORY/env` (mode 0600) live — catalog `api_key_env` names, no restart
+- Process env still wins; systemd example uses `EnvironmentFile=-%h/.marble/env` (dropped `~/.config/marble/env`)
+
+### Computer use
+- Harness **Accept/Deny confirm page** (`/confirm/{id}`) plus live session card for `computer_confirm`
+- Peer screenshots staged as chat image attachments so vision models actually see pixels
+- **SVG** allowed as a **document** chip (download / source preview; never served as `image/svg+xml`)
+- Process default **`CapImages=true`** so screenshots reach the model unless a catalog row sets `cap_images=0`
+
+### Reliability
+- **Deadlock fix:** `advisory()` no longer re-locks the session mutex (non-vision model + `computer_screenshot` wedged `/api/sessions` and `/api/health`)
+- `List` / `DirtyCount` / `Daemon.Health` no longer hold a global lock across per-session mutexes
+- `/api/health` model ping capped at **5s**
+- `call_agent_process` progress: cwd mtime / stuck hint instead of identical poll JSON
+
+### Transcript density (ADR-0026)
+- Compact tool rows by default (expand on demand), timestamps, thinking status
+
+### Docs
+- ADR HTML kit (`*-doc.html`, `adr/index.html`, `render_docs.py` / `serve.py`)
+- ADR-0026 accepted; ADR-0027 accepted
+
+### Earlier — v0.4.2
 
 Highlights since **[v0.4.1](https://github.com/rendicott/marble/releases/tag/v0.4.1)**:
 
@@ -23,7 +55,7 @@ Highlights since **[v0.4.1](https://github.com/rendicott/marble/releases/tag/v0.
 - Wonderstand **prompt pack** when `client.name=wonderstand` && `protocol≥1`
 
 ### Docs
-- ADR-0024 pointer, ADR-0025 protocol (accepted), ADR-0026 transcript density (proposed)
+- ADR-0024 pointer, ADR-0025 protocol (accepted)
 - Payload sketch: [`docs/wonderstand-protocol-sketch.md`](docs/wonderstand-protocol-sketch.md)
 
 ### Earlier — v0.4.1
@@ -89,7 +121,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Local / open endpoints** — no API key by default (no `Authorization` header)
 - **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` (and catalog `api_key_env`) names only; first non-empty wins from **process env**, then **`$MEMORY/env`** (file re-read so new catalog keys need no restart; Settings → Secrets)
 - **Health / Settings** show auth mode, env name, **key ok / key missing** chips — never the secret
-- **Multimodal (ADR-0019)** — image (+ basic document) parts when catalog `cap_images` is set; process default stays text-only on the wire
+- **Multimodal (ADR-0019)** — image (+ basic document, including SVG as a downloadable document) parts; process default **`CapImages=true`** (catalog row can set `cap_images=0` for text-only endpoints)
 
 ### Auth & access (ADR-0017)
 - **open** (default) — no login; local-operator trust model
@@ -107,7 +139,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Continuations** — one-shot delayed resume (`schedule_continuation`: delay and/or wait for BG task); harness **auto-continue** near hard iter caps
 - **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
 - **Models (ADR-0018)** — `model_list` / `model_get` / **`model_add`** / **`model_update`** / `session_set_model` (catalog writes store env **names** only; agent can research base_url & limits via web tools)
-- **Computer use (ADR-0020)** — `computer_*` tools against a paired **[marble-peer](https://github.com/rendicott/marble-desktop-peer)** (browser CDP + desktop + confirm)
+- **Computer use (ADR-0020)** — `computer_*` tools against a paired **[marble-peer](https://github.com/rendicott/marble-desktop-peer)** (browser CDP + desktop + confirm). Confirm cards in the session UI and a Tailscale-reachable `/confirm/{id}` page.
 - **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available
 - **External agents (ADR-0014)** — `call_agent_process` (`format=grok|claude`) with optional `workdir`, high timeouts, `background` mode
 - **Memory & skills** — `memory_*` under `$MEMORY/knowledge/`, `skill_*` from skill roots; prompt nudges memory when unsure
@@ -141,7 +173,8 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Workspace explorer** modal (browse/edit/upload under the tool jail)
 - **System prompt & soul** modal (👁) — immutable system prompt + editable soul
 - **Cron jobs** modal (🕐) — list/create/edit/enable/run-now/history + next-fire preview + optional model pin
-- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, **Computers** ([marble-peer](https://github.com/rendicott/marble-desktop-peer) pairing), DB settings, MCP, UI prefs
+- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, **Secrets** (`$MEMORY/env`), **Computers** ([marble-peer](https://github.com/rendicott/marble-desktop-peer) pairing), DB settings, MCP, UI prefs
+- **Compact tools** (ADR-0026) — tool rows collapsed by default; timestamps on user/assistant/tool
 - **Mobile-first** polish for composer, panels, and session chrome
 - SSE live updates for messages, tools, turn progress, attachments, peer confirms
 - Sign-in flow when Google mode is enabled
@@ -455,8 +488,8 @@ printf 'GEMINI_API_KEY=…\n' >> ~/.marble/env
 | Limitation | Notes |
 |------------|--------|
 | **Process model is CLI-only** | Change process `--model` / `--base-url` / key via restart; catalog entries are editable live in Settings |
-| **Process CapImages is false** | Vision requires a catalog entry with `cap_images` (no CLI multimodal flag yet) |
-| **No audio / PDF** | Multimodal v1 is images + basic text documents only |
+| **No CLI multimodal flag** | Process default is `CapImages=true`; set catalog `cap_images=0` for text-only endpoints |
+| **No inbound audio / PDF** | Outbound TTS narration is optional (ADR-0027). Chat attach is images + basic text/SVG documents; no PDF/mic |
 | **Auth is allowlist, not multi-tenant** | Optional Google OAuth; all allowlisted users full admin / shared sessions — not per-user isolation or RBAC |
 | **One harness per memory dir** | Second process fails on `marble.lock` |
 | **Shell is powerful** | Deny-list policy, not a full sandbox; same OS user as the harness |
