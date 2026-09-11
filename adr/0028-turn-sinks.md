@@ -175,6 +175,201 @@ type Filters struct {
 | No recursion | Manager is harness code, not an agent turn; never re-enters `/api/prompt` |
 | Coalescing | Optional `min_interval_sec` to collapse a noisy session to one notification per window |
 
+## Predefined sink types (first pass)
+
+First pass ships **six types**. All share the same `Sink` interface and a set of **common fields**; each adds a small set of type-specific fields. `webhook` is the generic base the others are thin wrappers over — so every type below is either the base itself or a pre-baked constructor over it.
+
+| type | purpose | auth | deep-link mapping |
+|------|---------|------|-------------------|
+| `orb` | publish to an Orb topic | `secret_env` → `Authorization: Bearer` | `X-Orb-Return-Url` header |
+| `webhook` | any HTTP endpoint | arbitrary headers; optional `secret_env` | `{{.DeepLink}}` in the template |
+| `slack` | Slack incoming webhook | webhook URL (no auth header) | link/button in the payload |
+| `discord` | Discord webhook | webhook URL | embed `url` |
+| `ntfy` | ntfy.sh or self-hosted | optional bearer/token | `Click:` header |
+| `stdout` | local test/debug sink | none | printed to the log |
+
+### Common fields (every type)
+
+| field | required | notes |
+|-------|----------|-------|
+| `id` | yes | unique slug for this sink |
+| `type` | yes | one of the six above |
+| `enabled` | yes | master switch for this sink |
+| `deep_link_base` | no | overrides the global default for this sink |
+| `filters` | no | `{ kinds[], skip_empty, skip_cron, only_sessions[], skip_sessions[], min_chars, min_interval_sec }` |
+
+### `orb`
+
+Publishes the turn to an Orb topic and sets the deep link as the first-class `return_url` (ADR-orb-0011), so the tray/phone notification is one tap back to `/s/{id}`.
+
+| field | required | notes |
+|-------|----------|-------|
+| `topic_id` | yes | `t_…` to publish to |
+| `api_base` | no | default `https://api.dev.orbnet.app` |
+| `secret_env` | yes | env var name holding `orb_ak_` / `orb_pk_` (e.g. `ORB_AK`) |
+| `title_prefix` | no | e.g. `"marble: "` — prepended to the OS banner title |
+
+```json
+{ "id": "orb", "type": "orb", "enabled": true,
+  "topic_id": "t_adcd…", "secret_env": "ORB_AK",
+  "title_prefix": "marble: ", "deep_link_base": "https://rinux.tail…" }
+```
+
+### `webhook` (generic)
+
+The escape hatch: any HTTP endpoint, any body shape, any headers. The body is a Go `text/template` over `TurnEvent`.
+
+| field | required | notes |
+|-------|----------|-------|
+| `url` | yes | full endpoint |
+| `method` | no | default `POST` |
+| `headers` | no | static headers (e.g. `Content-Type`) |
+| `template` | yes | Go `text/template` body; `{{.Message}}`, `{{.Preview}}`, `{{.DeepLink}}`, … |
+| `secret_env` | no | env var whose value becomes `Authorization: Bearer …` |
+
+```json
+{ "id": "generic", "type": "webhook", "enabled": false,
+  "url": "https://hooks.example.com/x", "method": "POST",
+  "headers": { "Content-Type": "application/json" },
+  "template": "{\"text\":\"{{.Preview}}\",\"link\":\"{{.DeepLink}}\"}" }
+```
+
+### `slack`
+
+Slack incoming webhook (the whole URL is the credential, so it is referenced by env var name).
+
+| field | required | notes |
+|-------|----------|-------|
+| `secret_env` | yes | env var name holding the full webhook URL (`SLACK_WEBHOOK_URL`) |
+| `channel` | no | `#ops` override |
+| `username` | no | bot display name |
+| `icon_emoji` | no | e.g. `:robot_face:` |
+
+```json
+{ "id": "slack", "type": "slack", "enabled": false,
+  "secret_env": "SLACK_WEBHOOK_URL", "channel": "#ops", "username": "marble" }
+```
+
+### `discord`
+
+Discord webhook; deep link becomes the embed `url`.
+
+| field | required | notes |
+|-------|----------|-------|
+| `secret_env` | yes | env var name holding the full webhook URL (`DISCORD_WEBHOOK_URL`) |
+| `username` | no | bot display name |
+| `avatar_url` | no | override avatar |
+
+```json
+{ "id": "discord", "type": "discord", "enabled": false,
+  "secret_env": "DISCORD_WEBHOOK_URL", "username": "marble" }
+```
+
+### `ntfy`
+
+ntfy.sh (or self-hosted); deep link becomes the `Click:` header so tapping the notification opens the session.
+
+| field | required | notes |
+|-------|----------|-------|
+| `server` | no | default `https://ntfy.sh` |
+| `topic` | yes | ntfy topic name |
+| `secret_env` | no | env var name holding an access token/bearer (optional) |
+| `priority` | no | 1–5 |
+
+```json
+{ "id": "ntfy", "type": "ntfy", "enabled": false,
+  "server": "https://ntfy.sh", "topic": "rinux-marble", "priority": 3 }
+```
+
+### `stdout`
+
+Local only; no secrets, no network. Prints the turn event to the harness log — used to debug filters/templates before pointing a real channel at the stream.
+
+| field | required | notes |
+|-------|----------|-------|
+| `format` | no | `plain` (default) or `json` |
+
+```json
+{ "id": "debug", "type": "stdout", "enabled": false, "format": "plain" }
+```
+
+## Settings UI mockups
+
+Wireframes only — the settings SPA gains a **Sinks** section. Each mock shows the list, the type picker, and the type-specific editor fields.
+
+### Sinks list (Settings → Sinks)
+
+```text
+┌ Sinks ──────────────────────────────────────────────────────────────┐
+│ Mirror finished turns to external channels.    [+ Add sink ▾]      │
+│                                                                    │
+│  ● orb          type: orb        [Edit] [Disable]                  │
+│    topic t_adcd… · secret ORB_AK · kinds complete,error · skip cron│
+│  ○ slack        type: slack      [Edit] [Enable]                   │
+│    channel #ops · secret SLACK_WEBHOOK_URL                         │
+│  ○ debug        type: stdout     [Edit] [Enable]                   │
+│    format plain                                                   │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### Add sink — type picker
+
+```text
+┌ Add sink ──────────────────────────────────────────────────────────┐
+│  Type:  [orb ▾]                                                   │
+│         orb — publish to an Orb topic (deep link = return_url)    │
+│         webhook — any HTTP endpoint (custom template)             │
+│         slack — Slack incoming webhook                            │
+│         discord — Discord webhook                                 │
+│         ntfy — ntfy.sh / self-hosted                              │
+│         stdout — local test sink                                  │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### Editor — common fields (shown for every type)
+
+```text
+┌ Edit sink · orb ──────────────────────────────────────────────────┐
+│  Enabled    [x]                                                  │
+│  Deep link  [https://rinux.tail…          ]   (global default)   │
+│  ─ Filters ────────────────────────────────────────────────────── │
+│  Kinds      [x] complete  [x] error  [ ] stop                    │
+│             [ ] cron      [ ] continuation                       │
+│  [x] Skip empty   [x] Skip cron   [ ] Coalesce (min_interval_sec) │
+│  Only sessions  [____________________]  (regex, one per line)    │
+│  Skip sessions  [____________________]                            │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### Editor — type-specific fields
+
+```text
+orb:      Topic id  [t_adcd…          ]  Secret env  [ORB_AK  ▾]
+          API base  [https://api.dev.orbnet.app]  Title prefix [marble: ]
+
+webhook:  URL       [https://hooks.example.com/x]
+          Method    [POST ▾]     Headers  [+ Content-Type: application/json]
+          Template  [{"text":"{{.Preview}}","link":"{{.DeepLink}}"}]
+          Secret env [________ (optional)]
+
+slack:    Secret env [SLACK_WEBHOOK_URL ▾]  Channel [#ops]
+          Username  [marble]                Icon [ :robot_face: ]
+
+discord:  Secret env [DISCORD_WEBHOOK_URL ▾]  Username [marble]
+          Avatar URL [________ (optional)]
+
+ntfy:     Server    [https://ntfy.sh]   Topic [rinux-marble]
+          Priority  [3 ▾]               Secret env [________ (optional)]
+
+stdout:   Format    [plain ▾]   (plain | json)
+```
+
+Notes on the mockups:
+
+- **Secret fields are dropdowns of env-var names** (ADR-0016) — the UI never shows a raw key; it offers existing `*_KEY`/`*_URL` names plus a free-text “add env name” option.
+- **A “test” button** next to each sink sends a synthetic turn event so the operator can verify end-to-end without waiting for a real turn.
+- **Invalid config is saved but marked disabled** with a validation note (e.g. `orb` missing `topic_id`), rather than silently failing at delivery.
+
 ## Alternatives considered
 
 | Alternative | Why not default |
@@ -204,7 +399,7 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 - **Q3** Deep-link auth → login-first (reuse `/s/{id}` under ADR-0017); no expiring share token in v1.  
 - **Q4** `deep_link_base` → per-sink with a global default.  
 - **Q5** Secrets → env-var name only (ADR-0016 `api_key_env`).  
-- **Q6** First sinks → `orb` + `webhook`; `slack`/`ntfy`/`discord` next.  
+- **Q6** First pass sinks → **all six** predefined types (`orb`, `webhook`, `slack`, `discord`, `ntfy`, `stdout`); the webhook/template base makes the extras near-free.  
 - **Q7** Payload → full final message (not preview-only).  
 - **Q8** Tool-only turns → skip by default (only turns with a final assistant message).  
 - **Q9** Filters → kinds + skip-empty + skip-cron + session regex + min-chars.  
@@ -226,9 +421,9 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 | Milestone | Scope |
 |-----------|--------|
 | **M0** | This ADR + review HTML |
-| **M1** | `internal/sink` — `TurnEvent`, `Sink`, `Manager`, filters, `webhook` sink, `orb` sink; config; subscribe to the session stream |
-| **M2** | `slack`, `ntfy`, `discord` templates + a `stdout` test sink; Settings UI for sinks |
-| **M3** | Coalescing polish, per-sink delivery history/log, custom `text/template` in settings |
+| **M1** | `internal/sink` — `TurnEvent`, `Sink`, `Manager`, filters, the six predefined types (`orb`, `webhook`, `slack`, `discord`, `ntfy`, `stdout`); config; subscribe to the session stream |
+| **M2** | Settings UI (sinks list + per-type editors + test button); coalescing polish; per-sink delivery history/log |
+| **M3** | Custom `text/template` editing in Settings; additional channel types as demand appears |
 
 ### Suggested PR slice (post-accept)
 
@@ -237,9 +432,9 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 | S0 | `TurnEvent` + `Sink` + `Manager` + fake sink tests |
 | S1 | `webhook` sink + template rendering + config load |
 | S2 | `orb` sink (return_url header + idempotency) |
-| S3 | Wire manager into the session stream subscription |
-| S4 | Filters + coalescing |
-| S5 | Slack/ntfy/Discord templates + stdout sink |
+| S3 | `slack` / `discord` / `ntfy` / `stdout` constructors over the webhook base |
+| S4 | Wire manager into the session stream subscription |
+| S5 | Filters + coalescing + Settings UI (list + editors + test button) |
 
 ## Success metrics
 
@@ -272,3 +467,4 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 | Date | Note |
 |------|------|
 | 2026-09-11 | **Proposed** — generic turn-sink layer; Orb/Slack/ntfy/Discord/webhook over a template base; stream-subscription trigger; deep link as a concept; Q1–Q12 open for review |
+| 2026-09-11 | **Added** predefined sink types (first pass): `orb`, `webhook`, `slack`, `discord`, `ntfy`, `stdout` — per-type config reference + Settings UI mockups |

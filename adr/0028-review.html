@@ -100,6 +100,8 @@
       <a href="#shape">Shape</a>
       <a href="#deep-link">Deep link</a>
       <a href="#config">Config</a>
+      <a href="#types">Sink types</a>
+      <a href="#mockups">UI</a>
       <a href="#milestones">Plan</a>
       <a href="#questions">Decisions</a>
       <a href="0028-turn-sinks.md">Markdown</a>
@@ -252,6 +254,94 @@ no recursion   manager is harness code, never re-enters /api/prompt
 coalesce       optional min_interval_sec per sink (off by default)</pre>
     </section>
 
+    <section id="types">
+      <h2>Predefined sink types (first pass)</h2>
+      <p class="muted">Six types ship first. All share the same interface + common fields; <code>webhook</code> is the base the others wrap.</p>
+      <table>
+        <tr><th>type</th><th>purpose</th><th>auth</th><th>deep-link mapping</th></tr>
+        <tr><td><strong>orb</strong></td><td>publish to an Orb topic</td><td><code>secret_env</code> → Bearer</td><td><code>X-Orb-Return-Url</code> header</td></tr>
+        <tr><td><strong>webhook</strong></td><td>any HTTP endpoint</td><td>headers / optional secret</td><td><code>{{.DeepLink}}</code> in template</td></tr>
+        <tr><td><strong>slack</strong></td><td>Slack incoming webhook</td><td>webhook URL</td><td>link/button in payload</td></tr>
+        <tr><td><strong>discord</strong></td><td>Discord webhook</td><td>webhook URL</td><td>embed <code>url</code></td></tr>
+        <tr><td><strong>ntfy</strong></td><td>ntfy.sh / self-hosted</td><td>optional bearer</td><td><code>Click:</code> header</td></tr>
+        <tr><td><strong>stdout</strong></td><td>local test/debug</td><td>none</td><td>printed to log</td></tr>
+      </table>
+
+      <h3>Per-type config (type-specific fields)</h3>
+      <pre class="mock">orb      topic_id (t_…), api_base (opt), secret_env (ORB_AK), title_prefix (opt)
+webhook  url, method (POST), headers, template (Go text/template), secret_env (opt)
+slack    secret_env (SLACK_WEBHOOK_URL), channel (opt), username (opt), icon_emoji (opt)
+discord  secret_env (DISCORD_WEBHOOK_URL), username (opt), avatar_url (opt)
+ntfy     server (opt, ntfy.sh), topic, secret_env (opt), priority (opt, 1-5)
+stdout   format (plain | json)</pre>
+      <p class="muted">Common fields on every type: <code>id</code>, <code>type</code>, <code>enabled</code>, <code>deep_link_base</code> (opt), <code>filters</code>.</p>
+    </section>
+
+    <section id="mockups">
+      <h2>Settings UI mockups</h2>
+      <p class="muted">The settings SPA gains a <strong>Sinks</strong> section. Secrets are env-var-name dropdowns (ADR-0016), never raw keys.</p>
+
+      <h3>Sinks list</h3>
+      <pre class="mock">┌ Sinks ──────────────────────────────────────────────────────────────┐
+│ Mirror finished turns to external channels.    [+ Add sink ▾]      │
+│                                                                    │
+│  ● orb          type: orb        [Edit] [Disable]                  │
+│    topic t_adcd… · secret ORB_AK · kinds complete,error · skip cron│
+│  ○ slack        type: slack      [Edit] [Enable]                   │
+│    channel #ops · secret SLACK_WEBHOOK_URL                         │
+│  ○ debug        type: stdout     [Edit] [Enable]                   │
+│    format plain                                                   │
+└────────────────────────────────────────────────────────────────────┘</pre>
+
+      <h3>Type picker</h3>
+      <pre class="mock">┌ Add sink ──────────────────────────────────────────────────────────┐
+│  Type:  [orb ▾]                                                   │
+│         orb — publish to an Orb topic (deep link = return_url)    │
+│         webhook — any HTTP endpoint (custom template)             │
+│         slack — Slack incoming webhook                            │
+│         discord — Discord webhook                                 │
+│         ntfy — ntfy.sh / self-hosted                              │
+│         stdout — local test sink                                  │
+└────────────────────────────────────────────────────────────────────┘</pre>
+
+      <h3>Common editor fields (every type)</h3>
+      <pre class="mock">┌ Edit sink · orb ──────────────────────────────────────────────────┐
+│  Enabled    [x]                                                  │
+│  Deep link  [https://rinux.tail…          ]   (global default)   │
+│  ─ Filters ────────────────────────────────────────────────────── │
+│  Kinds      [x] complete  [x] error  [ ] stop                    │
+│             [ ] cron      [ ] continuation                       │
+│  [x] Skip empty   [x] Skip cron   [ ] Coalesce (min_interval_sec) │
+│  Only sessions  [____________________]  (regex, one per line)    │
+│  Skip sessions  [____________________]                            │
+└────────────────────────────────────────────────────────────────────┘</pre>
+
+      <h3>Type-specific fields</h3>
+      <pre class="mock">orb:      Topic id  [t_adcd…          ]  Secret env  [ORB_AK  ▾]
+          API base  [https://api.dev.orbnet.app]  Title prefix [marble: ]
+
+webhook:  URL       [https://hooks.example.com/x]
+          Method    [POST ▾]     Headers  [+ Content-Type: application/json]
+          Template  [{"text":"{{.Preview}}","link":"{{.DeepLink}}"}]
+          Secret env [________ (optional)]
+
+slack:    Secret env [SLACK_WEBHOOK_URL ▾]  Channel [#ops]
+          Username  [marble]                Icon [ :robot_face: ]
+
+discord:  Secret env [DISCORD_WEBHOOK_URL ▾]  Username [marble]
+          Avatar URL [________ (optional)]
+
+ntfy:     Server    [https://ntfy.sh]   Topic [rinux-marble]
+          Priority  [3 ▾]               Secret env [________ (optional)]
+
+stdout:   Format    [plain ▾]   (plain | json)</pre>
+
+      <div class="callout">
+        <strong>Test button:</strong> each sink row has a “Send test” action that fires a synthetic turn event, so
+        the operator verifies end-to-end (Orb banner, Slack message, etc.) without waiting for a real turn.
+      </div>
+    </section>
+
     <section id="milestones">
       <h2>Phased plan</h2>
       <table>
@@ -292,9 +382,9 @@ coalesce       optional min_interval_sec per sink (off by default)</pre>
         <strong>Q5</strong> How are sink credentials stored?
         <div class="rec">Rec: <strong>env-var name only</strong> (ADR-0016).</div>
       </div>
-      <div class="q" data-qid="Q6" data-rec="Ship orb + generic webhook first (they cover the concrete need and prove the template approach); slack/ntfy/discord are additive constructors next.">
+      <div class="q" data-qid="Q6" data-rec="Ship all six predefined types in the first pass (orb, webhook, slack, discord, ntfy, stdout) — the webhook/template base makes the extras near-free.">
         <strong>Q6</strong> Which sinks ship first?
-        <div class="rec">Rec: <strong>orb + webhook</strong> in M1; slack/ntfy/discord in M2.</div>
+        <div class="rec">Rec: <strong>all six predefined types</strong> in M1 (webhook base makes them cheap).</div>
       </div>
 
       <h3>Payload &amp; filters</h3>
