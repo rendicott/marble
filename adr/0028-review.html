@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0028 Generic turn sinks</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #1e3a5f 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #4c1d95 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #a78bfa, #5eead4);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 82ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--accent); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    .q {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.6rem 0.8rem; margin: 0.4rem 0; background: #141824; font-size: 0.9rem;
+    }
+    .q strong { color: var(--warn); font-family: var(--mono); font-size: 0.78rem; }
+    .q .rec { color: var(--muted); font-size: 0.84rem; margin-top: 0.2rem; }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+    .pain { color: #fca5a5; font-size: 0.88rem; }
+  </style>
+</head>
+<body data-adr="0028" data-adr-title="Generic turn sinks — mirror every session response">
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0028</span>
+      <span class="status" style="background:#3a2e10;color:var(--warn);border-color:#6b5420">PROPOSED · open for review</span>
+    </div>
+    <nav class="toc">
+      <a href="0028-doc.html">Read ADR</a>
+      <a href="#why">Why</a>
+      <a href="#shape">Shape</a>
+      <a href="#deep-link">Deep link</a>
+      <a href="#config">Config</a>
+      <a href="#milestones">Plan</a>
+      <a href="#questions">Decisions</a>
+      <a href="0028-turn-sinks.md">Markdown</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Generic turn sinks — mirror every session response</h1>
+      <p class="lede">
+        When a session finishes a turn, hand the result to N configured <strong>sinks</strong> (Orb, Slack, ntfy,
+        Discord, or a generic webhook) with a <strong>deep link back to the session</strong>. Orb is one built-in sink
+        over a template-driven webhook base — the harness never learns what "Orb" or "Slack" is. Triggers off the
+        existing session event stream; fire-and-forget; no recursion.
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Status</b> Proposed · open for review</div>
+        <div class="meta"><b>Date</b> 2026-09-11</div>
+        <div class="meta"><b>Extends</b> 0010 · 0016 · 0017 · 0018 · 0019</div>
+        <div class="meta"><b>Orb link</b> orbnet-app/orb ADR-0011 return_url</div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>trigger</strong> session Event stream</span>
+        <span class="chip"><strong>core</strong> webhook sink + template</span>
+        <span class="chip"><strong>deep link</strong> /s/{id}</span>
+        <span class="chip"><strong>secrets</strong> api_key_env</span>
+        <span class="chip"><strong>delivery</strong> fire-and-forget</span>
+        <span class="chip"><strong>no</strong> recursion</span>
+      </div>
+      <div class="callout warn">
+        Not an "Orb mirror". A <strong>turn sink</strong> that happens to have an Orb adapter. Adding Slack is a new
+        file, not a fork.
+      </div>
+    </section>
+
+    <section id="why">
+      <h2>Why now</h2>
+      <table>
+        <tr><th>Pain</th><th>Today</th><th>With 0028</th></tr>
+        <tr>
+          <td class="pain">No "turn finished" notification</td>
+          <td>Must watch the UI or poll</td>
+          <td>Tray/phone ping on every turn end (any channel)</td>
+        </tr>
+        <tr>
+          <td class="pain">No easy jump back</td>
+          <td>Navigate the session list</td>
+          <td>One-click deep link to <code>/s/{id}</code></td>
+        </tr>
+        <tr>
+          <td class="pain">Point-solution sprawl</td>
+          <td>"publish to Orb" skill; "ping Slack" would be another</td>
+          <td>One sink layer, N adapters</td>
+        </tr>
+        <tr>
+          <td class="pain">Agent-driven = unreliable</td>
+          <td>Skill can forget / interrupt / error</td>
+          <td>Harness-level, deterministic, every turn</td>
+        </tr>
+      </table>
+    </section>
+
+    <section id="shape">
+      <h2>Architecture</h2>
+      <pre class="mock">session turn loop                sink manager                sinks
+      │                              │                           │
+      │  appendUI(final assistant)   │                           │
+      │  endTurn() → status: idle    │                           │
+      │ ───────── event ───────────► │  buffer last assistant    │
+      │                              │  build TurnEvent          │
+      │                              │  filters pass?            │
+      │                              │ ── Deliver ──────────────►│  orb
+      │                              │ ── Deliver ──────────────►│  slack
+      │                              │ ── Deliver ──────────────►│  webhook
+      │                              │                           │
+      │        (never blocked)       │  fire-and-forget          │</pre>
+
+      <h3>Core abstraction</h3>
+      <pre class="mock">type TurnEvent struct {
+    SessionID, SessionTitle, Workspace, ModelID, TurnID string
+    Kind       string   // complete | error | stop | cron | continuation
+    Message    string   // final assistant text
+    Preview    string   // first line
+    DeepLink   string   // deep_link_base + "/s/" + SessionID
+    Timestamp  time.Time
+}
+
+type Sink interface {
+    Name() string
+    Deliver(ctx context.Context, ev TurnEvent) error
+}</pre>
+
+      <h3>Generic webhook sink</h3>
+      <pre class="mock">WebhookSink{
+    URL, Method, Headers,
+    Template   string,   // Go text/template over TurnEvent
+    SecretEnv  string,   // env var name only
+    Filters    Filters,
+}
+// orb / slack / ntfy / discord are constructors over this.</pre>
+
+      <div class="callout">
+        <strong>Why this is flexible:</strong> the deep link is a <em>concept</em> (<code>TurnEvent.DeepLink</code>),
+        not an Orb field. Each sink projects it to its native mechanism — Orb <code>X-Orb-Return-Url</code>, Slack a
+        button, ntfy a <code>Click:</code> header, Discord an embed <code>url</code>, a custom webhook <code>{{.DeepLink}}</code>.
+      </div>
+    </section>
+
+    <section id="deep-link">
+      <h2>Deep link projection</h2>
+      <table>
+        <tr><th>Sink</th><th>Mapping</th><th>Auth</th></tr>
+        <tr><td><strong>orb</strong></td><td><code>X-Orb-Return-Url: {{.DeepLink}}</code></td><td><code>Bearer $ORB_AK</code></td></tr>
+        <tr><td><strong>slack</strong></td><td>link/button in webhook JSON</td><td>webhook URL (no auth header)</td></tr>
+        <tr><td><strong>ntfy</strong></td><td><code>Click: {{.DeepLink}}</code> header</td><td>optional bearer</td></tr>
+        <tr><td><strong>discord</strong></td><td>embed <code>url</code></td><td>webhook URL</td></tr>
+        <tr><td><strong>webhook</strong></td><td><code>{{.DeepLink}}</code> in template</td><td>arbitrary headers</td></tr>
+      </table>
+      <p class="muted">
+        <code>deep_link_base</code> is per-sink with a global default. For the Orb case today, that's
+        <code>https://&lt;rinux-tailscale&gt;</code> so the notification links back to <code>/s/{id}</code>.
+      </p>
+    </section>
+
+    <section id="config">
+      <h2>Config (proposed)</h2>
+      <pre class="mock">{
+  "sinks": [
+    { "id": "orb", "type": "orb", "enabled": true,
+      "topic_id": "t_…", "secret_env": "ORB_AK",
+      "deep_link_base": "https://rinux.tail…",
+      "filters": { "kinds": ["complete","error"], "skip_cron": true } },
+
+    { "id": "slack", "type": "slack", "enabled": false,
+      "secret_env": "SLACK_WEBHOOK_URL", "channel": "#ops" },
+
+    { "id": "generic", "type": "webhook", "enabled": false,
+      "url": "https://hooks.example.com/x", "method": "POST",
+      "template": "{\"text\":\"{{.Preview}}\",\"link\":\"{{.DeepLink}}\"}" }
+  ]
+}</pre>
+      <p class="muted">Secrets stay in <code>~/.marble/env</code>; config references them by name (ADR-0016).</p>
+
+      <h3>Reliability</h3>
+      <pre class="mock">non-blocking   enqueue → return; never wait on a sink
+bounded queue  drop-with-log on overflow
+idempotency    key = hash(sink, session, turn); pass through when sink supports it
+retry          per-sink timeout + a couple jittered retries, then drop
+no recursion   manager is harness code, never re-enters /api/prompt
+coalesce       optional min_interval_sec per sink (off by default)</pre>
+    </section>
+
+    <section id="milestones">
+      <h2>Phased plan</h2>
+      <table>
+        <tr><th>M</th><th>Scope</th></tr>
+        <tr><td><strong>M0</strong></td><td>This ADR + review HTML</td></tr>
+        <tr><td><strong>M1</strong></td><td><code>internal/sink</code> — TurnEvent + Sink + Manager + filters + webhook + orb sinks; wire into the stream</td></tr>
+        <tr><td><strong>M2</strong></td><td>slack / ntfy / discord + stdout test sink; Settings UI</td></tr>
+        <tr><td><strong>M3</strong></td><td>Coalescing polish; per-sink history; custom templates in Settings</td></tr>
+      </table>
+    </section>
+
+    <section id="questions">
+      <h2>Decisions — open (Q1–Q12)</h2>
+      <p class="muted">All recommend "use rec". Canonical source will be <code>0028-answers.json</code> after review.</p>
+
+      <h3>Trigger &amp; abstraction</h3>
+      <div class="q" data-qid="Q1" data-rec="Subscribe to the existing session Event stream (Session.Subscribe) and fire on status:idle — a peer observer like the UI, zero changes to the turn loop.">
+        <strong>Q1</strong> How does the sink layer learn a turn ended?
+        <div class="rec">Rec: <strong>Event-stream subscriber</strong> (not a named <code>endTurn()</code> hook).</div>
+      </div>
+      <div class="q" data-qid="Q2" data-rec="A generic webhook sink (URL + method + headers + Go text/template body); orb/slack/ntfy/discord are pre-baked templates over it, not bespoke code paths.">
+        <strong>Q2</strong> Transport abstraction — generic webhook vs bespoke per channel?
+        <div class="rec">Rec: <strong>webhook + template</strong>, built-ins on top.</div>
+      </div>
+
+      <h3>Deep link</h3>
+      <div class="q" data-qid="Q3" data-rec="Login-first: deep-link to the existing /s/{id} route under ADR-0017 session auth. No expiring share token in v1 (documented follow-on if cross-device-without-login is ever needed).">
+        <strong>Q3</strong> Deep-link auth — login-first vs expiring share token?
+        <div class="rec">Rec: <strong>login-first</strong> (<code>/s/{id}</code>); share token later.</div>
+      </div>
+      <div class="q" data-qid="Q4" data-rec="Per-sink deep_link_base with a global default, so different channels can point at different hosts (e.g. LAN vs Tailscale) without duplicating the whole config.">
+        <strong>Q4</strong> <code>deep_link_base</code> — per-sink or global only?
+        <div class="rec">Rec: <strong>per-sink with a global default</strong>.</div>
+      </div>
+
+      <h3>Secrets &amp; rollout</h3>
+      <div class="q" data-qid="Q5" data-rec="Config stores only the env-var name (ADR-0016 api_key_env pattern); the raw secret lives in ~/.marble/env and is never written to settings, ADR, or logs.">
+        <strong>Q5</strong> How are sink credentials stored?
+        <div class="rec">Rec: <strong>env-var name only</strong> (ADR-0016).</div>
+      </div>
+      <div class="q" data-qid="Q6" data-rec="Ship orb + generic webhook first (they cover the concrete need and prove the template approach); slack/ntfy/discord are additive constructors next.">
+        <strong>Q6</strong> Which sinks ship first?
+        <div class="rec">Rec: <strong>orb + webhook</strong> in M1; slack/ntfy/discord in M2.</div>
+      </div>
+
+      <h3>Payload &amp; filters</h3>
+      <div class="q" data-qid="Q7" data-rec="Full final assistant message (no thinking/tool chatter) on the event; the sink template can truncate. Preview is the first line for banners.">
+        <strong>Q7</strong> Payload — full final message or preview-only?
+        <div class="rec">Rec: <strong>full message</strong> + first-line preview.</div>
+      </div>
+      <div class="q" data-qid="Q8" data-rec="Skip tool-only turns by default — only turns that produce a final assistant message mirror. (A turn ending in error still mirrors under kind=error.)">
+        <strong>Q8</strong> Tool-only turns — mirror or skip?
+        <div class="rec">Rec: <strong>skip</strong> by default (no final prose = no mirror).</div>
+      </div>
+      <div class="q" data-qid="Q9" data-rec="Declarative per-sink filters: kinds allow-list, skip_empty, skip_cron, only/skip session regex, min_chars.">
+        <strong>Q9</strong> What filters does a sink get?
+        <div class="rec">Rec: <strong>kinds + skip_empty + skip_cron + session regex + min_chars</strong>.</div>
+      </div>
+
+      <h3>Delivery semantics</h3>
+      <div class="q" data-qid="Q10" data-rec="Optional min_interval_sec per sink, off by default — coalesce a noisy session to one notification per window rather than one per turn.">
+        <strong>Q10</strong> Coalesce bursts?
+        <div class="rec">Rec: <strong>optional, off by default</strong>.</div>
+      </div>
+      <div class="q" data-qid="Q11" data-rec="Fire-and-forget + bounded queue + deterministic idempotency key hash(sink,session,turn) + bounded jittered retry, then drop-with-log.">
+        <strong>Q11</strong> Delivery reliability contract?
+        <div class="rec">Rec: <strong>at-least-once-in-process</strong>; idempotency key; bounded retry.</div>
+      </div>
+
+      <h3>Config surface</h3>
+      <div class="q" data-qid="Q12" data-rec="p1 = $MEMORY JSON file + env secrets (matching TTS/config precedent); Settings UI for sinks follows in M2 once the core works.">
+        <strong>Q12</strong> Config surface for p1?
+        <div class="rec">Rec: <strong>JSON file + env</strong>; Settings UI later.</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Marble · ADR-0028 · <strong>proposed</strong> ·
+    <a href="0028-turn-sinks.md">markdown</a> ·
+    Q1–Q12 open for review
+  </footer>
+  <script src="review-kit.js"></script>
+</body>
+</html>

@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0028</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0028</span>
+      <span class="status proposed">Proposed</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0028-turn-sinks.md">Markdown</a>
+      <a href="0028-review.html">Review</a>
+      <a href="0027-doc.html">← 0027</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0028-generic-turn-sinks-mirror-every-session-response-to-external-channels">ADR-0028: Generic turn sinks — mirror every session response to external channels</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Proposed</strong> (2026-09-11) — open for review</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-09-11</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>notifications, mirror, sink, webhook, orb, slack, ntfy, discord, events, config</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0010 (SSE / <code>Session.Subscribe</code>), ADR-0016 (API-key env pattern), ADR-0017 (OAuth / session auth), ADR-0018 (config style), ADR-0019 (attachments / blobs)</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0028-review.html">0028-review.html</a></td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><em>(to be written after review)</em></td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p>Add an optional, transport-agnostic <strong>turn-sink</strong> layer to the harness. When a session finishes a turn, the harness hands a small, normalized <strong>turn event</strong> to zero or more configured <strong>sinks</strong>. A sink is a named adapter (Orb, Slack, ntfy, Discord, or a generic HTTP webhook) that receives the final assistant response plus a <strong>deep link back to the session</strong> and projects it into that channel&rsquo;s native notification mechanism.</p>
+<p>Design principles:</p>
+<ol>
+<li><strong>Not an &ldquo;Orb mirror&rdquo;.</strong> Orb is one built-in sink over a generic webhook base; Slack / ntfy / Discord / &ldquo;any endpoint&rdquo; are the same interface with a different payload template.  </li>
+<li><strong>Trigger is the existing event stream.</strong> The sink manager subscribes to <code>Session.Subscribe()</code> and fires on turn-complete (<code>status: idle</code>) — no changes to the agent turn loop.  </li>
+<li><strong>Deep link is a concept, not a field.</strong> The event carries a transport-neutral <code>DeepLink</code>; each sink maps it to its native &ldquo;click&rdquo; affordance (Orb <code>X-Orb-Return-Url</code>, Slack link/button, ntfy <code>Click:</code> header, Discord embed <code>url</code>).  </li>
+<li><strong>Secrets by env-var name</strong> (ADR-0016 style) — config stores <code>secret_env</code>, never the value.  </li>
+<li><strong>Fire-and-forget, additive, no recursion</strong> — sinks never block the turn and never start a new agent turn.  </li>
+<li><strong>Declarative filters per sink</strong> — kinds, skip-empty, skip-cron, session regex, min chars, optional coalescing.</li>
+</ol>
+<h2 id="context-pain">Context &amp; pain</h2>
+<h3 id="today">Today</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Turn end</strong></td>
+<td><code>Session.endTurn()</code> publishes <code>Event{Type:"status", Status:"idle"}</code>; the final assistant message is appended just before (<code>loop.go</code> <code>appendUI(am)</code>, plus <code>forceEndAssistant</code> for cut-off turns)</td>
+</tr>
+<tr>
+<td><strong>Stream</strong></td>
+<td><code>Session.Subscribe() chan Event</code> + <code>publish(Event)</code> already feed the SPA UI (ADR-0010)</td>
+</tr>
+<tr>
+<td><strong>Session deep link</strong></td>
+<td>SPA routes <code>/s/{session_id}</code> (also <code>?session=…</code>, <code>#/s/…</code>)</td>
+</tr>
+<tr>
+<td><strong>Config/secrets</strong></td>
+<td>Persistent settings via <code>/api/settings</code>; secrets resolved from <code>~/.marble/env</code> by name (ADR-0016 <code>api_key_env</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="observed-pain">Observed pain</h3>
+<table>
+<thead>
+<tr>
+<th>Pain</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No &ldquo;turn finished&rdquo; notification</td>
+<td>Operator must watch the UI or poll; nothing pings the tray/phone when a long agent run completes</td>
+</tr>
+<tr>
+<td>No easy jump back</td>
+<td>Wanting to reopen a finished session requires navigating the session list</td>
+</tr>
+<tr>
+<td>Point solutions sprawl</td>
+<td>&ldquo;Publish to Orb&rdquo; is a skill; &ldquo;ping Slack&rdquo; would be another; each is agent-driven and best-effort</td>
+</tr>
+<tr>
+<td>Agent-driven = unreliable</td>
+<td>A skill/MCP publish can be forgotten, interrupted, or hit the context limit; it also costs tokens and risks recursion</td>
+</tr>
+</tbody>
+</table>
+<p>The fix is a <strong>harness-level, transport-agnostic</strong> hook: one signal (&ldquo;a turn just ended&rdquo;), fanned out to N destinations, with the destination format the only thing that varies.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Normalized turn event</strong> — session id/title, workspace, model, turn id, kind, final message, preview, deep link, timestamp.  </li>
+<li><strong><code>Sink</code> interface</strong> — <code>Name()</code> + <code>Deliver(ctx, TurnEvent) error</code>; a registry fans one event out to N sinks.  </li>
+<li><strong>Generic webhook sink</strong> — URL + method + headers + a Go <code>text/template</code> body; Orb/Slack/ntfy/Discord are pre-baked templates over it.  </li>
+<li><strong>Deep link as a concept</strong> — <code>deep_link_base + /s/{session_id}</code>, projected per sink.  </li>
+<li><strong>Filters per sink</strong> — kind allow/deny, skip-empty, skip-cron, session regex, min chars, optional coalescing.  </li>
+<li><strong>Reliability semantics</strong> — non-blocking, bounded queue, deterministic idempotency key, bounded retry, no recursion.  </li>
+<li><strong>No regression</strong> — with zero sinks configured (or the feature off), behavior is identical to today.</li>
+</ol>
+<h2 id="non-goals">Non-goals</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent-driven publishing (a skill/MCP &ldquo;remember to post&rdquo;)</td>
+<td>Already possible today; this ADR is the <em>reliable, every-turn</em> path</td>
+</tr>
+<tr>
+<td>Replacing the SSE/UI stream</td>
+<td>Sinks are additive observers, not a new client protocol</td>
+</tr>
+<tr>
+<td>Guaranteed delivery (exactly-once)</td>
+<td>At-least-once within a process via idempotency key + bounded retry; cross-restart delivery is out of scope</td>
+</tr>
+<tr>
+<td>Changing the model wire / system prompt</td>
+<td>Purely a post-turn side effect</td>
+</tr>
+<tr>
+<td>Two-way sync back from a channel</td>
+<td>A notification with a return link, not a bot that accepts replies</td>
+</tr>
+<tr>
+<td>Multi-tenant/billing</td>
+<td>Single-operator harness</td>
+</tr>
+</tbody>
+</table>
+<h2 id="design">Design</h2>
+<h3 id="a-normalized-turn-event">A. Normalized turn event</h3>
+<pre><code class="language-go">type TurnEvent struct {
+    SessionID    string
+    SessionTitle string
+    Workspace    string
+    ModelID      string
+    TurnID       string    // stable per (session, turn)
+    Kind         string    // complete | error | stop | cron | continuation
+    Message      string    // final assistant text (no thinking/tool chatter)
+    Preview      string    // first line, for banners
+    DeepLink     string    // deep_link_base + &quot;/s/&quot; + SessionID
+    Timestamp    time.Time
+}
+</code></pre>
+<h3 id="b-sink-interface-manager">B. Sink interface + manager</h3>
+<pre><code class="language-go">type Sink interface {
+    Name() string
+    Deliver(ctx context.Context, ev TurnEvent) error
+}
+
+type Manager struct { sinks []Sink }
+func (m *Manager) OnEvent(ev session.Event) // subscribed to each open session
+</code></pre>
+<p>The manager buffers the latest <code>assistant</code> message and, on <code>status: idle</code>, emits a <code>TurnEvent</code> to every enabled sink whose filters pass. It is a <strong>peer subscriber</strong> on the existing stream — <code>session</code> never learns what a sink is.</p>
+<h3 id="c-generic-webhook-sink-the-flexibility-core">C. Generic webhook sink (the flexibility core)</h3>
+<pre><code class="language-go">type WebhookSink struct {
+    ID       string
+    URL      string
+    Method   string
+    Headers  map[string]string
+    Template string            // Go text/template over TurnEvent
+    SecretEnv string           // env var name whose value becomes an auth header (optional)
+    Filters  Filters
+}
+</code></pre>
+<p>Orb/Slack/ntfy/Discord are thin constructors that set <code>URL</code>, <code>Method</code>, <code>Headers</code>, and <code>Template</code>. A <code>custom</code> type lets the operator point <code>Template</code> at any HTTP endpoint.</p>
+<h3 id="d-deep-link-projection-per-sink">D. Deep link projection per sink</h3>
+<table>
+<thead>
+<tr>
+<th>Sink</th>
+<th>Deep link mapping</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>orb</strong></td>
+<td><code>X-Orb-Return-Url: {{.DeepLink}}</code> header (ADR-orb-0011 <code>return_url</code>)</td>
+</tr>
+<tr>
+<td><strong>slack</strong></td>
+<td>a link/button in the webhook JSON payload</td>
+</tr>
+<tr>
+<td><strong>ntfy</strong></td>
+<td><code>Click: {{.DeepLink}}</code> header</td>
+</tr>
+<tr>
+<td><strong>discord</strong></td>
+<td>embed <code>url</code></td>
+</tr>
+<tr>
+<td><strong>webhook</strong></td>
+<td><code>{{.DeepLink}}</code> wherever the template places it</td>
+</tr>
+</tbody>
+</table>
+<h3 id="e-config-proposed-shape">E. Config (proposed shape)</h3>
+<pre><code class="language-json">{
+  &quot;sinks&quot;: [
+    { &quot;id&quot;: &quot;orb&quot;, &quot;type&quot;: &quot;orb&quot;, &quot;enabled&quot;: true,
+      &quot;topic_id&quot;: &quot;t_…&quot;, &quot;secret_env&quot;: &quot;ORB_AK&quot;,
+      &quot;deep_link_base&quot;: &quot;https://rinux.tail…&quot;,
+      &quot;filters&quot;: { &quot;kinds&quot;: [&quot;complete&quot;,&quot;error&quot;], &quot;skip_cron&quot;: true } },
+
+    { &quot;id&quot;: &quot;slack&quot;, &quot;type&quot;: &quot;slack&quot;, &quot;enabled&quot;: false,
+      &quot;secret_env&quot;: &quot;SLACK_WEBHOOK_URL&quot;, &quot;channel&quot;: &quot;#ops&quot;,
+      &quot;deep_link_base&quot;: &quot;https://rinux.tail…&quot; },
+
+    { &quot;id&quot;: &quot;generic&quot;, &quot;type&quot;: &quot;webhook&quot;, &quot;enabled&quot;: false,
+      &quot;url&quot;: &quot;https://hooks.example.com/x&quot;, &quot;method&quot;: &quot;POST&quot;,
+      &quot;headers&quot;: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+      &quot;template&quot;: &quot;{\&quot;text\&quot;:\&quot;{{.Preview}}\&quot;,\&quot;link\&quot;:\&quot;{{.DeepLink}}\&quot;}&quot; }
+  ]
+}
+</code></pre>
+<p>Settings live with the other persistent settings; secrets stay in <code>~/.marble/env</code> and are referenced by name.</p>
+<h3 id="f-filters">F. Filters</h3>
+<pre><code class="language-go">type Filters struct {
+    Kinds         []string // allow-list; empty = all
+    SkipEmpty     bool     // drop when Message is blank
+    SkipCron      bool     // drop cron/continuation sessions
+    OnlySessions  []string // regex list; drop non-matching
+    SkipSessions  []string // regex list; drop matching
+    MinChars      int
+    MinIntervalSec int     // 0 = off; coalesce to one per window
+}
+</code></pre>
+<h3 id="g-reliability-semantics">G. Reliability semantics</h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Non-blocking</td>
+<td>Enqueue and return; the turn/UI never waits on a sink</td>
+</tr>
+<tr>
+<td>Bounded queue</td>
+<td>Drop-with-log on overflow</td>
+</tr>
+<tr>
+<td>Idempotency</td>
+<td>Deterministic key <code>hash(sink, session, turn)</code>; pass through to sinks that support it (Orb <code>Idempotency-Key</code>); in-process delivered set otherwise</td>
+</tr>
+<tr>
+<td>Timeout + retry</td>
+<td>Per-sink timeout; a couple of jittered retries, then drop + log</td>
+</tr>
+<tr>
+<td>No recursion</td>
+<td>Manager is harness code, not an agent turn; never re-enters <code>/api/prompt</code></td>
+</tr>
+<tr>
+<td>Coalescing</td>
+<td>Optional <code>min_interval_sec</code> to collapse a noisy session to one notification per window</td>
+</tr>
+</tbody>
+</table>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Why not default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent-driven skill/MCP publish per turn</td>
+<td>Not guaranteed on interrupt/error/context-limit; token cost; recursion risk</td>
+</tr>
+<tr>
+<td>Cron polling of session files</td>
+<td>Fragile to file format; needs dedup/order state; polling latency</td>
+</tr>
+<tr>
+<td>External sidecar over SSE</td>
+<td>Another always-on process + auth/durability; strictly more ops than a hook</td>
+</tr>
+<tr>
+<td>One bespoke &ldquo;Orb mirror&rdquo; hard-coded</td>
+<td>Not generic; adding Slack means a fork, not a new file</td>
+</tr>
+<tr>
+<td>Named <code>endTurn()</code> hook instead of stream subscription</td>
+<td>Works, but duplicates a signal the Event stream already carries; slightly more intrusive</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security-abuse">Security &amp; abuse</h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Secrets by name</td>
+<td><code>secret_env</code> only; never a raw key in config, ADR, or logs</td>
+</tr>
+<tr>
+<td>Deep link is session-scoped</td>
+<td>Points at <code>/s/{id}</code>; access still governed by session auth (ADR-0017)</td>
+</tr>
+<tr>
+<td>No secret in the template output by default</td>
+<td>Templates render <code>TurnEvent</code>, not env</td>
+</tr>
+<tr>
+<td>No recursion</td>
+<td>Sink delivery never starts a turn</td>
+</tr>
+<tr>
+<td>Rate/burst</td>
+<td>Bounded queue + coalescing prevents a noisy cron session from spamming a channel</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisions-open-q1q12">Decisions (open, Q1–Q12)</h2>
+<p>All <strong>open questions recommend &ldquo;use rec&rdquo;</strong>; see <code>0028-review.html</code> (interactive kit).</p>
+<ul>
+<li><strong>Q1</strong> Trigger → subscribe to the session Event stream (not a named hook).  </li>
+<li><strong>Q2</strong> Abstraction → generic webhook sink + templates; Orb/Slack/ntfy/Discord as built-ins over it.  </li>
+<li><strong>Q3</strong> Deep-link auth → login-first (reuse <code>/s/{id}</code> under ADR-0017); no expiring share token in v1.  </li>
+<li><strong>Q4</strong> <code>deep_link_base</code> → per-sink with a global default.  </li>
+<li><strong>Q5</strong> Secrets → env-var name only (ADR-0016 <code>api_key_env</code>).  </li>
+<li><strong>Q6</strong> First sinks → <code>orb</code> + <code>webhook</code>; <code>slack</code>/<code>ntfy</code>/<code>discord</code> next.  </li>
+<li><strong>Q7</strong> Payload → full final message (not preview-only).  </li>
+<li><strong>Q8</strong> Tool-only turns → skip by default (only turns with a final assistant message).  </li>
+<li><strong>Q9</strong> Filters → kinds + skip-empty + skip-cron + session regex + min-chars.  </li>
+<li><strong>Q10</strong> Coalescing → optional <code>min_interval_sec</code> per sink, off by default.  </li>
+<li><strong>Q11</strong> Delivery → fire-and-forget + bounded queue + idempotency key + bounded retry.  </li>
+<li><strong>Q12</strong> Config surface → <code>$MEMORY</code> JSON file + env secrets; Settings UI later.</li>
+</ul>
+<h2 id="locked-context-l1l6">Locked context (L1–L6)</h2>
+<ul>
+<li><strong>L1</strong> Session event pub/sub already exists (<code>Subscribe</code>/<code>publish</code>, ADR-0010); reuse as the trigger.  </li>
+<li><strong>L2</strong> Persistent settings + secrets-by-name already exist (ADR-0016 <code>api_key_env</code>).  </li>
+<li><strong>L3</strong> SPA deep link <code>/s/{id}</code> already exists.  </li>
+<li><strong>L4</strong> Sinks are harness code, not agent turns — never recurse into <code>/api/prompt</code>.  </li>
+<li><strong>L5</strong> Additive + fire-and-forget; never block the turn.  </li>
+<li><strong>L6</strong> Deterministic idempotency key; raw secrets never in config/logs/ADR.</li>
+</ul>
+<h2 id="implementation-plan">Implementation plan</h2>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M0</strong></td>
+<td>This ADR + review HTML</td>
+</tr>
+<tr>
+<td><strong>M1</strong></td>
+<td><code>internal/sink</code> — <code>TurnEvent</code>, <code>Sink</code>, <code>Manager</code>, filters, <code>webhook</code> sink, <code>orb</code> sink; config; subscribe to the session stream</td>
+</tr>
+<tr>
+<td><strong>M2</strong></td>
+<td><code>slack</code>, <code>ntfy</code>, <code>discord</code> templates + a <code>stdout</code> test sink; Settings UI for sinks</td>
+</tr>
+<tr>
+<td><strong>M3</strong></td>
+<td>Coalescing polish, per-sink delivery history/log, custom <code>text/template</code> in settings</td>
+</tr>
+</tbody>
+</table>
+<h3 id="suggested-pr-slice-post-accept">Suggested PR slice (post-accept)</h3>
+<table>
+<thead>
+<tr>
+<th>PR</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S0</td>
+<td><code>TurnEvent</code> + <code>Sink</code> + <code>Manager</code> + fake sink tests</td>
+</tr>
+<tr>
+<td>S1</td>
+<td><code>webhook</code> sink + template rendering + config load</td>
+</tr>
+<tr>
+<td>S2</td>
+<td><code>orb</code> sink (return_url header + idempotency)</td>
+</tr>
+<tr>
+<td>S3</td>
+<td>Wire manager into the session stream subscription</td>
+</tr>
+<tr>
+<td>S4</td>
+<td>Filters + coalescing</td>
+</tr>
+<tr>
+<td>S5</td>
+<td>Slack/ntfy/Discord templates + stdout sink</td>
+</tr>
+</tbody>
+</table>
+<h2 id="success-metrics">Success metrics</h2>
+<ul>
+<li>A finished turn produces exactly one notification per enabled sink whose filters pass.  </li>
+<li>A retry (same session/turn) does not double-post a sink that honors the idempotency key.  </li>
+<li>Zero sinks configured → zero behavior change, zero token cost.  </li>
+<li>Adding a new channel is a new constructor file, not a fork of the manager.  </li>
+<li>No secrets in logs, config, or ADR.</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sink outage / slow endpoint</td>
+<td>Timeout + bounded retry + drop-with-log; non-blocking</td>
+</tr>
+<tr>
+<td>Recursion / self-publish</td>
+<td>Manager never re-enters <code>/api/prompt</code></td>
+</tr>
+<tr>
+<td>Notification spam</td>
+<td>Filters + coalescing; skip-empty/skip-cron defaults</td>
+</tr>
+<tr>
+<td>Deep link requires login</td>
+<td>Login-first for v1 (Q3); share token is a documented follow-on</td>
+</tr>
+<tr>
+<td>Leaking session content</td>
+<td>Sinks are operator-configured; only the final message (already visible in the session) is mirrored</td>
+</tr>
+</tbody>
+</table>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="0010-doc.html">ADR-0010 Agent-loop transparency</a> — SSE / <code>Session.Subscribe</code>  </li>
+<li><a href="0016-doc.html">ADR-0016 Model API key auth</a> — <code>api_key_env</code> secret pattern  </li>
+<li><a href="0017-doc.html">ADR-0017 Google OAuth</a> — session auth / <code>/s/{id}</code> access  </li>
+<li><a href="0018-doc.html">ADR-0018 Selectable models</a> — catalog / settings style  </li>
+<li>Orb ADR-0011 (<code>orbnet-app/orb</code>) — first-class <code>return_url</code> the orb sink maps onto</li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-09-11</td>
+<td><strong>Proposed</strong> — generic turn-sink layer; Orb/Slack/ntfy/Discord/webhook over a template base; stream-subscription trigger; deep link as a concept; Q1–Q12 open for review</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0028-turn-sinks.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>
