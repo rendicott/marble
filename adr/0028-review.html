@@ -340,6 +340,25 @@ stdout:   Format    [plain ▾]   (plain | json)</pre>
         <strong>Test button:</strong> each sink row has a “Send test” action that fires a synthetic turn event, so
         the operator verifies end-to-end (Orb banner, Slack message, etc.) without waiting for a real turn.
       </div>
+
+      <h3>Session-level sink toggle (per-session override)</h3>
+      <p class="muted">Not in Settings — this lives in the session view. Global <code>enabled</code> is the default; a session can force any sink on/off (or inherit) for itself only.</p>
+      <pre class="mock">┌ Orb session · 0wdvhcj0q0 ──────────────────── [Sinks ▾] ─────────┐
+│                                                                 │
+│  ┌ Sinks for this session ───────────────────────────────┐      │
+│  │  [ Pause all sinks ]   (sets every sink to off)       │      │
+│  │                                                       │      │
+│  │  orb      inherit ▾  · (global: on)                   │      │
+│  │  slack    off      ▾  · (global: on)  ← overridden     │      │
+│  │  debug    inherit ▾  · (global: off)                  │      │
+│  │                                                       │      │
+│  │  Changes apply to this session only.                  │      │
+│  └───────────────────────────────────────────────────────┘      │
+└─────────────────────────────────────────────────────────────────┘</pre>
+      <div class="callout">
+        Resolution: session override (on/off) wins; otherwise the global <code>enabled</code>; then filters still apply.
+        "off · (global: on)" reads as “I muted this one session.”
+      </div>
     </section>
 
     <section id="milestones">
@@ -348,13 +367,13 @@ stdout:   Format    [plain ▾]   (plain | json)</pre>
         <tr><th>M</th><th>Scope</th></tr>
         <tr><td><strong>M0</strong></td><td>This ADR + review HTML</td></tr>
         <tr><td><strong>M1</strong></td><td><code>internal/sink</code> — TurnEvent + Sink + Manager + filters + webhook + orb sinks; wire into the stream</td></tr>
-        <tr><td><strong>M2</strong></td><td>slack / ntfy / discord + stdout test sink; Settings UI</td></tr>
+        <tr><td><strong>M2</strong></td><td>Settings UI + session-level sink toggle (inherit/on/off + pause-all)</td></tr>
         <tr><td><strong>M3</strong></td><td>Coalescing polish; per-sink history; custom templates in Settings</td></tr>
       </table>
     </section>
 
     <section id="questions">
-      <h2>Decisions — open (Q1–Q12)</h2>
+      <h2>Decisions — open (Q1–Q13)</h2>
       <p class="muted">All recommend "use rec". Canonical source will be <code>0028-answers.json</code> after review.</p>
 
       <h3>Trigger &amp; abstraction</h3>
@@ -416,13 +435,19 @@ stdout:   Format    [plain ▾]   (plain | json)</pre>
         <strong>Q12</strong> Config surface for p1?
         <div class="rec">Rec: <strong>JSON file + env</strong>; Settings UI later.</div>
       </div>
+
+      <h3>Per-session override</h3>
+      <div class="q" data-qid="Q13" data-rec="Three-state per sink (inherit/on/off) stored in session metadata; a sink's global enabled is the default, the session override wins at turn-end, then filters apply. Session UI shows a Sinks popover with per-sink toggle + a 'Pause all sinks' master.">
+        <strong>Q13</strong> Per-session sink override — how does one session opt out of a global default?
+        <div class="rec">Rec: <strong>inherit/on/off per sink</strong> + session popover + “pause all”.</div>
+      </div>
     </section>
   </main>
 
   <footer>
     Marble · ADR-0028 · <strong>proposed</strong> ·
     <a href="0028-turn-sinks.md">markdown</a> ·
-    Q1–Q12 open for review
+    Q1–Q13 open for review
   </footer>
   <script src="review-kit.js"></script>
 </body>

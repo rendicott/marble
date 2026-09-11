@@ -74,7 +74,8 @@
 <li><strong>Deep link is a concept, not a field.</strong> The event carries a transport-neutral <code>DeepLink</code>; each sink maps it to its native &ldquo;click&rdquo; affordance (Orb <code>X-Orb-Return-Url</code>, Slack link/button, ntfy <code>Click:</code> header, Discord embed <code>url</code>).  </li>
 <li><strong>Secrets by env-var name</strong> (ADR-0016 style) — config stores <code>secret_env</code>, never the value.  </li>
 <li><strong>Fire-and-forget, additive, no recursion</strong> — sinks never block the turn and never start a new agent turn.  </li>
-<li><strong>Declarative filters per sink</strong> — kinds, skip-empty, skip-cron, session regex, min chars, optional coalescing.</li>
+<li><strong>Declarative filters per sink</strong> — kinds, skip-empty, skip-cron, session regex, min chars, optional coalescing.  </li>
+<li><strong>Per-session override</strong> — a sink&rsquo;s global <code>enabled</code> is the <em>default</em>; any session can force a sink on/off (or inherit) just for itself via a session-level UI toggle.</li>
 </ol>
 <h2 id="context-pain">Context &amp; pain</h2>
 <h3 id="today">Today</h3>
@@ -140,6 +141,7 @@
 <li><strong>Deep link as a concept</strong> — <code>deep_link_base + /s/{session_id}</code>, projected per sink.  </li>
 <li><strong>Filters per sink</strong> — kind allow/deny, skip-empty, skip-cron, session regex, min chars, optional coalescing.  </li>
 <li><strong>Reliability semantics</strong> — non-blocking, bounded queue, deterministic idempotency key, bounded retry, no recursion.  </li>
+<li><strong>Per-session override</strong> — global default + a per-session inherit/on/off toggle per sink.  </li>
 <li><strong>No regression</strong> — with zero sinks configured (or the feature off), behavior is identical to today.</li>
 </ol>
 <h2 id="non-goals">Non-goals</h2>
@@ -311,6 +313,85 @@ func (m *Manager) OnEvent(ev session.Event) // subscribed to each open session
 </tr>
 </tbody>
 </table>
+<h3 id="h-per-session-sink-behavior">H. Per-session sink behavior</h3>
+<p>A sink&rsquo;s <code>enabled</code> flag is the <strong>global default</strong>, not an absolute. Each session carries an optional <strong>sink override map</strong> that can force an individual sink on or off for <em>that session only</em>, or leave it at the default.</p>
+<pre><code class="language-go">// Per-session override. Absent key = inherit the global default.
+type SinkOverride string
+const (
+    SinkInherit SinkOverride = &quot;&quot;      // follow the sink's global enabled
+    SinkOn      SinkOverride = &quot;on&quot;    // force on, even if globally disabled
+    SinkOff     SinkOverride = &quot;off&quot;   // force off, even if globally enabled
+)
+
+type Session struct {
+    // ...
+    SinkOverrides map[string]SinkOverride // key = sink id
+}
+</code></pre>
+<p><strong>Resolution order</strong> (evaluated at turn-end for each configured sink):</p>
+<ol>
+<li>If the session has <code>SinkOverrides[sinkID]</code> set to <code>on</code> or <code>off</code>, that wins.  </li>
+<li>Otherwise fall back to the sink&rsquo;s global <code>enabled</code>.  </li>
+<li>Then the sink&rsquo;s filters still apply (kind allow-list, skip-empty, skip-cron, session regex, min-chars, coalescing).</li>
+</ol>
+<p>Semantics:</p>
+<table>
+<thead>
+<tr>
+<th>Sink global <code>enabled</code></th>
+<th>Session override</th>
+<th>Deliver?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>on</td>
+<td><em>(inherit)</em></td>
+<td>yes</td>
+</tr>
+<tr>
+<td>on</td>
+<td><code>off</code></td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>off</td>
+<td><em>(inherit)</em></td>
+<td>no</td>
+</tr>
+<tr>
+<td>off</td>
+<td><code>on</code></td>
+<td><strong>yes</strong></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Persistence:</strong> <code>SinkOverrides</code> lives in session metadata and survives reload, exactly like mute/hide prefs. It is per-session, never a global side effect.  </li>
+<li><strong>Fresh sessions inherit defaults.</strong> A new session has an empty override map (→ follow global). A cron/continuation that opens a <em>new</em> session starts from defaults; a session that <em>is</em> the cron target carries whatever overrides are already stored on it.  </li>
+<li><strong>Deleting a sink</strong> ignores (and may prune) its override key.  </li>
+<li><strong>The override is a filter input, not a sink mutation</strong> — the manager reads it at delivery time; it never writes back to the global config.</li>
+</ul>
+<h3 id="session-ui-per-session-sink-toggle">Session UI: per-session sink toggle</h3>
+<p>In the session view (not Settings), a small <strong>Sinks</strong> control next to the session title expands a popover listing every configured sink with a three-state toggle per sink and a quick &ldquo;pause all&rdquo; master:</p>
+<pre><code class="language-text">┌ Orb session · 0wdvhcj0q0 ──────────────────── [Sinks ▾] ─────────┐
+│                                                                 │
+│  ┌ Sinks for this session ───────────────────────────────┐      │
+│  │  [ Pause all sinks ]   (sets every sink to off)       │      │
+│  │                                                       │      │
+│  │  orb      inherit ▾  · (global: on)                   │      │
+│  │  slack    off      ▾  · (global: on)  ← overridden     │      │
+│  │  debug    inherit ▾  · (global: off)                  │      │
+│  │                                                       │      │
+│  │  Changes apply to this session only.                  │      │
+│  └───────────────────────────────────────────────────────┘      │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<ul>
+<li>Each row shows the <strong>effective</strong> state and the global default in parentheses, so &ldquo;off · (global: on)&rdquo; reads as &ldquo;I muted this one session.&rdquo;  </li>
+<li>The master &ldquo;Pause all sinks&rdquo; is a convenience that writes <code>off</code> to every sink for this session (and &ldquo;Resume all&rdquo; clears the overrides back to inherit).  </li>
+<li>The toggle is <strong>session-scoped</strong>; the Settings → Sinks list remains the place to change the global default.</li>
+</ul>
 <h2 id="predefined-sink-types-first-pass">Predefined sink types (first pass)</h2>
 <p>First pass ships <strong>six types</strong>. All share the same <code>Sink</code> interface and a set of <strong>common fields</strong>; each adds a small set of type-specific fields. <code>webhook</code> is the generic base the others are thin wrappers over — so every type below is either the base itself or a pre-baked constructor over it.</p>
 <table>
@@ -384,7 +465,7 @@ func (m *Manager) OnEvent(ev session.Event) // subscribed to each open session
 <tr>
 <td><code>enabled</code></td>
 <td>yes</td>
-<td>master switch for this sink</td>
+<td><strong>global default</strong> for this sink (per-session override can flip it, §H)</td>
 </tr>
 <tr>
 <td><code>deep_link_base</code></td>
@@ -726,7 +807,7 @@ stdout:   Format    [plain ▾]   (plain | json)
 </tr>
 </tbody>
 </table>
-<h2 id="decisions-open-q1q12">Decisions (open, Q1–Q12)</h2>
+<h2 id="decisions-open-q1q13">Decisions (open, Q1–Q13)</h2>
 <p>All <strong>open questions recommend &ldquo;use rec&rdquo;</strong>; see <code>0028-review.html</code> (interactive kit).</p>
 <ul>
 <li><strong>Q1</strong> Trigger → subscribe to the session Event stream (not a named hook).  </li>
@@ -740,7 +821,8 @@ stdout:   Format    [plain ▾]   (plain | json)
 <li><strong>Q9</strong> Filters → kinds + skip-empty + skip-cron + session regex + min-chars.  </li>
 <li><strong>Q10</strong> Coalescing → optional <code>min_interval_sec</code> per sink, off by default.  </li>
 <li><strong>Q11</strong> Delivery → fire-and-forget + bounded queue + idempotency key + bounded retry.  </li>
-<li><strong>Q12</strong> Config surface → <code>$MEMORY</code> JSON file + env secrets; Settings UI later.</li>
+<li><strong>Q12</strong> Config surface → <code>$MEMORY</code> JSON file + env secrets; Settings UI later.  </li>
+<li><strong>Q13</strong> Per-session override → three-state (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session UI toggle + &ldquo;pause all&rdquo; master.</li>
 </ul>
 <h2 id="locked-context-l1l6">Locked context (L1–L6)</h2>
 <ul>
@@ -770,7 +852,7 @@ stdout:   Format    [plain ▾]   (plain | json)
 </tr>
 <tr>
 <td><strong>M2</strong></td>
-<td>Settings UI (sinks list + per-type editors + test button); coalescing polish; per-sink delivery history/log</td>
+<td>Settings UI (sinks list + per-type editors + test button); <strong>session UI sink toggle (per-session inherit/on/off + pause-all)</strong>; coalescing polish; per-sink delivery history/log</td>
 </tr>
 <tr>
 <td><strong>M3</strong></td>
@@ -809,7 +891,7 @@ stdout:   Format    [plain ▾]   (plain | json)
 </tr>
 <tr>
 <td>S5</td>
-<td>Filters + coalescing + Settings UI (list + editors + test button)</td>
+<td>Filters + coalescing + Settings UI (list + editors + test button) + session-level sink toggle</td>
 </tr>
 </tbody>
 </table>
@@ -876,6 +958,10 @@ stdout:   Format    [plain ▾]   (plain | json)
 <tr>
 <td>2026-09-11</td>
 <td><strong>Added</strong> predefined sink types (first pass): <code>orb</code>, <code>webhook</code>, <code>slack</code>, <code>discord</code>, <code>ntfy</code>, <code>stdout</code> — per-type config reference + Settings UI mockups</td>
+</tr>
+<tr>
+<td>2026-09-11</td>
+<td><strong>Added</strong> per-session sink behavior: three-state override (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session-level UI toggle + &ldquo;pause all&rdquo;</td>
 </tr>
 </tbody>
 </table>

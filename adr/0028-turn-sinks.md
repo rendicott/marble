@@ -22,7 +22,8 @@ Design principles:
 3. **Deep link is a concept, not a field.** The event carries a transport-neutral `DeepLink`; each sink maps it to its native "click" affordance (Orb `X-Orb-Return-Url`, Slack link/button, ntfy `Click:` header, Discord embed `url`).  
 4. **Secrets by env-var name** (ADR-0016 style) — config stores `secret_env`, never the value.  
 5. **Fire-and-forget, additive, no recursion** — sinks never block the turn and never start a new agent turn.  
-6. **Declarative filters per sink** — kinds, skip-empty, skip-cron, session regex, min chars, optional coalescing.
+6. **Declarative filters per sink** — kinds, skip-empty, skip-cron, session regex, min chars, optional coalescing.  
+7. **Per-session override** — a sink's global `enabled` is the *default*; any session can force a sink on/off (or inherit) just for itself via a session-level UI toggle.
 
 ## Context & pain
 
@@ -54,7 +55,8 @@ The fix is a **harness-level, transport-agnostic** hook: one signal ("a turn jus
 4. **Deep link as a concept** — `deep_link_base + /s/{session_id}`, projected per sink.  
 5. **Filters per sink** — kind allow/deny, skip-empty, skip-cron, session regex, min chars, optional coalescing.  
 6. **Reliability semantics** — non-blocking, bounded queue, deterministic idempotency key, bounded retry, no recursion.  
-7. **No regression** — with zero sinks configured (or the feature off), behavior is identical to today.
+7. **Per-session override** — global default + a per-session inherit/on/off toggle per sink.  
+8. **No regression** — with zero sinks configured (or the feature off), behavior is identical to today.
 
 ## Non-goals
 
@@ -175,6 +177,68 @@ type Filters struct {
 | No recursion | Manager is harness code, not an agent turn; never re-enters `/api/prompt` |
 | Coalescing | Optional `min_interval_sec` to collapse a noisy session to one notification per window |
 
+### H. Per-session sink behavior
+
+A sink's `enabled` flag is the **global default**, not an absolute. Each session carries an optional **sink override map** that can force an individual sink on or off for *that session only*, or leave it at the default.
+
+```go
+// Per-session override. Absent key = inherit the global default.
+type SinkOverride string
+const (
+    SinkInherit SinkOverride = ""      // follow the sink's global enabled
+    SinkOn      SinkOverride = "on"    // force on, even if globally disabled
+    SinkOff     SinkOverride = "off"   // force off, even if globally enabled
+)
+
+type Session struct {
+    // ...
+    SinkOverrides map[string]SinkOverride // key = sink id
+}
+```
+
+**Resolution order** (evaluated at turn-end for each configured sink):
+
+1. If the session has `SinkOverrides[sinkID]` set to `on` or `off`, that wins.  
+2. Otherwise fall back to the sink's global `enabled`.  
+3. Then the sink's filters still apply (kind allow-list, skip-empty, skip-cron, session regex, min-chars, coalescing).
+
+Semantics:
+
+| Sink global `enabled` | Session override | Deliver? |
+|-----------------------|------------------|----------|
+| on | *(inherit)* | yes |
+| on | `off` | **no** |
+| off | *(inherit)* | no |
+| off | `on` | **yes** |
+
+- **Persistence:** `SinkOverrides` lives in session metadata and survives reload, exactly like mute/hide prefs. It is per-session, never a global side effect.  
+- **Fresh sessions inherit defaults.** A new session has an empty override map (→ follow global). A cron/continuation that opens a *new* session starts from defaults; a session that *is* the cron target carries whatever overrides are already stored on it.  
+- **Deleting a sink** ignores (and may prune) its override key.  
+- **The override is a filter input, not a sink mutation** — the manager reads it at delivery time; it never writes back to the global config.
+
+### Session UI: per-session sink toggle
+
+In the session view (not Settings), a small **Sinks** control next to the session title expands a popover listing every configured sink with a three-state toggle per sink and a quick "pause all" master:
+
+```text
+┌ Orb session · 0wdvhcj0q0 ──────────────────── [Sinks ▾] ─────────┐
+│                                                                 │
+│  ┌ Sinks for this session ───────────────────────────────┐      │
+│  │  [ Pause all sinks ]   (sets every sink to off)       │      │
+│  │                                                       │      │
+│  │  orb      inherit ▾  · (global: on)                   │      │
+│  │  slack    off      ▾  · (global: on)  ← overridden     │      │
+│  │  debug    inherit ▾  · (global: off)                  │      │
+│  │                                                       │      │
+│  │  Changes apply to this session only.                  │      │
+│  └───────────────────────────────────────────────────────┘      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+- Each row shows the **effective** state and the global default in parentheses, so "off · (global: on)" reads as "I muted this one session."  
+- The master "Pause all sinks" is a convenience that writes `off` to every sink for this session (and "Resume all" clears the overrides back to inherit).  
+- The toggle is **session-scoped**; the Settings → Sinks list remains the place to change the global default.
+
 ## Predefined sink types (first pass)
 
 First pass ships **six types**. All share the same `Sink` interface and a set of **common fields**; each adds a small set of type-specific fields. `webhook` is the generic base the others are thin wrappers over — so every type below is either the base itself or a pre-baked constructor over it.
@@ -194,7 +258,7 @@ First pass ships **six types**. All share the same `Sink` interface and a set of
 |-------|----------|-------|
 | `id` | yes | unique slug for this sink |
 | `type` | yes | one of the six above |
-| `enabled` | yes | master switch for this sink |
+| `enabled` | yes | **global default** for this sink (per-session override can flip it, §H) |
 | `deep_link_base` | no | overrides the global default for this sink |
 | `filters` | no | `{ kinds[], skip_empty, skip_cron, only_sessions[], skip_sessions[], min_chars, min_interval_sec }` |
 
@@ -390,7 +454,7 @@ Notes on the mockups:
 | No recursion | Sink delivery never starts a turn |
 | Rate/burst | Bounded queue + coalescing prevents a noisy cron session from spamming a channel |
 
-## Decisions (open, Q1–Q12)
+## Decisions (open, Q1–Q13)
 
 All **open questions recommend "use rec"**; see `0028-review.html` (interactive kit).
 
@@ -405,7 +469,8 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 - **Q9** Filters → kinds + skip-empty + skip-cron + session regex + min-chars.  
 - **Q10** Coalescing → optional `min_interval_sec` per sink, off by default.  
 - **Q11** Delivery → fire-and-forget + bounded queue + idempotency key + bounded retry.  
-- **Q12** Config surface → `$MEMORY` JSON file + env secrets; Settings UI later.
+- **Q12** Config surface → `$MEMORY` JSON file + env secrets; Settings UI later.  
+- **Q13** Per-session override → three-state (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session UI toggle + "pause all" master.
 
 ## Locked context (L1–L6)
 
@@ -422,7 +487,7 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 |-----------|--------|
 | **M0** | This ADR + review HTML |
 | **M1** | `internal/sink` — `TurnEvent`, `Sink`, `Manager`, filters, the six predefined types (`orb`, `webhook`, `slack`, `discord`, `ntfy`, `stdout`); config; subscribe to the session stream |
-| **M2** | Settings UI (sinks list + per-type editors + test button); coalescing polish; per-sink delivery history/log |
+| **M2** | Settings UI (sinks list + per-type editors + test button); **session UI sink toggle (per-session inherit/on/off + pause-all)**; coalescing polish; per-sink delivery history/log |
 | **M3** | Custom `text/template` editing in Settings; additional channel types as demand appears |
 
 ### Suggested PR slice (post-accept)
@@ -434,7 +499,7 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 | S2 | `orb` sink (return_url header + idempotency) |
 | S3 | `slack` / `discord` / `ntfy` / `stdout` constructors over the webhook base |
 | S4 | Wire manager into the session stream subscription |
-| S5 | Filters + coalescing + Settings UI (list + editors + test button) |
+| S5 | Filters + coalescing + Settings UI (list + editors + test button) + session-level sink toggle |
 
 ## Success metrics
 
@@ -468,3 +533,4 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 |------|------|
 | 2026-09-11 | **Proposed** — generic turn-sink layer; Orb/Slack/ntfy/Discord/webhook over a template base; stream-subscription trigger; deep link as a concept; Q1–Q12 open for review |
 | 2026-09-11 | **Added** predefined sink types (first pass): `orb`, `webhook`, `slack`, `discord`, `ntfy`, `stdout` — per-type config reference + Settings UI mockups |
+| 2026-09-11 | **Added** per-session sink behavior: three-state override (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session-level UI toggle + "pause all" |
