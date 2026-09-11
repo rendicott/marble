@@ -1,0 +1,112 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0028",
+  "title": "Generic turn sinks — mirror every session response to external channels",
+  "updated_at": "2026-09-11T22:40:54.873Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Subscribe to the existing session Event stream (Session.Subscribe) and fire on status:idle — a peer observer like the UI, zero changes to the turn loop.",
+      "notes": "",
+      "question": "How does the sink layer learn a turn ended?",
+      "rec": "Subscribe to the existing session Event stream (Session.Subscribe) and fire on status:idle — a peer observer like the UI, zero changes to the turn loop."
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "A generic webhook sink (URL + method + headers + Go text/template body); orb/slack/ntfy/discord are pre-baked templates over it, not bespoke code paths.",
+      "notes": "",
+      "question": "Transport abstraction — generic webhook vs bespoke per channel?",
+      "rec": "A generic webhook sink (URL + method + headers + Go text/template body); orb/slack/ntfy/discord are pre-baked templates over it, not bespoke code paths."
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Login-first: deep-link to the existing /s/{id} route under ADR-0017 session auth. No expiring share token in v1 (documented follow-on if cross-device-without-login is ever needed).",
+      "notes": "",
+      "question": "Deep-link auth — login-first vs expiring share token?",
+      "rec": "Login-first: deep-link to the existing /s/{id} route under ADR-0017 session auth. No expiring share token in v1."
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Per-sink deep_link_base with a global default, so different channels can point at different hosts (e.g. LAN vs Tailscale) without duplicating the whole config.",
+      "notes": "",
+      "question": "deep_link_base — per-sink or global only?",
+      "rec": "Per-sink deep_link_base with a global default."
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Config stores only the env-var name (ADR-0016 api_key_env pattern); the raw secret lives in ~/.marble/env and is never written to settings, ADR, or logs.",
+      "notes": "",
+      "question": "How are sink credentials stored?",
+      "rec": "Config stores only the env-var name (ADR-0016 api_key_env pattern)."
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Ship all six predefined types in the first pass (orb, webhook, slack, discord, ntfy, stdout) — the webhook/template base makes the extras near-free.",
+      "notes": "",
+      "question": "Which sinks ship first?",
+      "rec": "Ship all six predefined types in the first pass (orb, webhook, slack, discord, ntfy, stdout)."
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Full final assistant message (no thinking/tool chatter) on the event; the sink template can truncate. Preview is the first line for banners.",
+      "notes": "",
+      "question": "Payload — full final message or preview-only?",
+      "rec": "Full final assistant message; preview is the first line for banners."
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Skip tool-only turns by default — only turns that produce a final assistant message mirror. (A turn ending in error still mirrors under kind=error.)",
+      "notes": "",
+      "question": "Tool-only turns — mirror or skip?",
+      "rec": "Skip tool-only turns by default."
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Declarative per-sink filters: kinds allow-list, skip_empty, skip_cron, only/skip session regex, min_chars.",
+      "notes": "",
+      "question": "What filters does a sink get?",
+      "rec": "Declarative per-sink filters: kinds allow-list, skip_empty, skip_cron, only/skip session regex, min_chars."
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Optional min_interval_sec per sink, off by default — coalesce a noisy session to one notification per window rather than one per turn.",
+      "notes": "",
+      "question": "Coalesce bursts?",
+      "rec": "Optional min_interval_sec per sink, off by default."
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Fire-and-forget + bounded queue + deterministic idempotency key hash(sink,session,turn) + bounded jittered retry, then drop-with-log.",
+      "notes": "",
+      "question": "Delivery reliability contract?",
+      "rec": "Fire-and-forget + bounded queue + deterministic idempotency key + bounded jittered retry, then drop-with-log."
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Settings UI in first wave",
+      "notes": "",
+      "question": "Config surface for p1?",
+      "rec": "p1 = $MEMORY JSON file + env secrets; Settings UI later."
+    },
+    "Q13": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Three-state per sink (inherit/on/off) stored in session metadata; a sink's global enabled is the default, the session override wins at turn-end, then filters apply. Session UI shows a Sinks popover with per-sink toggle + a 'Pause all sinks' master.",
+      "notes": "",
+      "question": "Per-session sink override — how does one session opt out of a global default?",
+      "rec": "Three-state per sink (inherit/on/off) stored in session metadata; session UI shows a Sinks popover with per-sink toggle + a 'Pause all sinks' master."
+    }
+  }
+}

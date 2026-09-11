@@ -2,14 +2,15 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Proposed** (2026-09-11) — open for review |
+| **Status** | **Accepted** (2026-09-11) — Q1–Q13 locked; implementation not yet started |
 | **Date** | 2026-09-11 |
+| **Accepted** | 2026-09-11 |
 | **Author** | — |
 | **Deciders** | Project owner |
 | **Tags** | notifications, mirror, sink, webhook, orb, slack, ntfy, discord, events, config |
 | **Extends** | ADR-0010 (SSE / `Session.Subscribe`), ADR-0016 (API-key env pattern), ADR-0017 (OAuth / session auth), ADR-0018 (config style), ADR-0019 (attachments / blobs) |
 | **Review UI** | [0028-review.html](0028-review.html) |
-| **Answers** | *(to be written after review)* |
+| **Answers** | [0028-answers.json](0028-answers.json) (`2026-09-11T22:40:54.873Z`) — Q1–Q13 locked |
 
 ## Summary
 
@@ -454,23 +455,25 @@ Notes on the mockups:
 | No recursion | Sink delivery never starts a turn |
 | Rate/burst | Bounded queue + coalescing prevents a noisy cron session from spamming a channel |
 
-## Decisions (open, Q1–Q13)
+## Decisions locked (Q1–Q13)
 
-All **open questions recommend "use rec"**; see `0028-review.html` (interactive kit).
+Source: `adr/0028-answers.json` (`2026-09-11T22:40:54.873Z`). Q1–Q11, Q13 use rec; **Q12 is a custom decision** (Settings UI ships in the first wave).
 
-- **Q1** Trigger → subscribe to the session Event stream (not a named hook).  
-- **Q2** Abstraction → generic webhook sink + templates; Orb/Slack/ntfy/Discord as built-ins over it.  
-- **Q3** Deep-link auth → login-first (reuse `/s/{id}` under ADR-0017); no expiring share token in v1.  
-- **Q4** `deep_link_base` → per-sink with a global default.  
-- **Q5** Secrets → env-var name only (ADR-0016 `api_key_env`).  
-- **Q6** First pass sinks → **all six** predefined types (`orb`, `webhook`, `slack`, `discord`, `ntfy`, `stdout`); the webhook/template base makes the extras near-free.  
-- **Q7** Payload → full final message (not preview-only).  
-- **Q8** Tool-only turns → skip by default (only turns with a final assistant message).  
-- **Q9** Filters → kinds + skip-empty + skip-cron + session regex + min-chars.  
-- **Q10** Coalescing → optional `min_interval_sec` per sink, off by default.  
-- **Q11** Delivery → fire-and-forget + bounded queue + idempotency key + bounded retry.  
-- **Q12** Config surface → `$MEMORY` JSON file + env secrets; Settings UI later.  
-- **Q13** Per-session override → three-state (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session UI toggle + "pause all" master.
+| ID | Decision | Choice |
+|----|----------|--------|
+| **Q1** | Trigger = session Event stream subscriber (`status: idle`), no turn-loop change | rec |
+| **Q2** | Generic webhook sink + Go `text/template`; Orb/Slack/ntfy/Discord as built-ins over it | rec |
+| **Q3** | Deep-link auth = login-first (`/s/{id}` under ADR-0017); no share token in v1 | rec |
+| **Q4** | `deep_link_base` per-sink with a global default | rec |
+| **Q5** | Secrets by env-var name only (ADR-0016 `api_key_env`) | rec |
+| **Q6** | All six predefined types ship in the first pass | rec |
+| **Q7** | Full final message + first-line preview | rec |
+| **Q8** | Skip tool-only turns by default; errors still mirror | rec |
+| **Q9** | Filters = kinds + skip-empty + skip-cron + session regex + min-chars | rec |
+| **Q10** | Coalescing optional `min_interval_sec`, off by default | rec |
+| **Q11** | Fire-and-forget + bounded queue + idempotency key + bounded retry | rec |
+| **Q12** | **Settings UI in first wave** (not deferred) | **custom** |
+| **Q13** | Per-session three-state override (inherit/on/off) + session popover + "pause all" | rec |
 
 ## Locked context (L1–L6)
 
@@ -480,6 +483,8 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 - **L4** Sinks are harness code, not agent turns — never recurse into `/api/prompt`.  
 - **L5** Additive + fire-and-forget; never block the turn.  
 - **L6** Deterministic idempotency key; raw secrets never in config/logs/ADR.
+
+> **Q12 consequence:** config canonicalizes to `$MEMORY` JSON + env secrets, but the **Settings UI lands in the first wave** (M2) — the sinks list + per-type editors + session toggle are part of the initial ship, not a follow-on.
 
 ## Implementation plan
 
@@ -534,3 +539,4 @@ All **open questions recommend "use rec"**; see `0028-review.html` (interactive 
 | 2026-09-11 | **Proposed** — generic turn-sink layer; Orb/Slack/ntfy/Discord/webhook over a template base; stream-subscription trigger; deep link as a concept; Q1–Q12 open for review |
 | 2026-09-11 | **Added** predefined sink types (first pass): `orb`, `webhook`, `slack`, `discord`, `ntfy`, `stdout` — per-type config reference + Settings UI mockups |
 | 2026-09-11 | **Added** per-session sink behavior: three-state override (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session-level UI toggle + "pause all" |
+| 2026-09-11 | **Accepted** — locked Q1–Q13 (`2026-09-11T22:40:54.873Z`); Q1–Q11, Q13 rec; Q12 custom (Settings UI in first wave) |

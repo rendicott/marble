@@ -11,12 +11,13 @@
     <div class="brand">
       <span class="mark"></span>
       <span>Marble · ADR-0028</span>
-      <span class="status proposed">Proposed</span>
+      <span class="status accepted">Accepted</span>
     </div>
     <nav class="toc">
       <a href="index.html">Index</a>
       <a href="0028-turn-sinks.md">Markdown</a>
       <a href="0028-review.html">Review</a>
+      <a href="0028-answers.json">Answers</a>
       <a href="0027-doc.html">← 0027</a>
     </nav>
   </header>
@@ -33,10 +34,14 @@
 <tbody>
 <tr>
 <td><strong>Status</strong></td>
-<td><strong>Proposed</strong> (2026-09-11) — open for review</td>
+<td><strong>Accepted</strong> (2026-09-11) — Q1–Q13 locked; implementation not yet started</td>
 </tr>
 <tr>
 <td><strong>Date</strong></td>
+<td>2026-09-11</td>
+</tr>
+<tr>
+<td><strong>Accepted</strong></td>
 <td>2026-09-11</td>
 </tr>
 <tr>
@@ -61,7 +66,7 @@
 </tr>
 <tr>
 <td><strong>Answers</strong></td>
-<td><em>(to be written after review)</em></td>
+<td><a href="0028-answers.json">0028-answers.json</a> (<code>2026-09-11T22:40:54.873Z</code>) — Q1–Q13 locked</td>
 </tr>
 </tbody>
 </table>
@@ -807,23 +812,84 @@ stdout:   Format    [plain ▾]   (plain | json)
 </tr>
 </tbody>
 </table>
-<h2 id="decisions-open-q1q13">Decisions (open, Q1–Q13)</h2>
-<p>All <strong>open questions recommend &ldquo;use rec&rdquo;</strong>; see <code>0028-review.html</code> (interactive kit).</p>
-<ul>
-<li><strong>Q1</strong> Trigger → subscribe to the session Event stream (not a named hook).  </li>
-<li><strong>Q2</strong> Abstraction → generic webhook sink + templates; Orb/Slack/ntfy/Discord as built-ins over it.  </li>
-<li><strong>Q3</strong> Deep-link auth → login-first (reuse <code>/s/{id}</code> under ADR-0017); no expiring share token in v1.  </li>
-<li><strong>Q4</strong> <code>deep_link_base</code> → per-sink with a global default.  </li>
-<li><strong>Q5</strong> Secrets → env-var name only (ADR-0016 <code>api_key_env</code>).  </li>
-<li><strong>Q6</strong> First pass sinks → <strong>all six</strong> predefined types (<code>orb</code>, <code>webhook</code>, <code>slack</code>, <code>discord</code>, <code>ntfy</code>, <code>stdout</code>); the webhook/template base makes the extras near-free.  </li>
-<li><strong>Q7</strong> Payload → full final message (not preview-only).  </li>
-<li><strong>Q8</strong> Tool-only turns → skip by default (only turns with a final assistant message).  </li>
-<li><strong>Q9</strong> Filters → kinds + skip-empty + skip-cron + session regex + min-chars.  </li>
-<li><strong>Q10</strong> Coalescing → optional <code>min_interval_sec</code> per sink, off by default.  </li>
-<li><strong>Q11</strong> Delivery → fire-and-forget + bounded queue + idempotency key + bounded retry.  </li>
-<li><strong>Q12</strong> Config surface → <code>$MEMORY</code> JSON file + env secrets; Settings UI later.  </li>
-<li><strong>Q13</strong> Per-session override → three-state (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session UI toggle + &ldquo;pause all&rdquo; master.</li>
-</ul>
+<h2 id="decisions-locked-q1q13">Decisions locked (Q1–Q13)</h2>
+<p>Source: <code>adr/0028-answers.json</code> (<code>2026-09-11T22:40:54.873Z</code>). Q1–Q11, Q13 use rec; <strong>Q12 is a custom decision</strong> (Settings UI ships in the first wave).</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+<th>Choice</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Trigger = session Event stream subscriber (<code>status: idle</code>), no turn-loop change</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>Generic webhook sink + Go <code>text/template</code>; Orb/Slack/ntfy/Discord as built-ins over it</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Deep-link auth = login-first (<code>/s/{id}</code> under ADR-0017); no share token in v1</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td><code>deep_link_base</code> per-sink with a global default</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Secrets by env-var name only (ADR-0016 <code>api_key_env</code>)</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>All six predefined types ship in the first pass</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>Full final message + first-line preview</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Skip tool-only turns by default; errors still mirror</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Filters = kinds + skip-empty + skip-cron + session regex + min-chars</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Coalescing optional <code>min_interval_sec</code>, off by default</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>Fire-and-forget + bounded queue + idempotency key + bounded retry</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td><strong>Settings UI in first wave</strong> (not deferred)</td>
+<td><strong>custom</strong></td>
+</tr>
+<tr>
+<td><strong>Q13</strong></td>
+<td>Per-session three-state override (inherit/on/off) + session popover + &ldquo;pause all&rdquo;</td>
+<td>rec</td>
+</tr>
+</tbody>
+</table>
 <h2 id="locked-context-l1l6">Locked context (L1–L6)</h2>
 <ul>
 <li><strong>L1</strong> Session event pub/sub already exists (<code>Subscribe</code>/<code>publish</code>, ADR-0010); reuse as the trigger.  </li>
@@ -833,6 +899,9 @@ stdout:   Format    [plain ▾]   (plain | json)
 <li><strong>L5</strong> Additive + fire-and-forget; never block the turn.  </li>
 <li><strong>L6</strong> Deterministic idempotency key; raw secrets never in config/logs/ADR.</li>
 </ul>
+<blockquote>
+<p><strong>Q12 consequence:</strong> config canonicalizes to <code>$MEMORY</code> JSON + env secrets, but the <strong>Settings UI lands in the first wave</strong> (M2) — the sinks list + per-type editors + session toggle are part of the initial ship, not a follow-on.</p>
+</blockquote>
 <h2 id="implementation-plan">Implementation plan</h2>
 <table>
 <thead>
@@ -962,6 +1031,10 @@ stdout:   Format    [plain ▾]   (plain | json)
 <tr>
 <td>2026-09-11</td>
 <td><strong>Added</strong> per-session sink behavior: three-state override (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session-level UI toggle + &ldquo;pause all&rdquo;</td>
+</tr>
+<tr>
+<td>2026-09-11</td>
+<td><strong>Accepted</strong> — locked Q1–Q13 (<code>2026-09-11T22:40:54.873Z</code>); Q1–Q11, Q13 rec; Q12 custom (Settings UI in first wave)</td>
 </tr>
 </tbody>
 </table>
