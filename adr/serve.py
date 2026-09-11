@@ -24,10 +24,17 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path in ("/adr", "/adr/"):
-            self.path = "/adr/index.html" + (
-                "?" + self.path.split("?", 1)[1] if "?" in self.path else ""
-            )
+        qs = "?" + self.path.split("?", 1)[1] if "?" in self.path else ""
+        # Redirect the bare /adr → /adr/ so the browser's base URL ends with a
+        # trailing slash. Otherwise relative links (index.html → 0028-doc.html)
+        # resolve against "/" instead of "/adr/" and 404.
+        if path == "/adr":
+            self.send_response(301)
+            self.send_header("Location", "/adr/" + qs)
+            self.end_headers()
+            return
+        if path == "/adr/":
+            self.path = "/adr/index.html" + qs
         return super().do_GET()
 
     def log_message(self, fmt: str, *args) -> None:
