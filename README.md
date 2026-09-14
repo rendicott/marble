@@ -4,7 +4,28 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.3
+## What's new in v0.4.4
+
+Highlights since **[v0.4.3](https://github.com/rendicott/marble/releases/tag/v0.4.3)**:
+
+### Turn sinks (ADR-0028)
+- Mirror finished turns to **Orb**, Slack, ntfy, Discord, generic webhook, or stdout (`$MEMORY/sinks.json`)
+- Settings → **Sinks** (list/editors/test) plus a per-session inherit/on/off popover
+- **`manage_sinks`** agent tool — list/create/update/delete/test; session `set_override` / pause-all
+- Orb sink sets `X-Orb-Return-Url` (deep link) and **`X-Orb-Run-Id`** = Marble session id so Orb clients can group turns
+- Secrets by env-var **name** only (`secret_env`); example: [`adr/sinks.json.example`](adr/sinks.json.example)
+
+### Attach images from URLs (ADR-0029)
+- **`attach_from_url`** — HTTP(S) GET image URL(s) (png/jpeg/webp/gif; **no SVG**) → durable chat attachment
+- Batch **max 4** URLs; 8 MiB cap; same SSRF policy as `web_fetch` (LAN allowed, cloud metadata blocked)
+- Provenance in attachment **`meta_json`** (`source_url`, credit, license, …)
+- **`POST /api/sessions/{id}/attachments/from_url`** for scripts/tests/non-agent clients
+- Chip tooltip shows source/credit when present. Attaching is **not** a license clearance.
+
+### Docs
+- ADR-0028 accepted + implemented; ADR-0029 accepted + implemented (M1)
+
+### Earlier — v0.4.3
 
 Highlights since **[v0.4.2](https://github.com/rendicott/marble/releases/tag/v0.4.2)**:
 
@@ -138,13 +159,14 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Background tasks** — `start_background_task` / `check_background_task` / `kill_background_task` for long-running shell jobs (use these for servers; prefer over `shell_execute … &`)
 - **Continuations** — one-shot delayed resume (`schedule_continuation`: delay and/or wait for BG task); harness **auto-continue** near hard iter caps
 - **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
+- **Turn sinks (ADR-0028)** — mirror finished turns to Orb / Slack / ntfy / Discord / webhook / stdout (`$MEMORY/sinks.json`). Settings → Sinks plus `manage_sinks` (list/create/update/delete/test; per-session `set_override`). Secrets by env-var **name** only.
 - **Models (ADR-0018)** — `model_list` / `model_get` / **`model_add`** / **`model_update`** / `session_set_model` (catalog writes store env **names** only; agent can research base_url & limits via web tools)
 - **Computer use (ADR-0020)** — `computer_*` tools against a paired **[marble-peer](https://github.com/rendicott/marble-desktop-peer)** (browser CDP + desktop + confirm). Confirm cards in the session UI and a Tailscale-reachable `/confirm/{id}` page.
-- **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available
+- **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available; image URLs go through `attach_from_url`
 - **External agents (ADR-0014)** — `call_agent_process` (`format=grok|claude`) with optional `workdir`, high timeouts, `background` mode
 - **Memory & skills** — `memory_*` under `$MEMORY/knowledge/`, `skill_*` from skill roots; prompt nudges memory when unsure
 - **Context** — `get_context_usage`, `session_compact`
-- **Attachments** — `message_attach` (durable chat chips + model-visible images when `cap_images`); `attach_file` (workspace path / UI-oriented)
+- **Attachments** — `message_attach` (workspace path → durable chip); **`attach_from_url`** (HTTP image URL → chip + `meta_json` provenance, ADR-0029); `attach_file` (ephemeral workspace preview)
 - **MCP** — optional stdio/HTTP servers from `$MEMORY/mcp.json` (e.g. Tavily web search)
 - **Server-side TTS (ADR-0027)** — optional `$MEMORY/tts.json` + `ELEVENLABS_API_KEY`; `GET /api/tts/status`, `POST /api/sessions/{id}/tts`; audio as session attachments (inline GET). Off by default.
 - **mpub** — publish HTML/markdown at `/mpub/{slug}`; tools: `mpub_publish` / `list` / `get` / `unpublish` / `mpub_set_visibility`

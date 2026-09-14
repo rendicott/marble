@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0029</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0029</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0029-reliable-image-attachments.md">Markdown</a>
+      <a href="0029-review.html">Review</a>
+      <a href="0029-answers.json">Answers</a>
+      <a href="0028-doc.html">← 0028</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0029-reliable-image-attachments-from-urls">ADR-0029: Reliable image attachments from URLs</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (2026-09-14) — implemented (M1 + chip source hint)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-08-22</td>
+</tr>
+<tr>
+<td><strong>Accepted</strong></td>
+<td>2026-09-14</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>attachments, images, tools, web_fetch, message_attach, ssrf, provenance, multimodal</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0019 (session attachments / blobs), ADR-0012 (<code>web_fetch</code>), ADR-0005 (tool suite), ADR-0003 (SQLite + blobs), ADR-0016 (secrets / env pattern where stock APIs appear later)</td>
+</tr>
+<tr>
+<td><strong>Related</strong></td>
+<td>ADR-0011 (web search MCP — deferred policy), ADR-0025 (Wonderstand presentation / <code>image_attachment_id</code>), ADR-0027 (TTS stages audio attachments — parallel pattern), ADR-0024 (Wonderstand client)</td>
+</tr>
+<tr>
+<td><strong>Does not supersede</strong></td>
+<td>ADR-0019 inbound paste/upload; ADR-0012 text-oriented <code>web_fetch</code> remains for HTML/JSON pages</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0029-review.html">0029-review.html</a></td>
+</tr>
+<tr>
+<td><strong>Sketch</strong></td>
+<td><a href="../docs/image-attach-from-url-sketch.md">docs/image-attach-from-url-sketch.md</a></td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><a href="0029-answers.json">0029-answers.json</a> (<code>2026-09-14T20:22:06.830Z</code>) — all Q1–Q10 locked</td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p>Agents often <strong>discover</strong> image URLs (web search MCP with <code>include_images</code>, page scrape, user paste, stock APIs) but cannot <strong>reliably</strong> turn them into durable chat artifacts. Today the only first-class path is <strong><code>message_attach</code> from a workspace file path</strong>. Getting from <code>https://…/tiger.jpg</code> to a session <code>attachment_id</code> requires a brittle multi-step dance (shell/<code>web_fetch</code> misuse → write file → <code>message_attach</code>) that models skip or botch.</p>
+<p>This ADR locks <strong>foundational harness support</strong> so any client (web UI, Wonderstand, API consumers) can depend on:</p>
+<ol>
+<li>Agent tool <strong><code>attach_from_url</code></strong> that <strong>HTTP(S) GETs</strong> image URL(s), validates bytes, and <strong>stages chat attachment(s)</strong>.  </li>
+<li><strong>HTTP API</strong> <code>POST …/attachments/from_url</code> in the <strong>same first wave (M1)</strong> as the tool.  </li>
+<li><strong>Provenance</strong> via attachment <strong><code>meta_json</code></strong> (source URL, content-type, optional credit fields).  </li>
+<li><strong>SSRF / size / MIME policy</strong> aligned with <code>web_fetch</code> and ADR-0019 sniff rules (LAN allowed; SVG rejected on this tool; default <strong>8 MiB</strong>).  </li>
+<li>Clear <strong>non-goals</strong>: not a stock-photo product, not automatic Tavily→UI injection, not Wonderstand-only.</li>
+</ol>
+<p>Downstream products (immersion, prompt packs, stock providers) become <strong>thin consumers</strong> of <code>attachment_id</code> instead of inventing per-client hotlink logic.</p>
+<h2 id="context-pain">Context &amp; pain</h2>
+<h3 id="what-works-today-adr-0019">What works today (ADR-0019)</h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>User paste / upload</td>
+<td>Staged attachment; multimodal history when <code>cap_images</code></td>
+</tr>
+<tr>
+<td><code>message_attach</code> + workspace <code>path</code></td>
+<td>Durable chat chip + blob</td>
+</tr>
+<tr>
+<td>Peer <code>computer_screenshot</code></td>
+<td>Bytes → <code>StageChatAttachment</code></td>
+</tr>
+<tr>
+<td>TTS (ADR-0027)</td>
+<td>Synth bytes → audio attachment (trusted path)</td>
+</tr>
+<tr>
+<td>Markdown <code>![](https://…)</code> in assistant text</td>
+<td><strong>Some</strong> clients (e.g. Wonderstand) may hotlink; <strong>not</strong> a harness attachment; not durable; not in blob store</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-fails">What fails</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Failure mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tavily / search returns <code>images: ["https://…"]</code></td>
+<td>URLs live only in <strong>tool_result</strong> JSON unless the model copies them</td>
+</tr>
+<tr>
+<td>Prompt says “attach images”</td>
+<td>No one-shot tool; model invents shell curls or drops images</td>
+</tr>
+<tr>
+<td><code>web_fetch(image_url)</code></td>
+<td>Designed for <strong>HTML→markdown / JSON text</strong>, not binary image staging</td>
+</tr>
+<tr>
+<td>Hotlink in final markdown</td>
+<td>Breaks offline, expires, no GC, weak rights story, inconsistent across clients</td>
+</tr>
+<tr>
+<td>Want <code>presentation.visual.image_attachment_id</code></td>
+<td>Requires a real id from ADR-0019 store — URL alone is insufficient</td>
+</tr>
+</tbody>
+</table>
+<h3 id="design-principle-same-as-tts">Design principle (same as TTS)</h3>
+<p><strong>Bytes in the session store beat ephemeral URLs.</strong><br />
+Discovery may be MCP/search; <strong>canonical display artifact</strong> is <code>attachment_id</code> (+ optional provenance).</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>One reliable agent step:</strong> URL (or small list) → validated image bytes → <code>attachment_id</code> + tool result JSON the model can cite.  </li>
+<li><strong>Reuse ADR-0019</strong> storage, GET, sniff, session GC — do not invent a second blob system.  </li>
+<li><strong>Safe by default:</strong> SSRF controls (share/extend <code>web_fetch</code> policy), max bytes, image MIME allowlist, redirect limits.  </li>
+<li><strong>Provenance:</strong> persist at least <code>source_url</code> (and optional title/credit/license later) without blocking v1 if metadata is sparse.  </li>
+<li><strong>Client-agnostic:</strong> web transcript chips and any future immersion path both consume the same ids.  </li>
+<li><strong>Optional HTTP surface</strong> for harness-native callers (tests, scripts, future non-agent UI).  </li>
+<li><strong>Document</strong> prompt/skill guidance: prefer <code>attach_from_url</code> over shell download for images.  </li>
+<li><strong>Phased:</strong> tool first → provenance/API polish → optional stock providers / batch helpers later.</li>
+</ol>
+<h2 id="non-goals">Non-goals</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Wonderstand immersion UX / double-tap / tables</td>
+<td>Client ADR territory; this only supplies attachments</td>
+</tr>
+<tr>
+<td>Auto-inject every Tavily image into the UI</td>
+<td>Policy + spam + rights; leave to prompts/skills or a later ADR</td>
+</tr>
+<tr>
+<td>Replacing MCP web search</td>
+<td>Search stays MCP (ADR-0011); this is <strong>fetch+stage</strong> after discovery</td>
+</tr>
+<tr>
+<td>Full stock marketplace (Unsplash/Pexels product)</td>
+<td>Optional later provider module; v1 is <strong>generic URL attach</strong></td>
+</tr>
+<tr>
+<td>Guaranteeing copyright clearance</td>
+<td>Tool can store <strong>claimed</strong> license metadata; operator policy still required</td>
+</tr>
+<tr>
+<td>PDF / video / arbitrary binary</td>
+<td>Stay on ADR-0019 image (and existing doc) allowlists</td>
+</tr>
+<tr>
+<td>Changing <code>web_fetch</code> into a binary downloader for all types</td>
+<td>Keep <code>web_fetch</code> text-oriented; new tool owns image bytes</td>
+</tr>
+<tr>
+<td>Re-hosting Unsplash in violation of hotlink-only ToS</td>
+<td>Provider-specific rules are a <strong>later</strong> concern; generic tool may still fetch many CDNs — document risk</td>
+</tr>
+<tr>
+<td>Model image generation (DALL·E etc.)</td>
+<td>Different feature</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decision-drivers">Decision drivers</h2>
+<ol>
+<li><strong>Reliability over cleverness</strong> — one tool call beats three.  </li>
+<li><strong>Parity with screenshots/TTS</strong> — all “show the user media” paths converge on <code>StageChatAttachment</code>.  </li>
+<li><strong>Security</strong> — URL fetch is SSRF-shaped; must not open cloud metadata or unbounded downloads.  </li>
+<li><strong>Commercial cleanliness</strong> — core harness ships the <strong>capability</strong>; search/stock keys remain operator choice.  </li>
+<li><strong>Additive</strong> — existing <code>message_attach(path)</code> and user upload unchanged.</li>
+</ol>
+<h2 id="proposed-design">Proposed design</h2>
+<h3 id="a-agent-tool-attach_from_url-q1-locked">A. Agent tool: <code>attach_from_url</code> (<strong>Q1</strong> locked)</h3>
+<pre><code class="language-text">attach_from_url({
+  &quot;url&quot;: &quot;https://example.com/photo.jpg&quot;,   // single URL, or
+  &quot;urls&quot;: [&quot;https://a.jpg&quot;, &quot;https://b.jpg&quot;], // batch, max 4 (Q6)
+  &quot;name&quot;: &quot;siberian-tiger.jpg&quot;,             // optional display name (single)
+  &quot;alt&quot;: &quot;Siberian tiger in snow&quot;,          // optional; stored in provenance / UI hint
+  &quot;source_page&quot;: &quot;https://…&quot;,               // optional page where image was found
+  &quot;credit&quot;: &quot;Photo: …&quot;,                     // optional free-text attribution
+  &quot;license&quot;: &quot;…&quot;                            // optional free-text; not validated in v1
+})
+</code></pre>
+<p>Require exactly one of <code>url</code> or <code>urls</code> (non-empty). Batch failures are <strong>per-URL</strong> in the result array (partial success OK).</p>
+<p><strong>Behavior:</strong></p>
+<ol>
+<li>Validate URL scheme <code>http</code>/<code>https</code> only.  </li>
+<li>Apply <strong>SSRF policy</strong> (same family as ADR-0012 <code>web_fetch</code>: block cloud metadata / dangerous link-local; <strong>LAN/private allowed</strong> — <strong>Q2</strong>).  </li>
+<li>GET with timeout, <strong>max 5 redirects</strong> (<strong>Q3</strong>), re-validate host after each hop; default <strong><code>max_bytes</code> = 8 MiB</strong> (<strong>Q10</strong>), clamped to ADR-0019 image max if lower.  </li>
+<li><strong>Sniff</strong> magic bytes + Content-Type; accept <strong>image</strong> kinds only (png/jpeg/webp/gif). <strong>Reject SVG</strong> on this tool (<strong>Q4</strong>).  </li>
+<li><code>StageChatAttachment(sessionID, name, data)</code> → <code>id</code>, <code>mime</code>, <code>kind</code>.  </li>
+<li>Persist <strong>provenance</strong> on attachment row <strong><code>meta_json</code></strong> (<strong>Q5</strong>).  </li>
+<li>Emit durable UI chip (<code>OnChatAttachment</code>) like <code>message_attach</code>.  </li>
+<li>Return tool JSON (single) or <code>{ "ok": true, "results": [ … ] }</code> (batch):</li>
+</ol>
+<pre><code class="language-json">{
+  &quot;ok&quot;: true,
+  &quot;attachment_id&quot;: &quot;att_…&quot;,
+  &quot;mime&quot;: &quot;image/jpeg&quot;,
+  &quot;kind&quot;: &quot;image&quot;,
+  &quot;bytes&quot;: 183422,
+  &quot;name&quot;: &quot;siberian-tiger.jpg&quot;,
+  &quot;source_url&quot;: &quot;https://…&quot;,
+  &quot;note&quot;: &quot;chat attachment (durable); cite attachment_id in reply if showing the image&quot;
+}
+</code></pre>
+<p><strong>Batch (Q6 locked):</strong> support <code>urls[]</code> with <strong>max 4</strong> in <strong>M1</strong> (not deferred).</p>
+<h3 id="b-relationship-to-existing-tools">B. Relationship to existing tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Role after this ADR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MCP search (<code>include_images</code>)</td>
+<td><strong>Discover</strong> candidate URLs</td>
+</tr>
+<tr>
+<td><code>web_fetch</code></td>
+<td><strong>Read pages</strong> (HTML/JSON text)</td>
+</tr>
+<tr>
+<td><strong><code>attach_from_url</code></strong></td>
+<td><strong>Materialize</strong> image URL → attachment</td>
+</tr>
+<tr>
+<td><code>message_attach</code></td>
+<td>Workspace path → attachment (unchanged)</td>
+</tr>
+<tr>
+<td><code>attach_file</code></td>
+<td>Ephemeral workspace chip (unchanged)</td>
+</tr>
+</tbody>
+</table>
+<p>System prompt / tool description one-liner:</p>
+<blockquote>
+<p>After search returns image URLs, call <code>attach_from_url</code> then reference <code>attachment_id</code> (or markdown that clients resolve). Do not shell-curl images into the workspace unless the URL tool fails.</p>
+</blockquote>
+<h3 id="c-http-api-q9-locked-m1">C. HTTP API (<strong>Q9</strong> locked — <strong>M1</strong>)</h3>
+<pre><code class="language-http">POST /api/sessions/{id}/attachments/from_url
+{ &quot;url&quot;: &quot;https://…&quot;, &quot;name&quot;: &quot;…&quot;, &quot;alt&quot;: &quot;…&quot;, &quot;credit&quot;: &quot;…&quot; }
+// or { &quot;urls&quot;: [&quot;https://a&quot;, &quot;https://b&quot;] }  // max 4
+→ 201 { &quot;attachment_id&quot;, &quot;mime&quot;, &quot;kind&quot;, &quot;bytes&quot;, &quot;source_url&quot; }
+// batch → 201 { &quot;results&quot;: [ … ] } with per-URL ok/error
+</code></pre>
+<p>Auth same as session API. Ships <strong>with the tool in M1</strong> (not deferred to M2). Enables tests and non-agent clients without spinning a turn.</p>
+<p>GET attachment bytes remain ADR-0019 (<code>/api/sessions/{id}/attachments/{attId}</code> or equivalent).</p>
+<h3 id="d-provenance-storage-q5-locked-meta_json">D. Provenance storage (<strong>Q5</strong> locked: <code>meta_json</code>)</h3>
+<p>Minimum viable:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required v1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>source_url</code></td>
+<td><strong>Yes</strong> (the fetched URL, after redirects final URL if available)</td>
+</tr>
+<tr>
+<td><code>fetched_at</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>content_type</code> / mime</td>
+<td>Yes (sniffed)</td>
+</tr>
+<tr>
+<td><code>name</code>, <code>alt</code>, <code>credit</code>, <code>license</code>, <code>source_page</code></td>
+<td>Optional</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Locked:</strong> DB column / field <strong><code>meta_json</code></strong> on the attachment row (not display-name-only; not a separate table in v1).</p>
+<p>UI: web chip tooltip / footer “Source: …” when meta present. Clients may ignore.</p>
+<h3 id="e-security-limits">E. Security &amp; limits</h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Locked</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Schemes</td>
+<td><code>http</code>, <code>https</code> only</td>
+</tr>
+<tr>
+<td>SSRF</td>
+<td>Reuse/extend <code>web_fetch</code> blocker list; <strong>LAN allowed</strong>; block cloud metadata</td>
+</tr>
+<tr>
+<td>Redirects</td>
+<td><strong>5</strong>; re-check host after each hop</td>
+</tr>
+<tr>
+<td>Size</td>
+<td>Default <strong>8 MiB</strong>; <code>Content-Length</code> pre-check when present; stream with hard max</td>
+</tr>
+<tr>
+<td>MIME</td>
+<td>Sniff wins over <code>Content-Type</code>; <strong>images only</strong>; <strong>no SVG</strong></td>
+</tr>
+<tr>
+<td>Rate</td>
+<td>Per-session / per-turn cap on tool calls (e.g. 5–10) to limit abuse</td>
+</tr>
+<tr>
+<td>Auth to origin</td>
+<td>No arbitrary custom headers in v1 (avoid open proxy with cookies)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="f-caching-q7-locked">F. Caching (<strong>Q7</strong> locked)</h3>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M1</strong></td>
+<td><strong>No cache</strong> — each successful fetch stages a new attachment</td>
+</tr>
+<tr>
+<td><strong>Later (optional)</strong></td>
+<td>Session hash(final_url) reuse if cost/latency hurts</td>
+</tr>
+</tbody>
+</table>
+<p>TTS already caches by content hash; images can follow that pattern in a later milestone if needed.</p>
+<h3 id="g-model-visible-vs-ui-only-q8-locked">G. Model-visible vs UI-only (<strong>Q8</strong> locked)</h3>
+<p>ADR-0019 <code>message_attach</code> is <strong>durable UI</strong>, not fully re-injected as a giant tool result image by default.</p>
+<p><strong>Locked for <code>attach_from_url</code>:</strong></p>
+<ul>
+<li>Same as <code>message_attach</code>: <strong>chip + id in tool result text</strong>;  </li>
+<li>Multimodal re-include for <strong>vision models</strong> follows existing attachment / <code>marble-att://</code> rules — <strong>no second pipeline</strong> in v1 unless gaps appear.</li>
+</ul>
+<h3 id="h-failure-modes-tool-returns-structured-error-not-panic">H. Failure modes (tool returns structured error, not panic)</h3>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Tool result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SSRF blocked</td>
+<td><code>ok: false</code>, <code>error: "url_blocked"</code></td>
+</tr>
+<tr>
+<td>Timeout / DNS</td>
+<td><code>error: "fetch_failed"</code></td>
+</tr>
+<tr>
+<td>Too large</td>
+<td><code>error: "too_large"</code></td>
+</tr>
+<tr>
+<td>Not an image</td>
+<td><code>error: "unsupported_type"</code></td>
+</tr>
+<tr>
+<td>404</td>
+<td><code>error: "http_status", "status": 404</code></td>
+</tr>
+</tbody>
+</table>
+<p>Model can fall back to prose or SVG without crashing the turn.</p>
+<h2 id="phased-delivery">Phased delivery</h2>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Scope</th>
+<th>Exit criteria</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M0</strong></td>
+<td>This ADR + review answers</td>
+<td><strong>Done</strong> — Q1–Q10 locked 2026-09-14</td>
+</tr>
+<tr>
+<td><strong>M1</strong></td>
+<td><code>attach_from_url</code> (single + <strong>batch max 4</strong>) + <code>meta_json</code> provenance + <strong><code>POST …/from_url</code></strong> + tests + prompt blurb</td>
+<td>Agent/API: URL(s) → chip(s) in one call</td>
+</tr>
+<tr>
+<td><strong>M2</strong></td>
+<td>Web UI source/credit hint on chips; polish errors/rate limits</td>
+<td>Meta visible in transcript</td>
+</tr>
+<tr>
+<td><strong>M3</strong></td>
+<td>Optional session URL cache</td>
+<td>Fewer dup downloads</td>
+</tr>
+<tr>
+<td><strong>M4</strong></td>
+<td>Optional stock provider tools (Pexels/Unsplash/Commons) <strong>or</strong> skill-only</td>
+<td>Rights-aware search separate from generic fetch</td>
+</tr>
+</tbody>
+</table>
+<p>Wonderstand / presentation wiring is <strong>out of M1–M2</strong> except as a smoke consumer: if assistant message lists <code>attachment_id</code> or markdown that resolves to attachments, existing clients improve for free.</p>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Removes the main reliability gap between “search found images” and “chat has images.”  </li>
+<li>One pattern for screenshots, TTS audio, and remote photos.  </li>
+<li>Enables future immersion and web UI without hotlink fragility.  </li>
+<li>Keeps search/stock as operator-optional (commercial story intact).</li>
+</ul>
+<h3 id="negative-risks">Negative / risks</h3>
+<ul>
+<li>SSRF surface grows (mitigate with shared policy + tests).  </li>
+<li>Operators may assume “attached = licensed” — <strong>document that it does not</strong>.  </li>
+<li>Some CDNs block datacenter IPs or require Referer — tool will fail honestly.  </li>
+<li>Unsplash-class ToS may prefer hotlink; generic rehost can be non-compliant for that vendor — M4 provider tools must encode vendor rules.</li>
+</ul>
+<h3 id="neutral">Neutral</h3>
+<ul>
+<li><code>web_fetch</code> stays text-centric.  </li>
+<li>Prompt envelopes (Wonderstand) remain useful but no longer the only lever.</li>
+</ul>
+<h2 id="decisions-locked-q1q10">Decisions locked (Q1–Q10)</h2>
+<p>Source: <code>adr/0029-answers.json</code> (<code>2026-09-14T20:22:06.830Z</code>). <strong>Q1–Q5, Q7–Q8, Q10</strong> use rec; <strong>Q6</strong> and <strong>Q9</strong> are <strong>custom</strong> (batch + HTTP pulled into M1).</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+<th>Choice</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Tool name = <strong><code>attach_from_url</code></strong></td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>LAN / private hosts <strong>allowed</strong> (block cloud metadata)</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Max redirects = <strong>5</strong></td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td><strong>Reject SVG</strong> on this tool</td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Provenance = attachment <strong><code>meta_json</code></strong></td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td><strong>Batch max 4 URLs in M1</strong></td>
+<td><strong>custom</strong> (rec was single-only until M3)</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td><strong>No URL cache in M1</strong></td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>Vision re-inject <strong>follows ADR-0019</strong></td>
+<td>rec</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td><strong><code>POST …/attachments/from_url</code> in M1</strong> with the tool</td>
+<td><strong>custom</strong> (rec was M2)</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Default max download = <strong>8 MiB</strong></td>
+<td>rec</td>
+</tr>
+</tbody>
+</table>
+<h3 id="custom-decision-notes">Custom decision notes</h3>
+<blockquote>
+<p><strong>Q6:</strong> First wave accepts <code>urls[]</code> (max 4) so search→attach does not need four serial tool calls.<br />
+<strong>Q9:</strong> HTTP API ships with the tool so tests/scripts/non-agent clients are unblocked immediately; shared implementation behind tool + handler.</p>
+</blockquote>
+<h2 id="implementation-sketch-non-normative">Implementation sketch (non-normative)</h2>
+<pre><code>internal/tools/attach_url.go
+  - attachFromURL(args, tc) → fetch → sniff → StageChatAttachment → OnChatAttachment
+  - support url | urls (max 4)
+
+internal/netx/ or reuse web_fetch transport
+  - shared BlockedHost / redirect checks (LAN ok)
+
+internal/db/attachments.go
+  - MetaJSON on attachment row
+
+internal/api/attachments.go
+  - POST from_url (single + batch) in M1
+
+tests: SSRF blocked host, tiny PNG happy path, batch partial fail, oversized reject, non-image reject, SVG reject
+</code></pre>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0019 Multimodal attachments  </li>
+<li>ADR-0012 <code>web_fetch</code>  </li>
+<li>ADR-0027 Server-side TTS (bytes → attachment pattern)  </li>
+<li>ADR-0025 Wonderstand protocol (<code>image_attachment_id</code>)  </li>
+<li>Tool specs: <code>message_attach</code>, <code>web_fetch</code> in <code>internal/tools/specs.go</code></li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-08-22</td>
+<td>Proposed — foundational URL→attachment reliability</td>
+</tr>
+<tr>
+<td>2026-09-14</td>
+<td><strong>Accepted</strong> — locked Q1–Q10 (<code>2026-09-14T20:22:06.830Z</code>); Q6/Q9 custom (batch + HTTP in M1)</td>
+</tr>
+<tr>
+<td>2026-09-14</td>
+<td><strong>Implemented (M1)</strong> — <code>attach_from_url</code> (single + batch max 4), <code>meta_json</code> provenance, <code>POST /api/sessions/{id}/attachments/from_url</code>, tests, prompt blurb; chip tooltip shows source/credit when present</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0029-reliable-image-attachments.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

@@ -2,6 +2,7 @@ package memory
 
 import (
 	stdb64 "encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ type SessionMeta struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// TitleCustom is true when the operator set an explicit name (do not auto-title from messages).
 	TitleCustom bool `json:"title_custom,omitempty"`
+	// SinkOverrides is per-session inherit/on/off map (ADR-0028). JSON object in front matter.
+	SinkOverrides map[string]string `json:"sink_overrides,omitempty"`
 }
 
 // TranscriptMessage is one persisted UI-facing turn.
@@ -86,6 +89,12 @@ func EncodeSession(doc *SessionDoc) string {
 	}
 	if doc.ReasoningEffort != "" {
 		fmt.Fprintf(&b, "reasoning_effort: %s\n", doc.ReasoningEffort)
+	}
+	if len(doc.SinkOverrides) > 0 {
+		raw, err := json.Marshal(doc.SinkOverrides)
+		if err == nil {
+			fmt.Fprintf(&b, "sink_overrides: %s\n", raw)
+		}
 	}
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "# Session %s — %s\n\n", doc.ID, doc.Title)
@@ -226,6 +235,11 @@ func parseFrontMatter(fm string) (SessionMeta, error) {
 			m.ModelID = val
 		case "reasoning_effort":
 			m.ReasoningEffort = val
+		case "sink_overrides":
+			var ov map[string]string
+			if err := json.Unmarshal([]byte(val), &ov); err == nil {
+				m.SinkOverrides = ov
+			}
 		}
 	}
 	if m.ID == "" {

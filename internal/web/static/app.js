@@ -20,6 +20,10 @@
     limp: document.getElementById("limp-banner"),
     showClosed: document.getElementById("show-closed"),
     sessionInfo: document.getElementById("btn-session-info"),
+    btnSinks: document.getElementById("btn-sinks"),
+    sinksPopover: document.getElementById("sinks-popover"),
+    sinksPopList: document.getElementById("sinks-pop-list"),
+    sinksPauseAll: document.getElementById("sinks-pause-all"),
     turnCard: document.getElementById("turn-progress"),
     tpTitle: document.getElementById("tp-title"),
     tpBody: document.getElementById("tp-body"),
@@ -54,6 +58,11 @@
   let liveThinkSeg = null;
   /** Session reasoning effort: none|low|medium|high|"" */
   let sessionReasoningEffort = "";
+  /** @type {Record<string, string>} */
+  let sessionSinkOverrides = {};
+  /** @type {Array<{id:string,type:string,enabled:boolean,valid?:boolean}>} */
+  let sessionSinks = [];
+  let sinksPopoverOpen = false;
   let reasoningLongPressTimer = null;
   let reasoningLongPressFired = false;
   let reasoningPopoverOpen = false;
@@ -757,6 +766,7 @@
 
   function setSessionInfoEnabled(on) {
     if (els.sessionInfo) els.sessionInfo.disabled = !on;
+    if (els.btnSinks) els.btnSinks.disabled = !on;
   }
 
   function isCronSession(s) {
@@ -1038,11 +1048,19 @@
       chip.setAttribute("data-att-name", a.name || "");
       chip.setAttribute("data-att-kind", a.kind || "");
       chip.setAttribute("data-att-mime", a.mime || "");
-      chip.title = "Open attachment";
+      const srcBits = [];
+      if (a.source_url) srcBits.push("Source: " + a.source_url);
+      if (a.credit) srcBits.push(a.credit);
+      chip.title = srcBits.length ? srcBits.join(" · ") : "Open attachment";
       const isImg = isRasterImageAtt(a);
+      const alt = a.alt || "";
       chip.innerHTML = isImg
         ? `<img src="/api/sessions/${encodeURIComponent(activeId)}/attachments/${encodeURIComponent(a.id)}?inline=1" alt="" /><span class="name"></span>`
         : `📄 <span class="name"></span>`;
+      if (isImg) {
+        const img = chip.querySelector("img");
+        if (img) img.alt = alt;
+      }
       chip.querySelector(".name").textContent = a.name || a.id || "file";
       row.appendChild(chip);
     });
@@ -1103,6 +1121,97 @@
   function hideReasoningPopover() {
     reasoningPopoverOpen = false;
     if (els.reasoningPopover) els.reasoningPopover.hidden = true;
+  }
+
+  function hideSinksPopover() {
+    sinksPopoverOpen = false;
+    if (els.sinksPopover) els.sinksPopover.hidden = true;
+  }
+
+  function sinkEffective(sink) {
+    const ov = (sessionSinkOverrides[sink.id] || "").toLowerCase();
+    if (ov === "on") return true;
+    if (ov === "off") return false;
+    return !!sink.enabled;
+  }
+
+  function paintSinksPopover() {
+    if (!els.sinksPopList) return;
+    const sinks = sessionSinks || [];
+    if (!sinks.length) {
+      els.sinksPopList.innerHTML = `<p class="hint" style="margin:0">No sinks configured. Add one in Settings → Sinks.</p>`;
+      if (els.sinksPauseAll) els.sinksPauseAll.textContent = "Pause all sinks";
+      return;
+    }
+    const allOff = sinks.every((s) => sinkEffective(s) === false);
+    if (els.sinksPauseAll) {
+      els.sinksPauseAll.textContent = allOff ? "Resume all (inherit)" : "Pause all sinks";
+    }
+    els.sinksPopList.innerHTML = sinks
+      .map((s) => {
+        const ov = (sessionSinkOverrides[s.id] || "").toLowerCase();
+        const mode = ov === "on" || ov === "off" ? ov : "inherit";
+        const eff = sinkEffective(s) ? "on" : "off";
+        const g = s.enabled ? "on" : "off";
+        const note = s.valid === false ? " · invalid config" : "";
+        return `<div class="sinks-pop-row">
+          <span class="sink-id">${escapeHtml(s.id)}</span>
+          <select data-sink-id="${escapeAttr(s.id)}" aria-label="${escapeAttr(s.id)} override">
+            <option value="inherit" ${mode === "inherit" ? "selected" : ""}>inherit</option>
+            <option value="on" ${mode === "on" ? "selected" : ""}>on</option>
+            <option value="off" ${mode === "off" ? "selected" : ""}>off</option>
+          </select>
+          <span class="sink-eff">${escapeHtml(eff)} · (global: ${escapeHtml(g)})${escapeHtml(note)}</span>
+        </div>`;
+      })
+      .join("");
+    els.sinksPopList.querySelectorAll("select[data-sink-id]").forEach((sel) => {
+      sel.addEventListener("change", () => {
+        const id = sel.getAttribute("data-sink-id");
+        const v = sel.value;
+        if (v === "inherit") delete sessionSinkOverrides[id];
+        else sessionSinkOverrides[id] = v;
+        saveSinkOverrides();
+      });
+    });
+  }
+
+  async function saveSinkOverrides() {
+    if (!activeId) return;
+    const body = { sink_overrides: { ...sessionSinkOverrides } };
+    try {
+      const data = await api(`/api/sessions/${encodeURIComponent(activeId)}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      const sum = data.session || {};
+      sessionSinkOverrides = sum.sink_overrides && typeof sum.sink_overrides === "object" ? { ...sum.sink_overrides } : {};
+      paintSinksPopover();
+    } catch (e) {
+      console.warn("sink_overrides patch failed", e);
+    }
+  }
+
+  async function showSinksPopover() {
+    if (!els.sinksPopover || !activeId) return;
+    try {
+      const [sess, settings] = await Promise.all([
+        api(`/api/sessions/${encodeURIComponent(activeId)}`),
+        api("/api/settings/sinks").catch(() => null),
+      ]);
+      const sum = (sess && sess.session) || {};
+      sessionSinkOverrides = sum.sink_overrides && typeof sum.sink_overrides === "object" ? { ...sum.sink_overrides } : {};
+      sessionSinks = Array.isArray(sess && sess.sinks)
+        ? sess.sinks
+        : settings && settings.config && Array.isArray(settings.config.sinks)
+          ? settings.config.sinks
+          : sessionSinks;
+    } catch (e) {
+      console.warn("sinks popover load", e);
+    }
+    paintSinksPopover();
+    sinksPopoverOpen = true;
+    els.sinksPopover.hidden = false;
   }
 
   function showReasoningPopover() {
@@ -2015,8 +2124,13 @@
       .replace(/"/g, "&quot;");
   }
 
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/'/g, "&#39;");
+  }
+
   async function selectSession(id, opts) {
     hideCtx();
+    hideSinksPopover();
     // Flush any in-progress live thinking for the previous session (store only)
     if (liveThinkSeg && activeId && activeId !== id) {
       liveThinkSeg = null;
@@ -2040,6 +2154,8 @@
     busy = !!sum.busy;
     setStatus(sum.status === "closed" ? "closed" : busy ? "running" : "idle");
     // Reasoning effort: session field, else last local default
+    sessionSinkOverrides = sum.sink_overrides && typeof sum.sink_overrides === "object" ? { ...sum.sink_overrides } : {};
+    sessionSinks = Array.isArray(data.sinks) ? data.sinks : sessionSinks;
     sessionReasoningEffort = sum.reasoning_effort || "";
     if (!sessionReasoningEffort) {
       try {
@@ -2386,6 +2502,41 @@
       hideReasoningPopover();
     }
   });
+  document.addEventListener("pointerdown", (ev) => {
+    if (!sinksPopoverOpen) return;
+    const t = ev.target;
+    if (
+      els.sinksPopover &&
+      !els.sinksPopover.contains(t) &&
+      t !== els.btnSinks &&
+      !(els.btnSinks && els.btnSinks.contains(t))
+    ) {
+      hideSinksPopover();
+    }
+  });
+  if (els.btnSinks) {
+    els.btnSinks.addEventListener("click", () => {
+      if (els.btnSinks.disabled) return;
+      if (sinksPopoverOpen) hideSinksPopover();
+      else showSinksPopover();
+    });
+  }
+  if (els.sinksPauseAll) {
+    els.sinksPauseAll.addEventListener("click", () => {
+      const sinks = sessionSinks || [];
+      const allOff = sinks.length > 0 && sinks.every((s) => sinkEffective(s) === false);
+      if (allOff) {
+        sessionSinkOverrides = {};
+      } else {
+        const next = {};
+        sinks.forEach((s) => {
+          next[s.id] = "off";
+        });
+        sessionSinkOverrides = next;
+      }
+      saveSinkOverrides();
+    });
+  }
   updateDensityButtons();
 
   function renderStage() {

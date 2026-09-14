@@ -1,0 +1,88 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0029",
+  "title": "Reliable image attachments from URLs",
+  "updated_at": "2026-09-14T20:22:06.830Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "attach_from_url",
+      "notes": "",
+      "question": "Tool name",
+      "rec": "attach_from_url"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "allow_lan",
+      "notes": "",
+      "question": "LAN / private hosts",
+      "rec": "allow_lan"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "5",
+      "notes": "",
+      "question": "Max redirects",
+      "rec": "5"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "reject_svg",
+      "notes": "",
+      "question": "SVG via attach_from_url?",
+      "rec": "reject_svg"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "meta_json",
+      "notes": "",
+      "question": "Provenance storage",
+      "rec": "meta_json"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "batch_m1",
+      "notes": "Batch max 4 URLs in M1 (not deferred to M3).",
+      "question": "Batch URLs",
+      "rec": "single_m1"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "no_cache_m1",
+      "notes": "",
+      "question": "URL → attachment cache",
+      "rec": "no_cache_m1"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "follow_0019",
+      "notes": "",
+      "question": "Vision / model re-inject",
+      "rec": "follow_0019"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "http_m1",
+      "notes": "Ship POST …/attachments/from_url in M1 with the tool.",
+      "question": "HTTP API POST …/attachments/from_url",
+      "rec": "http_m2"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "8mib",
+      "notes": "",
+      "question": "Default max download bytes",
+      "rec": "8mib"
+    }
+  }
+}

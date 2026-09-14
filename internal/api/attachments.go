@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/session"
+	"github.com/rendicott/marble/internal/tools"
 )
 
 func (s *Server) handleSessionAttachments(w http.ResponseWriter, r *http.Request, sessionID string, rest []string) {
@@ -30,6 +32,10 @@ func (s *Server) handleSessionAttachments(w http.ResponseWriter, r *http.Request
 		}
 		return
 	}
+	if len(rest) == 1 && rest[0] == "from_url" {
+		s.handleAttachmentsFromURL(w, r, sess)
+		return
+	}
 	attID := rest[0]
 	if len(rest) == 1 {
 		switch r.Method {
@@ -43,6 +49,64 @@ func (s *Server) handleSessionAttachments(w http.ResponseWriter, r *http.Request
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (s *Server) handleAttachmentsFromURL(w http.ResponseWriter, r *http.Request, sess *session.Session) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if sess.Status == "closed" {
+		http.Error(w, "session closed", http.StatusBadRequest)
+		return
+	}
+	if s.Tools == nil {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var in tools.AttachURLInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	results, err := s.Tools.AttachURLs(ctx, sess.ID, in, func(a tools.Attachment) {
+		kind := "document"
+		if strings.HasPrefix(a.Mime, "image/") {
+			kind = "image"
+		}
+		sess.AddChatAttachment(session.UIAttachment{
+			ID: a.Path, Name: a.Name, MIME: a.Mime, Kind: kind, Size: a.Size,
+			SourceURL: a.SourceURL, Alt: a.Alt, Credit: a.Credit,
+		})
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(results) == 1 {
+		res := results[0]
+		if !res.OK {
+			writeJSON(w, attachURLHTTPStatus(res), res)
+			return
+		}
+		writeJSON(w, http.StatusCreated, res)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"results": results})
+}
+
+func attachURLHTTPStatus(res tools.AttachURLResult) int {
+	switch res.Error {
+	case "too_large":
+		return http.StatusRequestEntityTooLarge
+	case "unsupported_type":
+		return http.StatusUnsupportedMediaType
+	case "http_status", "fetch_failed":
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadRequest
+	}
 }
 
 func (s *Server) stageAttachment(w http.ResponseWriter, r *http.Request, sess *session.Session) {

@@ -175,6 +175,7 @@
           <button type="button" data-sec="computers">Computers</button>
           <button type="button" data-sec="secrets">Secrets</button>
           <button type="button" data-sec="tts">TTS</button>
+          <button type="button" data-sec="sinks">Sinks</button>
           <button type="button" data-sec="memory">Memory &amp; DB</button>
           <button type="button" data-sec="shell">Shell</button>
           <button type="button" data-sec="agent">Agent</button>
@@ -278,6 +279,15 @@
                 <span data-v="3">high</span>
               </div>
               <div id="reasoning-value" class="reasoning-value muted">none</div>
+            </div>
+          </div>
+          <div class="sinks-wrap">
+            <button type="button" id="btn-sinks" class="icon-btn" title="Turn sinks for this session" aria-label="Turn sinks" disabled>Sinks</button>
+            <div id="sinks-popover" class="sinks-popover" hidden role="dialog" aria-label="Sinks for this session">
+              <div class="sinks-pop-title">Sinks for this session</div>
+              <button type="button" id="sinks-pause-all" class="icon-btn sinks-pause">Pause all sinks</button>
+              <div id="sinks-pop-list" class="sinks-pop-list"></div>
+              <p class="hint sinks-pop-hint">Changes apply to this session only. Global defaults live in Settings → Sinks.</p>
             </div>
           </div>
           <button type="button" id="btn-session-info" class="icon-btn" title="Session info" aria-label="Session info" disabled>ⓘ</button>

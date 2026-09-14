@@ -46,6 +46,28 @@ func TestEncodeDecodeSession(t *testing.T) {
 	}
 }
 
+func TestSinkOverridesRoundTrip(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	doc := &SessionDoc{
+		SessionMeta: SessionMeta{
+			ID: "sinks01abc", Title: "s", CreatedAt: now, UpdatedAt: now, Status: "active",
+			SinkOverrides: map[string]string{"orb": "off", "slack": "on"},
+		},
+		Messages: []TranscriptMessage{{ID: "m1", Role: "user", Content: "hi", CreatedAt: now}},
+	}
+	raw := EncodeSession(doc)
+	if !strings.Contains(raw, "sink_overrides:") {
+		t.Fatalf("missing sink_overrides:\n%s", raw)
+	}
+	got, err := DecodeSession(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SinkOverrides["orb"] != "off" || got.SinkOverrides["slack"] != "on" {
+		t.Fatalf("%+v", got.SinkOverrides)
+	}
+}
+
 func TestNewSessionID(t *testing.T) {
 	id := NewSessionID()
 	if len(id) != 10 {

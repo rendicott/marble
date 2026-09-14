@@ -22,14 +22,17 @@ import (
 	"github.com/rendicott/marble/internal/shellpolicy"
 )
 
-// Attachment is emitted for UI rendering (attach_file).
+// Attachment is emitted for UI rendering (attach_file / message_attach / attach_from_url).
 type Attachment struct {
-	Path     string `json:"path"`
-	Name     string `json:"name,omitempty"`
-	Inline   bool   `json:"inline"`
-	Mime     string `json:"mime,omitempty"`
-	Size     int64  `json:"size,omitempty"`
-	Preview  string `json:"preview,omitempty"`
+	Path      string `json:"path"`
+	Name      string `json:"name,omitempty"`
+	Inline    bool   `json:"inline"`
+	Mime      string `json:"mime,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	Preview   string `json:"preview,omitempty"`
+	SourceURL string `json:"source_url,omitempty"`
+	Alt       string `json:"alt,omitempty"`
+	Credit    string `json:"credit,omitempty"`
 }
 
 // TurnContext is per-agent-turn state for tools that need session scope.
@@ -54,17 +57,19 @@ type TurnContext struct {
 	// Thrash is ADR-0022 turn-scoped anti-repeat / escalate state.
 	Thrash *ThrashState
 	// callbacks set by session loop
-	GetUsage       func() map[string]interface{}
-	Compact        func(style string, keepLast int) (string, error)
-	OnAttachment   func(Attachment) // attach_file — ephemeral SSE (ADR-0005)
+	GetUsage     func() map[string]interface{}
+	Compact      func(style string, keepLast int) (string, error)
+	OnAttachment func(Attachment) // attach_file — ephemeral SSE (ADR-0005)
 	// OnChatAttachment is durable chat attach (ADR-0019 message_attach); loop appendUI+message.
 	OnChatAttachment func(Attachment)
-	OnHarnessNote  func(string) // optional
+	OnHarnessNote    func(string) // optional
+	// AttachFromURLCalls counts attach_from_url invocations this turn (ADR-0029).
+	AttachFromURLCalls int
 	// OnPeerConfirm notifies the session UI that a computer_confirm is waiting
 	// (Accept/Deny from Marble harness, not only the peer machine).
 	OnPeerConfirm func(confirm map[string]interface{})
 	// OnPeerAction records a short summary for session info (last peer action).
-	OnPeerAction func(summary string)
+	OnPeerAction   func(summary string)
 	HistorySnippet func() string
 }
 
@@ -82,6 +87,9 @@ type Registry struct {
 	MCP    *mcp.Manager
 	Agents *agentproc.Manager
 
+	// SinksExec is manage_sinks (ADR-0028). Wired from main to sink.Manager.ManageTool.
+	SinksExec func(ctx context.Context, argsJSON, sessionID string) (string, error)
+
 	// Shell timeouts from config (fallback if policy unset)
 	ShellDefault time.Duration
 	ShellMax     time.Duration
@@ -95,9 +103,9 @@ type Registry struct {
 	// ProcessContextReserve for ValidateModelCatalog when context_reserve=0.
 	ProcessContextReserve int
 
-
 	// StageChatAttachment stores bytes and returns id,mime,kind (ADR-0019).
-	StageChatAttachment func(sessionID, name string, data []byte) (id, mime, kind string, err error)
+	// metaJSON is optional provenance (ADR-0029); empty for path/screenshot attaches.
+	StageChatAttachment func(sessionID, name string, data []byte, metaJSON string) (id, mime, kind string, err error)
 
 	// Desktop peers (ADR-0020)
 	PeerHub              *peerhub.Hub
@@ -203,6 +211,8 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.cronDelete(argsJSON)
 	case "cron_run":
 		out, err = r.cronRun(argsJSON)
+	case "manage_sinks":
+		out, err = r.manageSinks(argsJSON, tc)
 	case "model_list":
 		out, err = r.modelList(argsJSON)
 	case "model_get":
@@ -231,6 +241,8 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.attachFile(argsJSON, tc)
 	case "message_attach":
 		out, err = r.messageAttach(argsJSON, tc)
+	case "attach_from_url":
+		out, err = r.attachFromURL(argsJSON, tc)
 	case "web_fetch":
 		out, err = r.webFetch(argsJSON, tc)
 	case "call_agent_process":

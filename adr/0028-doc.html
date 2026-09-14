@@ -19,6 +19,7 @@
       <a href="0028-review.html">Review</a>
       <a href="0028-answers.json">Answers</a>
       <a href="0027-doc.html">← 0027</a>
+      <a href="0029-doc.html">0029 →</a>
     </nav>
   </header>
   <main>
@@ -34,7 +35,7 @@
 <tbody>
 <tr>
 <td><strong>Status</strong></td>
-<td><strong>Accepted</strong> (2026-09-11) — Q1–Q13 locked; implementation not yet started</td>
+<td><strong>Accepted</strong> (2026-09-11) — implemented (M1+M2)</td>
 </tr>
 <tr>
 <td><strong>Date</strong></td>
@@ -160,7 +161,7 @@
 <tbody>
 <tr>
 <td>Agent-driven publishing (a skill/MCP &ldquo;remember to post&rdquo;)</td>
-<td>Already possible today; this ADR is the <em>reliable, every-turn</em> path</td>
+<td>Already possible today; this ADR is the <em>reliable, every-turn</em> path. <code>manage_sinks</code> mutates sink <strong>config</strong>, it does not publish a turn</td>
 </tr>
 <tr>
 <td>Replacing the SSE/UI stream</td>
@@ -232,7 +233,7 @@ func (m *Manager) OnEvent(ev session.Event) // subscribed to each open session
 <tbody>
 <tr>
 <td><strong>orb</strong></td>
-<td><code>X-Orb-Return-Url: {{.DeepLink}}</code> header (ADR-orb-0011 <code>return_url</code>)</td>
+<td><code>X-Orb-Return-Url: {{.DeepLink}}</code> header (ADR-orb-0011 <code>return_url</code>); <code>X-Orb-Run-Id: {{.SessionID}}</code> so Orb clients can group turns from the same Marble session</td>
 </tr>
 <tr>
 <td><strong>slack</strong></td>
@@ -397,6 +398,59 @@ type Session struct {
 <li>The master &ldquo;Pause all sinks&rdquo; is a convenience that writes <code>off</code> to every sink for this session (and &ldquo;Resume all&rdquo; clears the overrides back to inherit).  </li>
 <li>The toggle is <strong>session-scoped</strong>; the Settings → Sinks list remains the place to change the global default.</li>
 </ul>
+<h3 id="agent-tool-manage_sinks">Agent tool: <code>manage_sinks</code></h3>
+<p>Sessions can create and manage sinks without the Settings UI. This is <strong>config mutation</strong>, not agent-driven publishing — the harness still fires on <code>status: idle</code>. The tool never accepts raw secrets; <code>secret_env</code> is an env-var <strong>name</strong> (ADR-0016), same as Settings.</p>
+<table>
+<thead>
+<tr>
+<th>action</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list</code></td>
+<td>All sinks (no secret values) + this session&rsquo;s overrides + recent delivery history</td>
+</tr>
+<tr>
+<td><code>get</code></td>
+<td>One sink by id</td>
+</tr>
+<tr>
+<td><code>create</code></td>
+<td>Add a sink (<code>id</code> + <code>type</code> required; type-specific fields; Settings-like defaults)</td>
+</tr>
+<tr>
+<td><code>update</code></td>
+<td>Patch fields on an existing sink</td>
+</tr>
+<tr>
+<td><code>delete</code></td>
+<td>Remove a sink (prunes this session&rsquo;s override key)</td>
+</tr>
+<tr>
+<td><code>test</code></td>
+<td>Synthetic turn to one sink (same as Settings test button)</td>
+</tr>
+<tr>
+<td><code>set_override</code></td>
+<td>This session only: <code>inherit</code> / <code>on</code> / <code>off</code> for one sink</td>
+</tr>
+<tr>
+<td><code>pause_all</code> / <code>resume_all</code></td>
+<td>This session only; matches the session popover</td>
+</tr>
+<tr>
+<td><code>set_base</code></td>
+<td>Global <code>deep_link_base</code></td>
+</tr>
+<tr>
+<td><code>env_names</code></td>
+<td>Available <code>secret_env</code> names (never values)</td>
+</tr>
+</tbody>
+</table>
+<p>Writes persist to <code>$MEMORY/sinks.json</code> (same file as Settings PUT). Invalid config is saved with <code>validation_note</code> and does not deliver.</p>
 <h2 id="predefined-sink-types-first-pass">Predefined sink types (first pass)</h2>
 <p>First pass ships <strong>six types</strong>. All share the same <code>Sink</code> interface and a set of <strong>common fields</strong>; each adds a small set of type-specific fields. <code>webhook</code> is the generic base the others are thin wrappers over — so every type below is either the base itself or a pre-baked constructor over it.</p>
 <table>
@@ -413,7 +467,7 @@ type Session struct {
 <td><code>orb</code></td>
 <td>publish to an Orb topic</td>
 <td><code>secret_env</code> → <code>Authorization: Bearer</code></td>
-<td><code>X-Orb-Return-Url</code> header</td>
+<td><code>X-Orb-Return-Url</code> + <code>X-Orb-Run-Id</code> (= session id)</td>
 </tr>
 <tr>
 <td><code>webhook</code></td>
@@ -485,7 +539,7 @@ type Session struct {
 </tbody>
 </table>
 <h3 id="orb"><code>orb</code></h3>
-<p>Publishes the turn to an Orb topic and sets the deep link as the first-class <code>return_url</code> (ADR-orb-0011), so the tray/phone notification is one tap back to <code>/s/{id}</code>.</p>
+<p>Publishes the turn to an Orb topic and sets the deep link as the first-class <code>return_url</code> (ADR-orb-0011), so the tray/phone notification is one tap back to <code>/s/{id}</code>. The Marble session id is sent as <code>X-Orb-Run-Id</code> (envelope <code>run_id</code>, ADR-orb-0001 Q12) so Orb clients can group every turn from the same session. Session ids are 10-char Crockford base32 and fit Orb&rsquo;s run_id charset (<code>[A-Za-z0-9._:-]</code>, ≤64).</p>
 <table>
 <thead>
 <tr>
@@ -1035,6 +1089,18 @@ stdout:   Format    [plain ▾]   (plain | json)
 <tr>
 <td>2026-09-11</td>
 <td><strong>Accepted</strong> — locked Q1–Q13 (<code>2026-09-11T22:40:54.873Z</code>); Q1–Q11, Q13 rec; Q12 custom (Settings UI in first wave)</td>
+</tr>
+<tr>
+<td>2026-09-11</td>
+<td><strong>Implemented (M1+M2)</strong> — <code>internal/sink</code> (<code>TurnEvent</code>, manager, filters, six types), <code>$MEMORY/sinks.json</code>, stream subscription on <code>status:idle</code>, Settings → Sinks (list/editors/test), session Sinks popover (inherit/on/off + pause-all)</td>
+</tr>
+<tr>
+<td>2026-09-14</td>
+<td><strong>Orb <code>run_id</code></strong> — orb sink sets <code>X-Orb-Run-Id</code> to the Marble session id so related turns group in Orb clients</td>
+</tr>
+<tr>
+<td>2026-09-14</td>
+<td><strong><code>manage_sinks</code> tool</strong> — sessions can list/create/update/delete/test sinks and set per-session overrides; secrets by env-var name only</td>
 </tr>
 </tbody>
 </table>

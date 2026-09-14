@@ -31,6 +31,9 @@ type Registry struct {
 	OnSessionBusy func(sessionID string)
 	// OnUserMessage is called after a user message is accepted. Used by Clerk snippets.
 	OnUserMessage func(sessionID, display string)
+	// OnSessionOpen is called when a session becomes live (create or load).
+	// Used by turn sinks (ADR-0028) to Subscribe() without touching the turn loop.
+	OnSessionOpen func(s *Session)
 }
 
 // NewRegistry creates a registry. sqldb may be limp (non-writable).
@@ -158,7 +161,30 @@ func (r *Registry) create(title, kind, parentID string) *Session {
 	r.mu.Unlock()
 	_ = r.PersistSession(s)
 	r.syncSessionRow(s)
+	r.notifyOpen(s)
 	return s
+}
+
+func (r *Registry) notifyOpen(s *Session) {
+	if r != nil && r.OnSessionOpen != nil && s != nil {
+		r.OnSessionOpen(s)
+	}
+}
+
+// ForEachLive calls fn for every in-memory session (no disk-only rows).
+func (r *Registry) ForEachLive(fn func(*Session)) {
+	if r == nil || fn == nil {
+		return
+	}
+	r.mu.RLock()
+	ss := make([]*Session, 0, len(r.sessions))
+	for _, s := range r.sessions {
+		ss = append(ss, s)
+	}
+	r.mu.RUnlock()
+	for _, s := range ss {
+		fn(s)
+	}
 }
 
 // SetSessionTitle permanently renames a session (title_custom=true). Empty title rejected.
@@ -214,6 +240,25 @@ func (r *Registry) SetSessionReasoningEffort(id, effort string) (*Session, error
 	return s, nil
 }
 
+// SetSessionSinkOverrides replaces the per-session sink inherit/on/off map (ADR-0028).
+func (r *Registry) SetSessionSinkOverrides(id string, ov map[string]string) (*Session, error) {
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range ov {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v == "" || v == "inherit" || v == SinkOn || v == SinkOff {
+			continue
+		}
+		return nil, fmt.Errorf("sink override for %s must be inherit, on, or off", k)
+	}
+	s.SetSinkOverrides(ov)
+	_ = r.PersistSession(s)
+	r.syncSessionRow(s)
+	return s, nil
+}
+
 // Get returns a loaded live session.
 func (r *Registry) Get(id string) (*Session, bool) {
 	r.mu.RLock()
@@ -249,6 +294,7 @@ func (r *Registry) EnsureLoaded(id string) (*Session, error) {
 	r.sessions[id] = s
 	r.mu.Unlock()
 	r.syncSessionRow(s)
+	r.notifyOpen(s)
 	return s, nil
 }
 

@@ -30,6 +30,7 @@ import (
 	"github.com/rendicott/marble/internal/peerhub"
 	"github.com/rendicott/marble/internal/session"
 	"github.com/rendicott/marble/internal/shellpolicy"
+	"github.com/rendicott/marble/internal/sink"
 	"github.com/rendicott/marble/internal/tools"
 	"github.com/rendicott/marble/internal/tts"
 	"github.com/rendicott/marble/internal/workspacefs"
@@ -131,6 +132,28 @@ func main() {
 	}
 	ttsMgr := tts.NewManager(ttsCfg, sqldb, cfg.Memory, cfg.TTSDisable)
 	ttsMgr.SetConfigPath(ttsPath)
+
+	// Turn sinks (ADR-0028) — optional; no-op when sinks.json missing/empty
+	sinksPath := sink.ResolveConfigPath(cfg.SinksConfig, cfg.Memory)
+	sinksCfg, err := sink.Load(sinksPath)
+	if err != nil {
+		log.Printf("WARNING: sinks config %s: %v (sinks disabled)", sinksPath, err)
+		sinksCfg = sink.DefaultConfig()
+	}
+	nEnabled := 0
+	for _, sp := range sinksCfg.Sinks {
+		if sp.EffectiveEnabled() {
+			nEnabled++
+		}
+	}
+	if nEnabled > 0 {
+		log.Printf("sinks: %d enabled (%d configured) config=%s", nEnabled, len(sinksCfg.Sinks), sinksPath)
+	} else if len(sinksCfg.Sinks) > 0 {
+		log.Printf("sinks: none enabled (%d configured) config=%s", len(sinksCfg.Sinks), sinksPath)
+	} else {
+		log.Printf("sinks: off (enable via %s)", sinksPath)
+	}
+	sinkMgr := sink.NewManager(sinksCfg, sinksPath, cfg.Workspace)
 
 	mpubStore, err := mpub.New(cfg.Memory)
 	if err != nil {
@@ -309,8 +332,8 @@ func main() {
 			"applies":         "next_turn",
 		}, nil
 	}
-	toolReg.StageChatAttachment = func(sessionID, name string, data []byte) (id, mime, kind string, err error) {
-		row, err := runner.StageAttachment(sessionID, name, data)
+	toolReg.StageChatAttachment = func(sessionID, name string, data []byte, metaJSON string) (id, mime, kind string, err error) {
+		row, err := runner.StageAttachmentMeta(sessionID, name, data, metaJSON)
 		if err != nil {
 			return "", "", "", err
 		}
@@ -418,6 +441,11 @@ func main() {
 	clerkMgr.Start()
 	defer clerkMgr.Stop()
 
+	sinkMgr.Start()
+	reg.OnSessionOpen = sinkMgr.AttachSession
+	sinkMgr.AttachAll(reg)
+	defer sinkMgr.Stop()
+
 	daemon := session.NewDaemon(reg, cfg.PersistEvery)
 	daemon.Start()
 
@@ -487,10 +515,27 @@ func main() {
 	toolReg.SetLastPeerAction = func(sessionID, summary string) {
 		reg.SetLastPeerAction(sessionID, summary)
 	}
+	sinkMgr.SetSessionHooks(
+		func(sessionID string) map[string]string {
+			s, err := reg.EnsureLoaded(sessionID)
+			if err != nil {
+				return nil
+			}
+			return s.SinkOverridesCopy()
+		},
+		func(sessionID string, ov map[string]string) error {
+			_, err := reg.SetSessionSinkOverrides(sessionID, ov)
+			return err
+		},
+	)
+	toolReg.SinksExec = func(ctx context.Context, argsJSON, sessionID string) (string, error) {
+		return sinkMgr.ManageTool(ctx, argsJSON, sessionID)
+	}
 
 	srv := api.New(cfg, client, reg, daemon, wsfs)
 	srv.MCP = mcpMgr
 	srv.TTS = ttsMgr
+	srv.Sinks = sinkMgr
 	srv.Policy = policy
 	srv.Tools = toolReg
 	srv.Mpub = mpubStore
@@ -501,6 +546,9 @@ func main() {
 	if authMgr != nil {
 		authMgr.RegisterRoutes(srv.Mux)
 	}
+	sinkMgr.SetFallbackBase(func() string {
+		return srv.PublicOrigin(nil)
+	})
 	// Tailscale-reachable confirm links for peer notifications + tool payloads.
 	toolReg.PublicBaseURL = func() string {
 		return srv.PublicOrigin(nil)

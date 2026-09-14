@@ -67,6 +67,8 @@ type Config struct {
 	// TTS (ADR-0027)
 	TTSConfig  string // --tts-config path (empty → $MEMORY/tts.json)
 	TTSDisable bool   // --tts-disable force off
+	// SinksConfig is --sinks-config path (empty → $MEMORY/sinks.json). ADR-0028.
+	SinksConfig string
 	// APIKeyEnv is the raw --api-key-env flag (comma-separated env var names). ADR-0016.
 	APIKeyEnv string
 	// APIKey is the resolved secret at launch (never log). Empty → no model Authorization.
@@ -77,12 +79,12 @@ type Config struct {
 	APIKeyEnvConfigured bool
 
 	// Auth / OAuth (ADR-0017)
-	OAuthClientID         string
-	OAuthClientSecretEnv  string
-	OAuthClientSecret     string // resolved; never log
-	OAuthRedirectURL      string
-	OAuthAllowEmails      string // comma-separated raw flag
-	OAuthAllowFile        string
+	OAuthClientID        string
+	OAuthClientSecretEnv string
+	OAuthClientSecret    string // resolved; never log
+	OAuthRedirectURL     string
+	OAuthAllowEmails     string // comma-separated raw flag
+	OAuthAllowFile       string
 	// AuthMode is "open" or "google" after validation.
 	AuthMode string
 	// AuthAllowlist is normalized lowercase emails.
@@ -149,6 +151,7 @@ func ParseFlags(args []string) (Config, error) {
 	fs.DurationVar(&cfg.MCPTimeout, "mcp-timeout", 60*time.Second, "Default timeout for MCP tool/resource/prompt calls")
 	fs.StringVar(&cfg.TTSConfig, "tts-config", "", "Path to tts.json (default: $MEMORY/tts.json); ADR-0027")
 	fs.BoolVar(&cfg.TTSDisable, "tts-disable", false, "Disable server-side TTS entirely (ADR-0027)")
+	fs.StringVar(&cfg.SinksConfig, "sinks-config", "", "Path to sinks.json (default: $MEMORY/sinks.json); ADR-0028")
 
 	// ADR-0017 Google OAuth
 	fs.StringVar(&cfg.OAuthClientID, "oauth-client-id", "", "Google OAuth client ID (enables google auth mode when fully configured)")
@@ -284,15 +287,15 @@ func (c Config) AuthPublicSettings() map[string]interface{} {
 		emails = []string{}
 	}
 	return map[string]interface{}{
-		"auth_mode":           mode,
-		"oauth_client_id":     c.OAuthClientID,
-		"oauth_redirect_url":  c.OAuthRedirectURL,
-		"oauth_allow_emails":  emails,
-		"oauth_allow_file":    c.OAuthAllowFile,
-		"auth_accounts":       len(emails),
-		"tls_enabled":         c.TLSEnabled(),
-		"tls_cert_file":       c.TLSCertFile,
-		"tls_key_file_set":    strings.TrimSpace(c.TLSKeyFile) != "",
+		"auth_mode":          mode,
+		"oauth_client_id":    c.OAuthClientID,
+		"oauth_redirect_url": c.OAuthRedirectURL,
+		"oauth_allow_emails": emails,
+		"oauth_allow_file":   c.OAuthAllowFile,
+		"auth_accounts":      len(emails),
+		"tls_enabled":        c.TLSEnabled(),
+		"tls_cert_file":      c.TLSCertFile,
+		"tls_key_file_set":   strings.TrimSpace(c.TLSKeyFile) != "",
 	}
 }
 

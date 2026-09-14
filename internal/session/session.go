@@ -11,21 +11,21 @@ import (
 
 // Event is a streamable update for the UI.
 type Event struct {
-	Type       string                 `json:"type"`
-	SessionID  string                 `json:"session_id"`
-	Message    *Message               `json:"message,omitempty"`
-	Tool       *ToolInfo              `json:"tool,omitempty"`
-	Attachment *AttachmentInfo        `json:"attachment,omitempty"`
-	Turn       *TurnProgress          `json:"turn,omitempty"`
-	Confirm    map[string]interface{} `json:"confirm,omitempty"` // computer_confirm pending (Accept/Deny in harness UI)
-	Error      string                 `json:"error,omitempty"`
-	Status     string                 `json:"status,omitempty"`
-	ModelID    string                 `json:"model_id,omitempty"`
-	Model      string                 `json:"model,omitempty"`
-	ModelEff   map[string]interface{} `json:"model_effective,omitempty"`
-	Title      string                 `json:"title,omitempty"`       // session_meta title refresh
-	TitleCustom bool                  `json:"title_custom,omitempty"`
-	At         time.Time              `json:"at"`
+	Type        string                 `json:"type"`
+	SessionID   string                 `json:"session_id"`
+	Message     *Message               `json:"message,omitempty"`
+	Tool        *ToolInfo              `json:"tool,omitempty"`
+	Attachment  *AttachmentInfo        `json:"attachment,omitempty"`
+	Turn        *TurnProgress          `json:"turn,omitempty"`
+	Confirm     map[string]interface{} `json:"confirm,omitempty"` // computer_confirm pending (Accept/Deny in harness UI)
+	Error       string                 `json:"error,omitempty"`
+	Status      string                 `json:"status,omitempty"`
+	ModelID     string                 `json:"model_id,omitempty"`
+	Model       string                 `json:"model,omitempty"`
+	ModelEff    map[string]interface{} `json:"model_effective,omitempty"`
+	Title       string                 `json:"title,omitempty"` // session_meta title refresh
+	TitleCustom bool                   `json:"title_custom,omitempty"`
+	At          time.Time              `json:"at"`
 }
 
 // AttachmentInfo is a UI attachment (attach_file tool).
@@ -103,12 +103,21 @@ type Summary struct {
 	LastPeerActionAt *time.Time `json:"last_peer_action_at,omitempty"`
 	// Reasoning effort preference (none|low|medium|high)
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// SinkOverrides is the per-session inherit/on/off map (ADR-0028).
+	SinkOverrides map[string]string `json:"sink_overrides,omitempty"`
 }
+
+// Per-session sink override (ADR-0028 Q13).
+const (
+	SinkInherit = ""
+	SinkOn      = "on"
+	SinkOff     = "off"
+)
 
 // Session is one independent conversation.
 type Session struct {
-	ID        string
-	Title     string
+	ID    string
+	Title string
 	// TitleCustom is true when the operator permanently renamed this session.
 	// When false, title tracks the latest user message (truncated).
 	TitleCustom bool
@@ -128,6 +137,9 @@ type Session struct {
 	// ReasoningEffort is none|low|medium|high (operator preference for thinking models).
 	// Empty = omit provider fields (server/provider default).
 	ReasoningEffort string
+	// SinkOverrides is per-sink inherit/on/off for this session (ADR-0028 Q13).
+	// Absent key = inherit the sink's global enabled. Values: "" | "on" | "off".
+	SinkOverrides map[string]string
 
 	// Client sticky advertise (ADR-0025). In-memory for M1; createSession sets default,
 	// each postMessage may override (last post wins for enrichment).
@@ -217,8 +229,9 @@ You work inside a single workspace directory (tool jail). Memory is separate.
 
 Desktop / Marble Peer (also called Pier): computer_list/bind/screenshot/desktop_act/browser_* drive a remote peer. Prefer computer_browser_act action=click_button for labeled buttons; desktop clicks use IMAGE pixel coords (meta.w×meta.h). If a click returns ui_unchanged or near-duplicate thrash, stop guessing pixels — computer_confirm or a different strategy. Do not re-screenshot immediately after a post-click attachment. computer_confirm surfaces an Accept/Deny card in the Marble harness UI and a Tailscale-reachable /confirm/{id} link — never rewrite peer loopback (127.0.0.1) URLs to Tailscale; tell the user to use the harness card or /confirm/{id}. Pending confirms block other computer_* until Accept or Deny/Dismiss.
 
-Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), surgical edits (edit_file requires prior file_read in the same turn; apply_patch is atomic), shell_execute (policy-limited; prefer start_background_task for jobs >60s), background tasks, schedule_continuation, get_context_usage, session_compact when context is high, memory_* and skill_* for long-term knowledge, message_attach for durable chat chips the operator can download (png/jpeg/webp/gif, txt/md/csv/json/html/svg; no audio/PDF), attach_file only for ephemeral workspace preview (vanishes when the turn ends), web_fetch for HTTP(S) page retrieval.
+Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), surgical edits (edit_file requires prior file_read in the same turn; apply_patch is atomic), shell_execute (policy-limited; prefer start_background_task for jobs >60s), background tasks, schedule_continuation, get_context_usage, session_compact when context is high, memory_* and skill_* for long-term knowledge, message_attach for durable chat chips the operator can download (png/jpeg/webp/gif, txt/md/csv/json/html/svg; no audio/PDF), attach_from_url to fetch remote images (http/https) into chat attachments — prefer that over shell-curl; attach_file only for ephemeral workspace preview (vanishes when the turn ends), web_fetch for HTTP(S) page retrieval.
 Cron: use cron_list/get/create/update/delete/run for durable recurring schedules (SQLite, survive restarts). schedule_continuation is one-shot delay or wait-for-background-task only. Prefer interval ≥ 60s; target a session_id for a known thread, or omit session_id so the first fire creates a session. Keep cron prompts short.
+Sinks: use manage_sinks to list/create/update/delete/test turn sinks (Orb, Slack, ntfy, Discord, webhook, stdout) that mirror finished turns. secret_env is an env-var NAME only — never the secret; operator stores KEY=secret in $MEMORY/env (Settings → Secrets). action=set_override (inherit|on|off) / pause_all / resume_all apply to THIS session only; create/update/delete change the global sinks.json.
 mpub_publish / mpub_list / mpub_get / mpub_unpublish / mpub_set_visibility: publish human-facing pages under $MEMORY/mpub, served at /mpub/{slug}. Default visibility is private (allowlisted admins only when OAuth is on). Set visibility=public only when the user explicitly asks to share openly. Use mpub_set_visibility to promote/demote without rewriting the body. Primary content_type text/html; markdown also supported. Use for research notes and shareable results — not for project source files (use workspace tools) and not for agent memory_write knowledge.
 MCP tools (if configured in mcp.json) appear as mcp_<server>_<tool> plus resource/prompt helpers — use them for web search (e.g. Tavily MCP) and other integrations.
 
@@ -246,24 +259,25 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 		kind = "user"
 	}
 	sum := Summary{
-		ID:           s.ID,
-		Title:        s.Title,
-		TitleCustom:  s.TitleCustom,
-		Kind:         kind,
-		ParentID:     s.ParentID,
-		CreatedAt:    s.CreatedAt,
-		UpdatedAt:    s.UpdatedAt,
-		ClosedAt:     s.ClosedAt,
-		Status:       st,
-		MessageCount: len(s.ui),
-		Busy:         s.busy,
-		Loaded:       loaded,
-		Dirty:        s.dirty,
+		ID:              s.ID,
+		Title:           s.Title,
+		TitleCustom:     s.TitleCustom,
+		Kind:            kind,
+		ParentID:        s.ParentID,
+		CreatedAt:       s.CreatedAt,
+		UpdatedAt:       s.UpdatedAt,
+		ClosedAt:        s.ClosedAt,
+		Status:          st,
+		MessageCount:    len(s.ui),
+		Busy:            s.busy,
+		Loaded:          loaded,
+		Dirty:           s.dirty,
 		ModelID:         s.ModelID,
 		Model:           s.ProviderModel,
 		ComputerID:      s.ComputerID,
 		ReasoningEffort: s.ReasoningEffort,
 		LastPeerAction:  s.lastPeerAction,
+		SinkOverrides:   copySinkOverrides(s.SinkOverrides),
 	}
 	if !s.lastPeerActionAt.IsZero() {
 		t := s.lastPeerActionAt
@@ -474,20 +488,21 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 	}
 	return &memory.SessionDoc{
 		SessionMeta: memory.SessionMeta{
-			ID:           s.ID,
-			Title:        s.Title,
-			TitleCustom:  s.TitleCustom,
-			Kind:         kind,
-			ParentID:     s.ParentID,
-			CreatedAt:    s.CreatedAt,
-			UpdatedAt:    s.UpdatedAt,
-			ClosedAt:     s.ClosedAt,
-			Status:       st,
-			MessageCount: len(msgs),
-			Workspace:    workspace,
+			ID:              s.ID,
+			Title:           s.Title,
+			TitleCustom:     s.TitleCustom,
+			Kind:            kind,
+			ParentID:        s.ParentID,
+			CreatedAt:       s.CreatedAt,
+			UpdatedAt:       s.UpdatedAt,
+			ClosedAt:        s.ClosedAt,
+			Status:          st,
+			MessageCount:    len(msgs),
+			Workspace:       workspace,
 			Model:           model,
 			ModelID:         s.ModelID,
 			ReasoningEffort: s.ReasoningEffort,
+			SinkOverrides:   copySinkOverrides(s.SinkOverrides),
 		},
 		Messages: msgs,
 	}
@@ -528,6 +543,7 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	s.ModelID = doc.ModelID
 	s.ProviderModel = doc.Model
 	s.ReasoningEffort = model.NormalizeReasoningEffort(doc.ReasoningEffort)
+	s.SinkOverrides = copySinkOverrides(doc.SinkOverrides)
 	s.ui = make([]Message, 0, len(doc.Messages))
 	s.history = []model.Message{{Role: "system", Content: model.ContentFromText(defaultSystemPrompt)}}
 	s.seq = 0
@@ -579,4 +595,84 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 // attachment markers <!-- att:id name=… mime=… --> (ADR-0019).
 func historyContentFromUIMessage(m memory.TranscriptMessage) model.Content {
 	return model.ContentFromText(m.Content)
+}
+
+func copySinkOverrides(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		k = strings.TrimSpace(k)
+		v = strings.ToLower(strings.TrimSpace(v))
+		if k == "" || v == "" || v == SinkInherit || v == "inherit" {
+			continue
+		}
+		if v != SinkOn && v != SinkOff {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// MetaSnapshot is a lock-safe title/model read for sink observers (ADR-0028).
+func (s *Session) MetaSnapshot() (title, modelID, providerModel string) {
+	if s == nil {
+		return "", "", ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Title, s.ModelID, s.ProviderModel
+}
+
+// SinkOverridesCopy returns a copy of the per-session override map.
+func (s *Session) SinkOverridesCopy() map[string]string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return copySinkOverrides(s.SinkOverrides)
+}
+
+// AddChatAttachment appends a durable attachment chip (ADR-0019 / ADR-0029).
+func (s *Session) AddChatAttachment(att UIAttachment) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	uid := s.nextID("a")
+	if att.Kind == "" {
+		if strings.HasPrefix(att.MIME, "image/") {
+			att.Kind = "image"
+		} else {
+			att.Kind = "document"
+		}
+	}
+	um := Message{
+		ID:          uid,
+		Role:        "attachment",
+		Content:     att.Name,
+		CreatedAt:   time.Now(),
+		Attachments: []UIAttachment{att},
+	}
+	s.appendUI(um)
+	s.mu.Unlock()
+	s.publish(Event{Type: "message", Message: &um})
+}
+
+// SetSinkOverrides replaces the per-session override map (nil/empty = inherit all).
+func (s *Session) SetSinkOverrides(ov map[string]string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.SinkOverrides = copySinkOverrides(ov)
+	s.dirty = true
+	s.UpdatedAt = time.Now()
+	s.mu.Unlock()
 }

@@ -34,6 +34,8 @@
       "CLI --disable-shell. When true, shell tools stay off even if DB shell_enabled is true.",
     mcp_config_path:
       "Path to mcp.json (default $MEMORY/mcp.json). Edit servers under the MCP section.",
+    sinks:
+      "Turn sinks (ADR-0028): when a session goes idle, mirror the final assistant message to Orb/Slack/ntfy/Discord/webhook/stdout. Secrets are env-var names only.",
 
     // memory
     blob_max_age_days:
@@ -312,6 +314,421 @@
       }
     } catch (e) {
       els.pane.innerHTML = `<h3>TTS</h3><p class="hint model-editor-err">${escapeHtml(e.message || String(e))}</p>`;
+    }
+  }
+
+  const SINK_TYPES = [
+    { id: "orb", label: "orb — publish to an Orb topic" },
+    { id: "webhook", label: "webhook — any HTTP endpoint" },
+    { id: "slack", label: "slack — Slack incoming webhook" },
+    { id: "discord", label: "discord — Discord webhook" },
+    { id: "ntfy", label: "ntfy — ntfy.sh / self-hosted" },
+    { id: "stdout", label: "stdout — local test sink" },
+  ];
+  const SINK_KINDS = ["complete", "error", "stop", "cron", "continuation"];
+
+  function uniqueSinkId(type, sinks) {
+    const used = new Set((sinks || []).map((s) => s.id));
+    if (!used.has(type)) return type;
+    for (let i = 2; i < 100; i++) {
+      const id = type + "-" + i;
+      if (!used.has(id)) return id;
+    }
+    return type + "-" + Date.now().toString(36);
+  }
+
+  function blankSink(type, sinks) {
+    return {
+      id: uniqueSinkId(type, sinks),
+      type,
+      enabled: true,
+      deep_link_base: "",
+      secret_env: type === "orb" ? "ORB_AK" : type === "slack" ? "SLACK_WEBHOOK_URL" : type === "discord" ? "DISCORD_WEBHOOK_URL" : "",
+      filters: {
+        kinds: ["complete", "error"],
+        skip_empty: true,
+        skip_cron: true,
+        only_sessions: [],
+        skip_sessions: [],
+        min_chars: 0,
+        min_interval_sec: 0,
+      },
+      topic_id: "",
+      api_base: "",
+      title_prefix: type === "orb" ? "marble: " : "",
+      url: "",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      template: "{\"text\":{{json .Preview}},\"link\":{{json .DeepLink}}}",
+      channel: "",
+      username: "marble",
+      icon_emoji: "",
+      avatar_url: "",
+      server: "https://ntfy.sh",
+      topic: "",
+      priority: 3,
+      format: "plain",
+    };
+  }
+
+  function envDatalist(names, id) {
+    const opts = (names || []).map((n) => `<option value="${escapeAttr(n)}"></option>`).join("");
+    return `<datalist id="${id}">${opts}</datalist>`;
+  }
+
+  async function renderSinksSection() {
+    try {
+      const res = await api("/api/settings/sinks");
+      const cfg = res.config || { sinks: [] };
+      const sinks = Array.isArray(cfg.sinks) ? cfg.sinks : [];
+      const path = res.config_path || "—";
+      const st = res.status || {};
+      const hist = res.history || [];
+      const envNames = res.env_names || [];
+      const fallback = res.fallback_deep_link_base || "";
+      const chip = (st.enabled || 0) > 0
+        ? `<span class="settings-chip ok">${st.enabled} enabled</span>`
+        : `<span class="settings-chip muted">off</span>`;
+
+      const list = sinks
+        .map((s, i) => {
+          const note = s.validation_note || "";
+          const on = !!s.enabled && !note;
+          const dot = note ? "warn" : on ? "on" : "";
+          const extra = [];
+          if (s.type === "orb") extra.push("topic " + (s.topic_id || "—"));
+          if (s.secret_env) extra.push("secret " + s.secret_env);
+          if (s.type === "ntfy") extra.push("topic " + (s.topic || "—"));
+          if (s.type === "stdout") extra.push("format " + (s.format || "plain"));
+          if (note) extra.push(note);
+          return `<div class="settings-group sink-row" data-idx="${i}">
+            <div class="sink-row-main">
+              <div><span class="sink-dot ${dot}"></span><code>${escapeHtml(s.id || "")}</code>
+                <span class="muted"> type: ${escapeHtml(s.type || "")}</span></div>
+              <p class="hint" style="margin:0.25rem 0 0">${escapeHtml(extra.join(" · ") || "—")}</p>
+            </div>
+            <div class="sink-row-actions">
+              <button type="button" class="icon-btn sink-edit" data-idx="${i}">Edit</button>
+              <button type="button" class="icon-btn sink-test" data-idx="${i}">Test</button>
+              <button type="button" class="icon-btn sink-toggle" data-idx="${i}">${s.enabled ? "Disable" : "Enable"}</button>
+              <button type="button" class="icon-btn danger sink-del" data-idx="${i}">Delete</button>
+            </div>
+          </div>`;
+        })
+        .join("");
+
+      const histLines = hist
+        .slice()
+        .reverse()
+        .slice(0, 20)
+        .map((h) => {
+          const t = h.at ? new Date(h.at).toISOString().slice(11, 19) : "";
+          return `${t} ${h.status || ""} ${h.sink_id || ""} ${h.kind || ""} ${h.reason || h.error || ""}`.trim();
+        })
+        .join("\n");
+
+      els.pane.innerHTML = `
+        <h3>Sinks</h3>
+        <p class="hint">Mirror finished turns to external channels (ADR-0028). Secrets stay in Settings → Secrets (env-var <em>names</em> only).</p>
+        <div class="settings-group">
+          <p class="hint" style="margin-top:0"><strong>Config file:</strong> <code class="mono">${escapeHtml(path)}</code> ${chip}</p>
+          <p class="hint">Status: ${st.sinks || 0} configured · ${st.enabled || 0} enabled · delivered ${st.ok ?? 0} · dropped ${st.dropped ?? 0}</p>
+          <div class="settings-field">
+            <label>Global deep link base <span class="muted">(per-sink can override)</span></label>
+            <input type="text" id="sink-global-base" class="mono" value="${escapeAttr(cfg.deep_link_base || "")}" placeholder="${escapeAttr(fallback || "https://host:8080")}"/>
+          </div>
+          <p class="hint">Fallback origin: <code>${escapeHtml(fallback || "—")}</code> · Orb <code>return_url</code> accepts <code>http://</code> or <code>https://</code>.</p>
+          <button type="button" class="icon-btn" id="sink-save-base">Save deep_link_base</button>
+        </div>
+        <div class="settings-group">
+          <h4>Add sink</h4>
+          <div class="sink-add-types">
+            ${SINK_TYPES.map((t) => `<button type="button" class="icon-btn sink-add" data-type="${t.id}">+ ${escapeHtml(t.id)}</button>`).join("")}
+          </div>
+        </div>
+        ${list || "<p class='hint'>No sinks configured yet.</p>"}
+        <div id="sink-editor" class="settings-group" hidden></div>
+        <div class="settings-group">
+          <h4>Recent deliveries</h4>
+          <pre class="sink-history">${escapeHtml(histLines || "(none this process)")}</pre>
+        </div>
+        ${envDatalist(envNames, "sink-env-names")}
+        <p class="hint model-editor-err" id="sink-err" hidden></p>
+      `;
+
+      const errEl = () => document.getElementById("sink-err");
+      const showErr = (msg) => {
+        const el = errEl();
+        if (!el) return;
+        el.hidden = !msg;
+        el.textContent = msg || "";
+      };
+
+      async function putConfig(next, okMsg) {
+        await api("/api/settings/sinks", {
+          method: "PUT",
+          body: JSON.stringify(next),
+        });
+        flashBanner(okMsg || "Sinks saved", false);
+        renderSinksSection();
+      }
+
+      const currentCfg = () => ({
+        deep_link_base: (document.getElementById("sink-global-base") || {}).value || cfg.deep_link_base || "",
+        sinks: sinks.slice(),
+      });
+
+      const saveBase = document.getElementById("sink-save-base");
+      if (saveBase) {
+        saveBase.onclick = async () => {
+          try {
+            const next = currentCfg();
+            next.deep_link_base = (document.getElementById("sink-global-base") || {}).value || "";
+            await putConfig(next, "Deep link base saved");
+          } catch (e) {
+            showErr(e.message || String(e));
+            flashBanner(String(e.message || e), true);
+          }
+        };
+      }
+
+      els.pane.querySelectorAll(".sink-add").forEach((btn) => {
+        btn.onclick = () => {
+          const type = btn.getAttribute("data-type") || "webhook";
+          openSinkEditor(blankSink(type, sinks), -1);
+        };
+      });
+      els.pane.querySelectorAll(".sink-edit").forEach((btn) => {
+        btn.onclick = () => {
+          const i = parseInt(btn.getAttribute("data-idx"), 10);
+          openSinkEditor(sinks[i], i);
+        };
+      });
+      els.pane.querySelectorAll(".sink-del").forEach((btn) => {
+        btn.onclick = async () => {
+          const i = parseInt(btn.getAttribute("data-idx"), 10);
+          const s = sinks[i];
+          if (!s || !confirm("Delete sink " + s.id + "?")) return;
+          try {
+            const next = currentCfg();
+            next.sinks = sinks.filter((_, j) => j !== i);
+            await putConfig(next, "Deleted " + s.id);
+          } catch (e) {
+            showErr(e.message || String(e));
+          }
+        };
+      });
+      els.pane.querySelectorAll(".sink-toggle").forEach((btn) => {
+        btn.onclick = async () => {
+          const i = parseInt(btn.getAttribute("data-idx"), 10);
+          try {
+            const next = currentCfg();
+            next.sinks = sinks.map((s, j) => (j === i ? { ...s, enabled: !s.enabled } : s));
+            await putConfig(next, next.sinks[i].enabled ? "Enabled" : "Disabled");
+          } catch (e) {
+            showErr(e.message || String(e));
+          }
+        };
+      });
+      els.pane.querySelectorAll(".sink-test").forEach((btn) => {
+        btn.onclick = async () => {
+          const i = parseInt(btn.getAttribute("data-idx"), 10);
+          const s = sinks[i];
+          if (!s) return;
+          try {
+            const rec = await api("/api/settings/sinks/test", {
+              method: "POST",
+              body: JSON.stringify({ id: s.id }),
+            });
+            const ok = rec.status === "ok";
+            flashBanner(ok ? "Test ok (" + s.id + ")" : "Test failed: " + (rec.error || rec.status), !ok);
+            showErr(ok ? "" : rec.error || rec.status);
+          } catch (e) {
+            showErr(e.message || String(e));
+            flashBanner(String(e.message || e), true);
+          }
+        };
+      });
+
+      function openSinkEditor(spec, idx) {
+        const ed = document.getElementById("sink-editor");
+        if (!ed) return;
+        const f = spec.filters || {};
+        const kinds = Array.isArray(f.kinds) ? f.kinds : [];
+        const skipEmpty = f.skip_empty !== false;
+        const typeFields = () => {
+          switch (spec.type) {
+            case "orb":
+              return `
+                <div class="settings-field"><label>Topic id</label>
+                  <input type="text" id="se-topic" class="mono" value="${escapeAttr(spec.topic_id || "")}" placeholder="t_…"/></div>
+                <div class="settings-field"><label>Secret env</label>
+                  <input type="text" id="se-secret" class="mono" list="sink-env-names" value="${escapeAttr(spec.secret_env || "")}"/></div>
+                <div class="settings-field"><label>API base</label>
+                  <input type="text" id="se-apibase" class="mono" value="${escapeAttr(spec.api_base || "")}" placeholder="https://api.dev.orbnet.app"/></div>
+                <div class="settings-field"><label>Title prefix</label>
+                  <input type="text" id="se-prefix" value="${escapeAttr(spec.title_prefix || "")}" placeholder="marble: "/></div>`;
+            case "webhook":
+              return `
+                <div class="settings-field"><label>URL</label>
+                  <input type="text" id="se-url" class="mono" value="${escapeAttr(spec.url || "")}"/></div>
+                <div class="settings-field"><label>Method</label>
+                  <select id="se-method">
+                    ${["POST", "PUT", "PATCH"].map((m) => `<option ${((spec.method || "POST").toUpperCase() === m) ? "selected" : ""}>${m}</option>`).join("")}
+                  </select></div>
+                <div class="settings-field"><label>Headers (JSON object)</label>
+                  <textarea id="se-headers" class="mono">${escapeHtml(JSON.stringify(spec.headers || { "Content-Type": "application/json" }, null, 2))}</textarea></div>
+                <div class="settings-field"><label>Template (Go text/template over TurnEvent)</label>
+                  <textarea id="se-template" class="mono">${escapeHtml(spec.template || "")}</textarea></div>
+                <div class="settings-field"><label>Secret env <span class="muted">(optional Bearer)</span></label>
+                  <input type="text" id="se-secret" class="mono" list="sink-env-names" value="${escapeAttr(spec.secret_env || "")}"/></div>`;
+            case "slack":
+              return `
+                <div class="settings-field"><label>Secret env (webhook URL)</label>
+                  <input type="text" id="se-secret" class="mono" list="sink-env-names" value="${escapeAttr(spec.secret_env || "")}"/></div>
+                <div class="settings-field"><label>Channel</label>
+                  <input type="text" id="se-channel" value="${escapeAttr(spec.channel || "")}" placeholder="#ops"/></div>
+                <div class="settings-field"><label>Username</label>
+                  <input type="text" id="se-user" value="${escapeAttr(spec.username || "")}"/></div>
+                <div class="settings-field"><label>Icon emoji</label>
+                  <input type="text" id="se-icon" class="mono" value="${escapeAttr(spec.icon_emoji || "")}" placeholder=":robot_face:"/></div>`;
+            case "discord":
+              return `
+                <div class="settings-field"><label>Secret env (webhook URL)</label>
+                  <input type="text" id="se-secret" class="mono" list="sink-env-names" value="${escapeAttr(spec.secret_env || "")}"/></div>
+                <div class="settings-field"><label>Username</label>
+                  <input type="text" id="se-user" value="${escapeAttr(spec.username || "")}"/></div>
+                <div class="settings-field"><label>Avatar URL</label>
+                  <input type="text" id="se-avatar" class="mono" value="${escapeAttr(spec.avatar_url || "")}"/></div>`;
+            case "ntfy":
+              return `
+                <div class="settings-field"><label>Server</label>
+                  <input type="text" id="se-server" class="mono" value="${escapeAttr(spec.server || "https://ntfy.sh")}"/></div>
+                <div class="settings-field"><label>Topic</label>
+                  <input type="text" id="se-ntfy-topic" class="mono" value="${escapeAttr(spec.topic || "")}"/></div>
+                <div class="settings-field"><label>Priority (1–5)</label>
+                  <input type="number" id="se-prio" min="1" max="5" value="${escapeAttr(String(spec.priority || 3))}"/></div>
+                <div class="settings-field"><label>Secret env <span class="muted">(optional token)</span></label>
+                  <input type="text" id="se-secret" class="mono" list="sink-env-names" value="${escapeAttr(spec.secret_env || "")}"/></div>`;
+            case "stdout":
+              return `
+                <div class="settings-field"><label>Format</label>
+                  <select id="se-format">
+                    <option value="plain" ${spec.format !== "json" ? "selected" : ""}>plain</option>
+                    <option value="json" ${spec.format === "json" ? "selected" : ""}>json</option>
+                  </select></div>`;
+            default:
+              return "";
+          }
+        };
+        ed.hidden = false;
+        ed.innerHTML = `
+          <h4>${idx < 0 ? "Add" : "Edit"} sink · ${escapeHtml(spec.type)}</h4>
+          <div class="settings-field"><label>Id</label>
+            <input type="text" id="se-id" class="mono" value="${escapeAttr(spec.id || "")}" ${idx >= 0 ? "readonly" : ""}/></div>
+          <div class="settings-field">
+            <label class="check-row"><input type="checkbox" id="se-enabled" ${spec.enabled ? "checked" : ""}/> Enabled (global default)</label>
+          </div>
+          <div class="settings-field"><label>Deep link base <span class="muted">(optional override)</span></label>
+            <input type="text" id="se-base" class="mono" value="${escapeAttr(spec.deep_link_base || "")}" placeholder="${escapeAttr(cfg.deep_link_base || fallback || "")}"/></div>
+          <h4>Filters</h4>
+          <div class="sink-kinds">
+            ${SINK_KINDS.map((k) => `<label><input type="checkbox" class="se-kind" value="${k}" ${kinds.length === 0 || kinds.indexOf(k) >= 0 ? "checked" : ""}/> ${k}</label>`).join("")}
+          </div>
+          <div class="settings-field">
+            <label class="check-row"><input type="checkbox" id="se-skip-empty" ${skipEmpty ? "checked" : ""}/> Skip empty</label>
+          </div>
+          <div class="settings-field">
+            <label class="check-row"><input type="checkbox" id="se-skip-cron" ${f.skip_cron ? "checked" : ""}/> Skip cron / continuation</label>
+          </div>
+          <div class="settings-field"><label>Min chars</label>
+            <input type="number" id="se-min-chars" min="0" value="${escapeAttr(String(f.min_chars || 0))}"/></div>
+          <div class="settings-field"><label>Coalesce min_interval_sec <span class="muted">(0 = off)</span></label>
+            <input type="number" id="se-min-int" min="0" value="${escapeAttr(String(f.min_interval_sec || 0))}"/></div>
+          <div class="settings-field"><label>Only sessions <span class="muted">(regex, one per line)</span></label>
+            <textarea id="se-only">${escapeHtml((f.only_sessions || []).join("\n"))}</textarea></div>
+          <div class="settings-field"><label>Skip sessions <span class="muted">(regex, one per line)</span></label>
+            <textarea id="se-skip">${escapeHtml((f.skip_sessions || []).join("\n"))}</textarea></div>
+          ${typeFields()}
+          <div class="model-editor-actions">
+            <button type="button" class="icon-btn" id="se-save">Save sink</button>
+            <button type="button" class="icon-btn" id="se-cancel">Cancel</button>
+          </div>
+        `;
+        ed.scrollIntoView({ block: "nearest" });
+        document.getElementById("se-cancel").onclick = () => {
+          ed.hidden = true;
+          ed.innerHTML = "";
+        };
+        document.getElementById("se-save").onclick = async () => {
+          try {
+            const kindsSel = Array.from(ed.querySelectorAll(".se-kind:checked")).map((el) => el.value);
+            const lines = (id) =>
+              String((document.getElementById(id) || {}).value || "")
+                .split("\n")
+                .map((x) => x.trim())
+                .filter(Boolean);
+            const nextSpec = {
+              ...spec,
+              id: ((document.getElementById("se-id") || {}).value || "").trim(),
+              enabled: !!(document.getElementById("se-enabled") || {}).checked,
+              deep_link_base: ((document.getElementById("se-base") || {}).value || "").trim(),
+              secret_env: ((document.getElementById("se-secret") || {}).value || "").trim(),
+              filters: {
+                kinds: kindsSel.length === SINK_KINDS.length ? [] : kindsSel,
+                skip_empty: !!(document.getElementById("se-skip-empty") || {}).checked,
+                skip_cron: !!(document.getElementById("se-skip-cron") || {}).checked,
+                min_chars: parseInt((document.getElementById("se-min-chars") || {}).value || "0", 10) || 0,
+                min_interval_sec: parseInt((document.getElementById("se-min-int") || {}).value || "0", 10) || 0,
+                only_sessions: lines("se-only"),
+                skip_sessions: lines("se-skip"),
+              },
+            };
+            const val = (id) => ((document.getElementById(id) || {}).value || "").trim();
+            if (spec.type === "orb") {
+              nextSpec.topic_id = val("se-topic");
+              nextSpec.api_base = val("se-apibase");
+              nextSpec.title_prefix = (document.getElementById("se-prefix") || {}).value || "";
+            }
+            if (spec.type === "webhook") {
+              nextSpec.url = val("se-url");
+              nextSpec.method = val("se-method") || "POST";
+              nextSpec.template = (document.getElementById("se-template") || {}).value || "";
+              try {
+                nextSpec.headers = JSON.parse((document.getElementById("se-headers") || {}).value || "{}");
+              } catch {
+                throw new Error("headers must be a JSON object");
+              }
+            }
+            if (spec.type === "slack") {
+              nextSpec.channel = val("se-channel");
+              nextSpec.username = val("se-user");
+              nextSpec.icon_emoji = val("se-icon");
+            }
+            if (spec.type === "discord") {
+              nextSpec.username = val("se-user");
+              nextSpec.avatar_url = val("se-avatar");
+            }
+            if (spec.type === "ntfy") {
+              nextSpec.server = val("se-server");
+              nextSpec.topic = val("se-ntfy-topic");
+              nextSpec.priority = parseInt(val("se-prio") || "3", 10) || 3;
+            }
+            if (spec.type === "stdout") {
+              nextSpec.format = val("se-format") || "plain";
+            }
+            const next = currentCfg();
+            if (idx >= 0) next.sinks[idx] = nextSpec;
+            else next.sinks.push(nextSpec);
+            await putConfig(next, "Saved " + nextSpec.id);
+          } catch (e) {
+            showErr(e.message || String(e));
+            flashBanner(String(e.message || e), true);
+          }
+        };
+      }
+    } catch (e) {
+      els.pane.innerHTML = `<h3>Sinks</h3><p class="hint model-editor-err">${escapeHtml(e.message || String(e))}</p>`;
     }
   }
 
@@ -1178,7 +1595,8 @@
       section === "models" ||
       section === "computers" ||
       section === "secrets" ||
-      section === "tts"
+      section === "tts" ||
+      section === "sinks"
     )
       els.save.disabled = true;
   }
@@ -1278,6 +1696,9 @@
     } else if (section === "tts") {
       els.pane.innerHTML = `<h3>TTS</h3><p class="hint">Loading…</p>`;
       renderTTSSection();
+    } else if (section === "sinks") {
+      els.pane.innerHTML = `<h3>Sinks</h3><p class="hint">Loading…</p>`;
+      renderSinksSection();
     } else if (section === "memory") {
       els.pane.innerHTML = `
         <h3>Memory &amp; DB</h3>

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Accepted** (2026-09-11) — Q1–Q13 locked; implementation not yet started |
+| **Status** | **Accepted** (2026-09-11) — implemented (M1+M2) |
 | **Date** | 2026-09-11 |
 | **Accepted** | 2026-09-11 |
 | **Author** | — |
@@ -63,7 +63,7 @@ The fix is a **harness-level, transport-agnostic** hook: one signal ("a turn jus
 
 | Non-goal | Rationale |
 |----------|-----------|
-| Agent-driven publishing (a skill/MCP "remember to post") | Already possible today; this ADR is the *reliable, every-turn* path |
+| Agent-driven publishing (a skill/MCP "remember to post") | Already possible today; this ADR is the *reliable, every-turn* path. `manage_sinks` mutates sink **config**, it does not publish a turn |
 | Replacing the SSE/UI stream | Sinks are additive observers, not a new client protocol |
 | Guaranteed delivery (exactly-once) | At-least-once within a process via idempotency key + bounded retry; cross-restart delivery is out of scope |
 | Changing the model wire / system prompt | Purely a post-turn side effect |
@@ -123,7 +123,7 @@ Orb/Slack/ntfy/Discord are thin constructors that set `URL`, `Method`, `Headers`
 
 | Sink | Deep link mapping |
 |------|-------------------|
-| **orb** | `X-Orb-Return-Url: {{.DeepLink}}` header (ADR-orb-0011 `return_url`) |
+| **orb** | `X-Orb-Return-Url: {{.DeepLink}}` header (ADR-orb-0011 `return_url`); `X-Orb-Run-Id: {{.SessionID}}` so Orb clients can group turns from the same Marble session |
 | **slack** | a link/button in the webhook JSON payload |
 | **ntfy** | `Click: {{.DeepLink}}` header |
 | **discord** | embed `url` |
@@ -240,13 +240,32 @@ In the session view (not Settings), a small **Sinks** control next to the sessio
 - The master "Pause all sinks" is a convenience that writes `off` to every sink for this session (and "Resume all" clears the overrides back to inherit).  
 - The toggle is **session-scoped**; the Settings → Sinks list remains the place to change the global default.
 
+### Agent tool: `manage_sinks`
+
+Sessions can create and manage sinks without the Settings UI. This is **config mutation**, not agent-driven publishing — the harness still fires on `status: idle`. The tool never accepts raw secrets; `secret_env` is an env-var **name** (ADR-0016), same as Settings.
+
+| action | Effect |
+|--------|--------|
+| `list` | All sinks (no secret values) + this session's overrides + recent delivery history |
+| `get` | One sink by id |
+| `create` | Add a sink (`id` + `type` required; type-specific fields; Settings-like defaults) |
+| `update` | Patch fields on an existing sink |
+| `delete` | Remove a sink (prunes this session's override key) |
+| `test` | Synthetic turn to one sink (same as Settings test button) |
+| `set_override` | This session only: `inherit` / `on` / `off` for one sink |
+| `pause_all` / `resume_all` | This session only; matches the session popover |
+| `set_base` | Global `deep_link_base` |
+| `env_names` | Available `secret_env` names (never values) |
+
+Writes persist to `$MEMORY/sinks.json` (same file as Settings PUT). Invalid config is saved with `validation_note` and does not deliver.
+
 ## Predefined sink types (first pass)
 
 First pass ships **six types**. All share the same `Sink` interface and a set of **common fields**; each adds a small set of type-specific fields. `webhook` is the generic base the others are thin wrappers over — so every type below is either the base itself or a pre-baked constructor over it.
 
 | type | purpose | auth | deep-link mapping |
 |------|---------|------|-------------------|
-| `orb` | publish to an Orb topic | `secret_env` → `Authorization: Bearer` | `X-Orb-Return-Url` header |
+| `orb` | publish to an Orb topic | `secret_env` → `Authorization: Bearer` | `X-Orb-Return-Url` + `X-Orb-Run-Id` (= session id) |
 | `webhook` | any HTTP endpoint | arbitrary headers; optional `secret_env` | `{{.DeepLink}}` in the template |
 | `slack` | Slack incoming webhook | webhook URL (no auth header) | link/button in the payload |
 | `discord` | Discord webhook | webhook URL | embed `url` |
@@ -265,7 +284,7 @@ First pass ships **six types**. All share the same `Sink` interface and a set of
 
 ### `orb`
 
-Publishes the turn to an Orb topic and sets the deep link as the first-class `return_url` (ADR-orb-0011), so the tray/phone notification is one tap back to `/s/{id}`.
+Publishes the turn to an Orb topic and sets the deep link as the first-class `return_url` (ADR-orb-0011), so the tray/phone notification is one tap back to `/s/{id}`. The Marble session id is sent as `X-Orb-Run-Id` (envelope `run_id`, ADR-orb-0001 Q12) so Orb clients can group every turn from the same session. Session ids are 10-char Crockford base32 and fit Orb's run_id charset (`[A-Za-z0-9._:-]`, ≤64).
 
 | field | required | notes |
 |-------|----------|-------|
@@ -540,3 +559,6 @@ Source: `adr/0028-answers.json` (`2026-09-11T22:40:54.873Z`). Q1–Q11, Q13 use 
 | 2026-09-11 | **Added** predefined sink types (first pass): `orb`, `webhook`, `slack`, `discord`, `ntfy`, `stdout` — per-type config reference + Settings UI mockups |
 | 2026-09-11 | **Added** per-session sink behavior: three-state override (inherit/on/off) per sink stored in session metadata, resolved at turn-end; session-level UI toggle + "pause all" |
 | 2026-09-11 | **Accepted** — locked Q1–Q13 (`2026-09-11T22:40:54.873Z`); Q1–Q11, Q13 rec; Q12 custom (Settings UI in first wave) |
+| 2026-09-11 | **Implemented (M1+M2)** — `internal/sink` (`TurnEvent`, manager, filters, six types), `$MEMORY/sinks.json`, stream subscription on `status:idle`, Settings → Sinks (list/editors/test), session Sinks popover (inherit/on/off + pause-all) |
+| 2026-09-14 | **Orb `run_id`** — orb sink sets `X-Orb-Run-Id` to the Marble session id so related turns group in Orb clients |
+| 2026-09-14 | **`manage_sinks` tool** — sessions can list/create/update/delete/test sinks and set per-session overrides; secrets by env-var name only |

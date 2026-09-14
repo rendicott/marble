@@ -1,0 +1,29 @@
+{
+  "deep_link_base": "https://example.example:8080",
+  "sinks": [
+    {
+      "id": "debug",
+      "type": "stdout",
+      "enabled": false,
+      "format": "plain",
+      "filters": {
+        "kinds": ["complete", "error"],
+        "skip_empty": true,
+        "skip_cron": true
+      }
+    },
+    {
+      "id": "orb",
+      "type": "orb",
+      "enabled": false,
+      "topic_id": "t_REPLACE",
+      "secret_env": "ORB_AK",
+      "title_prefix": "marble: ",
+      "filters": {
+        "kinds": ["complete", "error"],
+        "skip_empty": true,
+        "skip_cron": true
+      }
+    }
+  ]
+}

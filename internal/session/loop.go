@@ -262,6 +262,7 @@ func (r *Runner) runTurn(s *Session) {
 				CreatedAt: time.Now(),
 				Attachments: []UIAttachment{{
 					ID: a.Path, Name: a.Name, MIME: a.Mime, Kind: "document", Size: a.Size,
+					SourceURL: a.SourceURL, Alt: a.Alt, Credit: a.Credit,
 				}},
 			}
 			// If path looks like att id, mark as image when mime says so

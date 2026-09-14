@@ -243,6 +243,127 @@ a.icon-btn {
 .reasoning-popover[hidden] {
   display: none !important;
 }
+
+.sinks-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.sinks-popover {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 40;
+  width: min(340px, 86vw);
+  padding: 0.7rem 0.8rem 0.75rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.sinks-popover[hidden] {
+  display: none !important;
+}
+.sinks-pop-title {
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+.sinks-pause {
+  width: 100%;
+  margin-bottom: 0.55rem;
+}
+.sinks-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.sinks-pop-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem 0.5rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+.sinks-pop-row .sink-id {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+.sinks-pop-row .sink-eff {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.sinks-pop-row select {
+  font-size: 0.78rem;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.3rem;
+}
+.sinks-pop-hint {
+  margin: 0.55rem 0 0;
+  font-size: 0.72rem;
+}
+.sink-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem 0.75rem;
+}
+.sink-row-main {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+.sink-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.sink-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  margin-right: 0.35rem;
+  background: var(--muted);
+}
+.sink-dot.on { background: var(--ok); }
+.sink-dot.warn { background: var(--warn); }
+.sink-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.7rem;
+  margin: 0.25rem 0 0.5rem;
+}
+.sink-kinds label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+.sink-history {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  max-height: 180px;
+  overflow: auto;
+  background: #0c0e13;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  white-space: pre-wrap;
+}
+.sink-add-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0.6rem;
+}
 .reasoning-pop-title {
   font-size: 0.72rem;
   font-weight: 650;

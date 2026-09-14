@@ -437,7 +437,7 @@ func (r *Registry) messageAttach(argsJSON string, tc *TurnContext) (string, erro
 	// Sniff via simple extension; full sniff is on StageAttachment side if we had access.
 	// Prefer OnChatAttachment with bytes staged through a hook if available.
 	if r.StageChatAttachment != nil {
-		id, mime, kind, err := r.StageChatAttachment(tc.SessionID, name, data)
+		id, mime, kind, err := r.StageChatAttachment(tc.SessionID, name, data, "")
 		if err != nil {
 			return "", err
 		}

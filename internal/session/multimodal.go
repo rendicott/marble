@@ -15,11 +15,14 @@ const marbleAttScheme = "marble-att://"
 
 // UIAttachment is a durable chip on a UI message (ADR-0019).
 type UIAttachment struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	MIME string `json:"mime"`
-	Kind string `json:"kind"` // image | document
-	Size int64  `json:"size,omitempty"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	MIME      string `json:"mime"`
+	Kind      string `json:"kind"` // image | document
+	Size      int64  `json:"size,omitempty"`
+	SourceURL string `json:"source_url,omitempty"`
+	Alt       string `json:"alt,omitempty"`
+	Credit    string `json:"credit,omitempty"`
 }
 
 // Message with attachments (extend existing Message in session.go)
@@ -199,6 +202,11 @@ func (r *Runner) loadStagedOrFile(sessionID, attID string) (*db.AttachmentRow, [
 
 // StageAttachment writes bytes and optional SQL row.
 func (r *Runner) StageAttachment(sessionID, name string, data []byte) (*db.AttachmentRow, error) {
+	return r.StageAttachmentMeta(sessionID, name, data, "")
+}
+
+// StageAttachmentMeta is StageAttachment plus provenance meta_json (ADR-0029).
+func (r *Runner) StageAttachmentMeta(sessionID, name string, data []byte, metaJSON string) (*db.AttachmentRow, error) {
 	if r.Reg == nil || r.Reg.sqldb == nil {
 		return nil, fmt.Errorf("no store")
 	}
@@ -221,7 +229,7 @@ func (r *Runner) StageAttachment(sessionID, name string, data []byte) (*db.Attac
 	row := &db.AttachmentRow{
 		ID: id, SessionID: sessionID, CreatedAt: db.UTCNow(),
 		Name: name, MIME: mime, Kind: kind, ByteSize: int64(len(data)),
-		SHA256: sum, Source: "staged", Path: rel,
+		SHA256: sum, Source: "staged", Path: rel, MetaJSON: strings.TrimSpace(metaJSON),
 	}
 	if d.Writable() {
 		if err := d.InsertAttachment(*row); err != nil {

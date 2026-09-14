@@ -21,6 +21,7 @@ import (
 	"github.com/rendicott/marble/internal/peerhub"
 	"github.com/rendicott/marble/internal/session"
 	"github.com/rendicott/marble/internal/shellpolicy"
+	"github.com/rendicott/marble/internal/sink"
 	"github.com/rendicott/marble/internal/tools"
 	"github.com/rendicott/marble/internal/tts"
 	"github.com/rendicott/marble/internal/web"
@@ -36,6 +37,7 @@ type Server struct {
 	WS       *workspacefs.FS
 	MCP      *mcp.Manager
 	TTS      *tts.Manager
+	Sinks    *sink.Manager
 	Policy   *shellpolicy.Policy
 	Tools    *tools.Registry
 	Mpub     *mpub.Store
@@ -219,6 +221,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			out["tts_last_error"] = st.LastError
 		}
 	}
+	if s.Sinks != nil {
+		st := s.Sinks.Status()
+		out["sinks_configured"] = st["configured"]
+		out["sinks_count"] = st["sinks"]
+		out["sinks_enabled"] = st["enabled"]
+	}
 	if s.Mpub != nil {
 		out["mpub_count"] = s.Mpub.Count()
 		out["mpub_path"] = "/mpub"
@@ -340,11 +348,15 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 					sum.Model = em.Model
 				}
 			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
+			out := map[string]interface{}{
 				"session":         sum,
 				"messages":        sess.UIMessages(),
 				"model_effective": me,
-			})
+			}
+			if s.Sinks != nil {
+				out["sinks"] = s.Sinks.PublicSinks()
+			}
+			writeJSON(w, http.StatusOK, out)
 			return
 		case http.MethodPatch:
 			s.handleSessionPatch(w, r, id)
@@ -459,16 +471,17 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request, id string) 
 
 func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		ModelID         *string `json:"model_id"`
-		Title           *string `json:"title"`
-		ReasoningEffort *string `json:"reasoning_effort"`
+		ModelID         *string           `json:"model_id"`
+		Title           *string           `json:"title"`
+		ReasoningEffort *string           `json:"reasoning_effort"`
+		SinkOverrides   map[string]string `json:"sink_overrides"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if body.ModelID == nil && body.Title == nil && body.ReasoningEffort == nil {
-		http.Error(w, "model_id, title, or reasoning_effort required", http.StatusBadRequest)
+	if body.ModelID == nil && body.Title == nil && body.ReasoningEffort == nil && body.SinkOverrides == nil {
+		http.Error(w, "model_id, title, reasoning_effort, or sink_overrides required", http.StatusBadRequest)
 		return
 	}
 
@@ -522,6 +535,19 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 		auth.LogAction("session_set_reasoning", "session="+id+" effort="+*body.ReasoningEffort, u)
 	}
 
+	if body.SinkOverrides != nil {
+		sess, err = s.Registry.SetSessionSinkOverrides(id, body.SinkOverrides)
+		if err != nil {
+			if strings.Contains(err.Error(), "sink override") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		auth.LogAction("session_set_sinks", "session="+id, u)
+	}
+
 	if sess == nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -539,6 +565,9 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 			out["session"] = sum
 			out["model_effective"] = eff.Public()
 		}
+	}
+	if s.Sinks != nil {
+		out["sinks"] = s.Sinks.PublicSinks()
 	}
 	writeJSON(w, http.StatusOK, out)
 }

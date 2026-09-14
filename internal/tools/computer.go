@@ -165,7 +165,7 @@ func (r *Registry) stagePeerScreenshot(tc *TurnContext, raw []byte, name string)
 		name = "screenshot.jpg"
 	}
 	hash = sha256Hex(raw)
-	id, mime, kind, err := r.StageChatAttachment(tc.SessionID, name, raw)
+	id, mime, kind, err := r.StageChatAttachment(tc.SessionID, name, raw, "")
 	if err != nil {
 		return "", "", "", hash, err
 	}

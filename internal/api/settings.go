@@ -33,6 +33,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.handleSettingsEnv(w, r)
 	case path == "tts":
 		s.handleTTSSettings(w, r)
+	case path == "sinks" || strings.HasPrefix(path, "sinks/"):
+		s.handleSinksSettings(w, r)
 	default:
 		http.NotFound(w, r)
 	}
