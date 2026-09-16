@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0031</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0031</span>
+      <span class="status proposed">Proposed</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0031-subprocess-context.md">Markdown</a>
+      <a href="0031-review.html">Review</a>
+      <a href="0030-doc.html">← 0030</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0031-subprocess-context-injection-pick-and-choose-session-context-for-agent-runs">ADR-0031: Subprocess context injection — pick-and-choose session context for agent runs</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Proposed</strong> (2026-09-16) — open for review</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-09-16</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>subprocess, agents, context, session, memory, call-agent-process, turn-routing, presets</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0014 (<code>call_agent_process</code>), ADR-0030 (agent-process presets + turn send-routing), ADR-0018 (Selectable Models / <code>TurnOpts</code>), ADR-0026 (transcript density), ADR-0022 (long-turn efficiency)</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0031-review.html">0031-review.html</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p><code>call_agent_process</code> (ADR-0014) and routed turns (ADR-0030) spawn a subprocess <strong>cold</strong>: the child receives only the prompt string — no session transcript, no digest, no memory, no files-read-so-far. The operator can hand context by pasting it into the prompt, but that is manual, lossy, and impossible to do reliably.</p>
+<p>This ADR adds an explicit, <strong>pick-and-choose</strong> <code>context</code> control to subprocess agent runs: a <strong>list of named context sources</strong> assembled into a single, size-capped block and injected into the child invocation. Default is <strong>off</strong> (<code>none</code>), preserving today&rsquo;s cost and behavior. The operator chooses at three granularities: <strong>per call</strong>, <strong>per session</strong>, and <strong>default</strong> (preset- or global-level).</p>
+<h2 id="context-pain">Context &amp; pain</h2>
+<h3 id="current-state-verified">Current state (verified)</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tool</td>
+<td><code>call_agent_process</code> builds <code>agentproc.Request{ Prompt, CWD, Model, ExtraArgs, … }</code> from args only (<code>internal/tools/agentproc.go</code>); <code>Prompt</code> is the only free-form text</td>
+</tr>
+<tr>
+<td>Driver</td>
+<td><code>claude -p "&lt;prompt&gt;"</code>, <code>grok -p "&lt;prompt&gt;"</code>, <code>opencode run "&lt;prompt&gt;"</code> (<code>internal/agentproc/driver.go</code>, <code>opencode.go</code>)</td>
+</tr>
+<tr>
+<td>TurnContext</td>
+<td>Already carries <code>Compact(style, keepLast)</code>, <code>HistorySnippet()</code>, and <code>ReadPaths</code> (<code>internal/tools/registry.go</code>), set by the session loop (<code>internal/session/loop.go</code>) — <strong>none are consumed by agentproc</strong></td>
+</tr>
+<tr>
+<td>Routed turns</td>
+<td>ADR-0030 sends the wrapped user message to a preset; no context injection</td>
+</tr>
+<tr>
+<td>Config</td>
+<td><code>agent_process.json</code> = global caps; <code>agent_presets</code> SQLite = presets (ADR-0030 schema v8)</td>
+</tr>
+<tr>
+<td>Session</td>
+<td><code>sessions.model_id</code> + <code>sessions.agent_preset_id</code> exist (ADR-0018/0030); no subprocess-context field</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-is-awkward-today">What is awkward today</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Failure mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&ldquo;Run this in claude, but it needs to know what we&rsquo;ve been doing&rdquo;</td>
+<td>Operator/agent pastes a paraphrased summary; lossy, and the model may omit it</td>
+</tr>
+<tr>
+<td>&ldquo;Hand off a coding push that spans the whole session&rdquo;</td>
+<td>No way to include history + memory without a wall of paste</td>
+</tr>
+<tr>
+<td>&ldquo;Cheap throwaway run that shouldn&rsquo;t see history&rdquo;</td>
+<td>No way — because nothing is ever passed, this is actually fine today</td>
+</tr>
+<tr>
+<td>&ldquo;I want memory results too, not just the transcript&rdquo;</td>
+<td>Impossible; memory tools aren&rsquo;t bridged into the child at all</td>
+</tr>
+</tbody>
+</table>
+<p>The core gap: <strong>context is all-or-nothing and it defaults to nothing</strong>, with no structured way to opt in, cap it, or scope it.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Structured opt-in</strong> — a <code>context</code> source-list on subprocess runs (<code>none</code> by default).</li>
+<li><strong>Composable sources</strong> — transcript (compact / full), memory search, and files-read-this-turn are independently selectable.</li>
+<li><strong>Bounded &amp; safe</strong> — every source is capped; the assembled block has a total cap; secrets never cross (memory/session already sanitize; no raw keys).</li>
+<li><strong>Three-layer resolution</strong> — per-call → per-session → default (preset/global), mirroring ADR-0030&rsquo;s resolver.</li>
+<li><strong>Both paths</strong> — the <code>call_agent_process</code> tool <strong>and</strong> ADR-0030 routed turns honor the same mechanism.</li>
+<li><strong>No recompile for delivery</strong> — the assembled block is a plain, clearly-delimited text section, driver-agnostic.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Auto-selecting context per task (full <code>auto</code> routing)</td>
+<td>Explicit selection only (same stance as ADR-0018/0030); a shallow <code>auto</code> shorthand is allowed but not a smart router</td>
+</tr>
+<tr>
+<td>Injecting <em>tool outputs</em> or <em>attachments</em> from the current turn</td>
+<td><code>read_paths</code> covers files; tool-output/attachment injection is a later source</td>
+</tr>
+<tr>
+<td>Bidirectional context (child writes back into session)</td>
+<td>Child output is already collected (ADR-0014/0030); no structured merge</td>
+</tr>
+<tr>
+<td>Vector/RAG retrieval over the whole session</td>
+<td><code>memory_search</code> is the only retrieval in v1</td>
+</tr>
+<tr>
+<td>Persisting a &ldquo;context snapshot&rdquo; for reuse across many runs</td>
+<td>Deferred (a separate follow-on; see Alternatives)</td>
+</tr>
+<tr>
+<td>Streaming context into the child incrementally</td>
+<td>One-shot block at spawn</td>
+</tr>
+</tbody>
+</table>
+<h2 id="design">Design</h2>
+<h3 id="a-context-sources">A. Context sources</h3>
+<p><code>context</code> is a <strong>list</strong>, not an enum, so sources compose. Each source becomes a clearly-labeled section in the assembled block.</p>
+<table>
+<thead>
+<tr>
+<th>Token</th>
+<th>Contribution</th>
+<th>Size default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>compact</code></td>
+<td>The <code>session_compact</code> digest (via <code>TurnContext.Compact</code>)</td>
+<td>6000 chars</td>
+</tr>
+<tr>
+<td><code>full</code></td>
+<td>Recent raw transcript turns (newest first, capped) <strong>+</strong> the <code>compact</code> digest of anything older</td>
+<td>12000 chars raw + 6000 compact</td>
+</tr>
+<tr>
+<td><code>memory</code></td>
+<td>Top-K <code>memory_search</code> results seeded from the prompt (and recent user turns)</td>
+<td>4000 chars</td>
+</tr>
+<tr>
+<td><code>read_paths</code></td>
+<td>Paths read/written this turn (<code>TurnContext.ReadPaths</code>)</td>
+<td>1500 chars</td>
+</tr>
+</tbody>
+</table>
+<p>Shorthands (resolved once at spawn):</p>
+<ul>
+<li><code>"none"</code> → <code>[]</code> (today&rsquo;s behavior — the default)</li>
+<li><code>"auto"</code> → harness picks a shallow default: <code>read_paths</code> + <code>compact</code>; upgrades to <code>full</code>+<code>memory</code> only if the prompt references prior work (contains &ldquo;this session&rdquo;, &ldquo;what we discussed&rdquo;, &ldquo;the tracker&rdquo;, &ldquo;earlier&rdquo;, a session id, etc.)</li>
+</ul>
+<p><code>full</code> implies <code>compact</code> (its &ldquo;older history&rdquo; section <em>is</em> a compact); listing both is allowed but redundant. <code>full</code> and <code>compact</code> are mutually <em>exclusive in effect</em> — <code>full</code> wins if both present (no double-count).</p>
+<h3 id="b-assembly">B. Assembly</h3>
+<ol>
+<li>For each selected source, materialize its text and trim to its per-source cap.</li>
+<li>Join into one block with unambiguous delimiters:</li>
+</ol>
+<pre><code class="language-text">[CONTEXT — Marble session &lt;id&gt; · source: full]
+…recent transcript…
+
+[CONTEXT — Marble session &lt;id&gt; · source: memory]
+…top matches…
+
+[CONTEXT — Marble session &lt;id&gt; · source: read_paths]
+…
+</code></pre>
+<ol start="3">
+<li>Enforce a total cap (<code>context_max_chars</code>, default 16000). Oversized sources are truncated oldest-first (for transcript) / lowest-relevance-first (for memory). If the total still exceeds the cap after trimming, sources are dropped in reverse-priority order: <code>read_paths</code> → <code>memory</code> → <code>full</code> → <code>compact</code>.</li>
+</ol>
+<p>Deterministic and testable: given a session and a <code>context</code> list, the block is a pure function of inputs (no hidden time/randomness), which keeps it safe to unit-test and safe to reason about.</p>
+<h3 id="c-delivery">C. Delivery</h3>
+<p>The assembled block is delivered as a <strong>prepended text section to <code>Prompt</code></strong> (before the user task), driver-agnostic — grok/claude/opencode all take a prompt positional.</p>
+<ul>
+<li><strong>Why prepend, not a flag:</strong> <code>--append-system-prompt</code> exists for claude but not uniformly across drivers; a plain prompt section is one mechanism for all.</li>
+<li><strong>Why not <code>--resume</code>/CLAUDE.md:</strong> those are child-session/file mechanisms; Marble context isn&rsquo;t a Claude session and shouldn&rsquo;t masquerade as one.</li>
+<li>The block is <strong>excluded from the echoed <code>prompt_preview</code>/command</strong> on background-task start, so it doesn&rsquo;t double the noise (only a <code>context: full+memory · 14k chars</code> marker is shown).</li>
+</ul>
+<p>Delivery is an open question (Q4): prepend vs claude-specific <code>--append-system-prompt</code> vs a context file + pointer.</p>
+<h3 id="d-resolution-order">D. Resolution order</h3>
+<table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>Source</th>
+<th>When applied</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Per-call <code>context</code> arg (<code>call_agent_process</code>), or <code>TurnOpts</code> context override on a routed turn</td>
+<td>That invocation only</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>session.subprocess_context</code> (set via <code>session_set_subprocess_context</code>)</td>
+<td>Every subprocess run in that session</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Preset <code>context</code> field (routed turns) / <code>agent_process.json</code> global default (tool calls)</td>
+<td>Baseline</td>
+</tr>
+</tbody>
+</table>
+<p>Missing/empty at priority 1 → fall through to 2 → 3. <code>context_max_chars</code> resolves the same way (per-call → session → default).</p>
+<h3 id="e-config-surface">E. Config surface</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Storage</th>
+<th>Set by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-call</td>
+<td>tool arg / <code>TurnOpts</code></td>
+<td>Agent emits it, or operator instructs</td>
+</tr>
+<tr>
+<td>Per-session</td>
+<td><code>sessions.subprocess_context</code> (JSON: <code>{context:[…], max_chars}</code>)</td>
+<td>New tool <code>session_set_subprocess_context</code> (mirrors <code>session_set_model</code> / <code>session_set_agent_preset</code>); empty/<code>"clear"</code> reverts</td>
+</tr>
+<tr>
+<td>Preset default</td>
+<td><code>agent_presets.context</code> + <code>agent_presets.context_max_chars</code> (schema v9)</td>
+<td>Settings ⚙ → Agents → preset editor</td>
+</tr>
+<tr>
+<td>Global default</td>
+<td><code>agent_process.json</code> <code>context</code> block (global caps file)</td>
+<td>Hand-edited; seed for presets on migrate (ADR-0030 pattern)</td>
+</tr>
+</tbody>
+</table>
+<p>Secrets: <strong>none</strong>. Context sources are transcript/memory/paths — already sanitized by existing paths; the block is plain text, never contains raw keys, and is never logged verbatim (only the size marker).</p>
+<h3 id="f-tools">F. Tools</h3>
+<ul>
+<li><code>session_set_subprocess_context { "context": ["full","memory"], "max_chars": 24000 }</code> → sets the session override; responds with the <strong>effective</strong> config (per-call not applicable, so it echoes session → default). Passing <code>"context": []</code> or <code>"clear": true</code> reverts to default.</li>
+<li>No new getter: the set response and the existing <code>session_info</code> surface carry the effective value (avoid a one-off read tool).</li>
+</ul>
+<h3 id="g-security-leakage">G. Security &amp; leakage</h3>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Leaking unrelated history into a throwaway run</td>
+<td>Default <code>none</code>; explicit opt-in only</td>
+</tr>
+<tr>
+<td>Blowing the child&rsquo;s context window</td>
+<td>Per-source caps + total cap; oversized → truncate → drop lowest-priority</td>
+</tr>
+<tr>
+<td>Secrets crossing the boundary</td>
+<td>Block is transcript/memory/paths only; raw keys never in memory or session text</td>
+</tr>
+<tr>
+<td>Child is a different trust domain</td>
+<td>Context is read-only, one-way; child output still passes through ADR-0014/0030 collection (verbatim emit is a pre-existing ADR-0030 decision, unchanged)</td>
+</tr>
+<tr>
+<td>Cost amplification</td>
+<td>Context tokens are charged to the child run; capped + opt-in keeps that deliberate</td>
+</tr>
+</tbody>
+</table>
+<h2 id="open-questions-q1q12">Open questions (Q1–Q12)</h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Question</th>
+<th>Rec</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q1</td>
+<td><code>context</code> as a source-list (composable) vs a single enum?</td>
+<td>Source-list</td>
+</tr>
+<tr>
+<td>Q2</td>
+<td>Sources in v1: compact, full, memory, read_paths?</td>
+<td>Yes, all four</td>
+</tr>
+<tr>
+<td>Q3</td>
+<td><code>full</code> = recent raw turns (capped) + compact of older (no double-count)?</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Q4</td>
+<td>Delivery: prepend to prompt vs claude <code>--append-system-prompt</code> vs context file?</td>
+<td>Prepend to prompt (driver-agnostic)</td>
+</tr>
+<tr>
+<td>Q5</td>
+<td>Total cap default 16000 chars; per-source caps as above?</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Q6</td>
+<td><code>memory</code> seeded from prompt + recent user turns, top-K=5?</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Q7</td>
+<td>Include <code>read_paths</code> (already in TurnContext, near-free)?</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Q8</td>
+<td>Per-session override tool <code>session_set_subprocess_context</code> + echo effective config?</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Q9</td>
+<td>Preset-level default as <code>agent_presets.context</code>/<code>context_max_chars</code> (schema v9), edited in Settings → Agents?</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Q10</td>
+<td>Resolution: per-call → per-session → preset/global default?</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Q11</td>
+<td>Routed turns (ADR-0030) honor the same resolution, via <code>TurnOpts</code> context override?</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Q12</td>
+<td>Default <code>none</code> (opt-in only) to preserve today&rsquo;s cost/behavior?</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-sketch-non-normative">Implementation sketch (non-normative)</h2>
+<pre><code>internal/agentproc/
+  context.go     — Source enum, ContextSpec, Assemble(session, spec) (pure fn), caps
+  manager.go     — Request gains ContextSpec; RunSync/StartBackground assemble + inject before BuildArgv
+
+internal/db/
+  sessions.go    — add subprocess_context (JSON) to sessions (schema v9)
+  agent_presets.go — add context + context_max_chars columns (schema v9)
+
+internal/tools/
+  agentproc.go   — accept context arg; pass through to Request
+  subprocessctx.go — session_set_subprocess_context (mirror session_set_agent_preset)
+
+internal/session/
+  loop.go        — build TurnContext.ContextSources / pass session.subprocess_context into routed-turn TurnOpts
+
+internal/api/
+  settings.go    — Agents preset editor gains context fields
+</code></pre>
+<p><strong>Tests:</strong> <code>Assemble</code> is a pure function (given fixture session + spec → deterministic block; truncation/drop order; shorthand resolution; <code>none</code> = empty); resolution order (call → session → default); routed-turn and tool both inject; default off when nothing set; no secrets in block (grep for <code>orb_ak_</code>/key patterns); marker-only in prompt_preview.</p>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Removes the &ldquo;paste a paraphrase&rdquo; ritual for cross-session handoffs.</li>
+<li>One mechanism serves both the tool and routed turns.</li>
+<li>Composable + capped = predictable cost, no context-window blowouts.</li>
+<li>Default-off keeps cheap throwaway runs cheap and isolated.</li>
+</ul>
+<h3 id="negative-risks">Negative / risks</h3>
+<ul>
+<li>Context tokens are billed to the child run — must stay opt-in and capped.</li>
+<li>&ldquo;Full&rdquo; context is inherently bounded and may still omit what the child needed (no substitute for reading the repo on disk).</li>
+<li>A poorly-chosen <code>auto</code> heuristic could over/under-inject (mitigated: <code>auto</code> is shallow and explicit <code>none</code>/list always wins).</li>
+<li>Two config surfaces for the default (preset vs global) need clear precedence docs.</li>
+</ul>
+<h3 id="neutral">Neutral</h3>
+<ul>
+<li><code>call_agent_process</code> and routed-turn semantics otherwise unchanged.</li>
+<li>No new sandbox/privilege model.</li>
+</ul>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<ul>
+<li><strong>Human-in-the-loop context pack</strong> (preview card with section toggles before spawn): more control, more friction; can layer on later.</li>
+<li><strong>One-tap &ldquo;include context?&rdquo; gate</strong>: an opt-in confirm on top of the default; complementary, not a replacement.</li>
+<li><strong>Reusable immutable context snapshot</strong> (<code>ctx_&lt;session&gt;_vN</code> attach-to-many): amortizes cost for multi-agent pushes; larger scope, deferred.</li>
+<li><strong>CLAUDE.md/<code>--resume</code></strong>: wrong abstraction (child-session, not Marble transcript).</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0014 <code>call_agent_process</code> (drivers, caps, BG, kill)</li>
+<li>ADR-0030 Agent-process presets &amp; turn send-routing (presets, resolver, <code>TurnOpts</code>, session lock)</li>
+<li>ADR-0018 Selectable Models (<code>TurnOpts</code>, resolver, session-preference symmetry)</li>
+<li>ADR-0026 transcript density, ADR-0022 long-turn efficiency</li>
+<li>Code: <code>internal/tools/agentproc.go</code>, <code>internal/agentproc/{driver,manager}.go</code>, <code>internal/tools/registry.go</code> (TurnContext), <code>internal/session/loop.go</code></li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-09-16</td>
+<td>Proposed — context source-list, three-layer resolution, both subprocess paths</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0031-subprocess-context.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>
