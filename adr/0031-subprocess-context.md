@@ -2,19 +2,20 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Proposed** (2026-09-16) — open for review |
+| **Status** | **Accepted** (2026-09-17) — Q1–Q11 rec, Q12 custom (default `full+memory`) |
 | **Date** | 2026-09-16 |
 | **Author** | — |
 | **Deciders** | Project owner |
 | **Tags** | subprocess, agents, context, session, memory, call-agent-process, turn-routing, presets |
 | **Extends** | ADR-0014 (`call_agent_process`), ADR-0030 (agent-process presets + turn send-routing), ADR-0018 (Selectable Models / `TurnOpts`), ADR-0026 (transcript density), ADR-0022 (long-turn efficiency) |
+| **Answers** | [0031-answers.json](0031-answers.json) (`2026-09-17T09:44:42.123Z`) — Q1–Q11 locked (rec), Q12 custom |
 | **Review UI** | [0031-review.html](0031-review.html) |
 
 ## Summary
 
 `call_agent_process` (ADR-0014) and routed turns (ADR-0030) spawn a subprocess **cold**: the child receives only the prompt string — no session transcript, no digest, no memory, no files-read-so-far. The operator can hand context by pasting it into the prompt, but that is manual, lossy, and impossible to do reliably.
 
-This ADR adds an explicit, **pick-and-choose** `context` control to subprocess agent runs: a **list of named context sources** assembled into a single, size-capped block and injected into the child invocation. Default is **off** (`none`), preserving today's cost and behavior. The operator chooses at three granularities: **per call**, **per session**, and **default** (preset- or global-level).
+This ADR adds an explicit, **pick-and-choose** `context` control to subprocess agent runs: a **list of named context sources** assembled into a single, size-capped block and injected into the child invocation. The **default is `full+memory`** (Q12, custom) — transcript plus memory by default, so cross-session handoff works without ceremony; the operator opts *out* (or narrows) at three granularities: **per call**, **per session**, and **default** (preset- or global-level).
 
 ## Context & pain
 
@@ -42,7 +43,7 @@ The core gap: **context is all-or-nothing and it defaults to nothing**, with no 
 
 ## Goals
 
-1. **Structured opt-in** — a `context` source-list on subprocess runs (`none` by default).
+1. **Structured control** — a `context` source-list on subprocess runs; default `full+memory` (Q12), explicit opt-out/narrow via `[]` or a shorter list.
 2. **Composable sources** — transcript (compact / full), memory search, and files-read-this-turn are independently selectable.
 3. **Bounded & safe** — every source is capped; the assembled block has a total cap; secrets never cross (memory/session already sanitize; no raw keys).
 4. **Three-layer resolution** — per-call → per-session → default (preset/global), mirroring ADR-0030's resolver.
@@ -75,8 +76,10 @@ The core gap: **context is all-or-nothing and it defaults to nothing**, with no 
 
 Shorthands (resolved once at spawn):
 
-- `"none"` → `[]` (today's behavior — the default)
-- `"auto"` → harness picks a shallow default: `read_paths` + `compact`; upgrades to `full`+`memory` only if the prompt references prior work (contains "this session", "what we discussed", "the tracker", "earlier", a session id, etc.)
+- `"none"` → `[]` (explicit opt-out of context)
+- `"auto"` → `full` + `memory` if the prompt references prior work (contains "this session", "what we discussed", "the tracker", "earlier", a session id, etc.), else `read_paths` + `compact`
+
+Default (`agent_process.json` `context.default`) is **`["full", "memory"]`** per Q12.
 
 `full` implies `compact` (its "older history" section *is* a compact); listing both is allowed but redundant. `full` and `compact` are mutually *exclusive in effect* — `full` wins if both present (no double-count).
 
@@ -140,11 +143,11 @@ Secrets: **none**. Context sources are transcript/memory/paths — already sanit
 
 | Concern | Mitigation |
 |---------|-----------|
-| Leaking unrelated history into a throwaway run | Default `none`; explicit opt-in only |
+| Leaking unrelated history into a throwaway run | Default `full+memory` (Q12) is a deliberate trade-off; narrow per call (`[]`/`["read_paths"]`) or per session for throwaway runs |
 | Blowing the child's context window | Per-source caps + total cap; oversized → truncate → drop lowest-priority |
 | Secrets crossing the boundary | Block is transcript/memory/paths only; raw keys never in memory or session text |
 | Child is a different trust domain | Context is read-only, one-way; child output still passes through ADR-0014/0030 collection (verbatim emit is a pre-existing ADR-0030 decision, unchanged) |
-| Cost amplification | Context tokens are charged to the child run; capped + opt-in keeps that deliberate |
+| Cost amplification | Context tokens are charged to the child run; capped, but **on by default** (Q12) — opt out for throwaway runs |
 
 ## Open questions (Q1–Q12)
 
@@ -161,7 +164,7 @@ Secrets: **none**. Context sources are transcript/memory/paths — already sanit
 | Q9 | Preset-level default as `agent_presets.context`/`context_max_chars` (schema v9), edited in Settings → Agents? | Yes |
 | Q10 | Resolution: per-call → per-session → preset/global default? | Yes |
 | Q11 | Routed turns (ADR-0030) honor the same resolution, via `TurnOpts` context override? | Yes |
-| Q12 | Default `none` (opt-in only) to preserve today's cost/behavior? | Yes |
+| Q12 | Default `none` (opt-in only) to preserve today's cost/behavior? | **Custom** — default `full+memory` (opt-out, not opt-in) |
 
 ## Implementation sketch (non-normative)
 
@@ -185,7 +188,7 @@ internal/api/
   settings.go    — Agents preset editor gains context fields
 ```
 
-**Tests:** `Assemble` is a pure function (given fixture session + spec → deterministic block; truncation/drop order; shorthand resolution; `none` = empty); resolution order (call → session → default); routed-turn and tool both inject; default off when nothing set; no secrets in block (grep for `orb_ak_`/key patterns); marker-only in prompt_preview.
+**Tests:** `Assemble` is a pure function (given fixture session + spec → deterministic block; truncation/drop order; shorthand resolution; `none` = empty; default `full+memory` when nothing set); resolution order (call → session → default); routed-turn and tool both inject; no secrets in block (grep for `orb_ak_`/key patterns); marker-only in prompt_preview.
 
 ## Consequences
 
@@ -193,10 +196,10 @@ internal/api/
 - Removes the "paste a paraphrase" ritual for cross-session handoffs.
 - One mechanism serves both the tool and routed turns.
 - Composable + capped = predictable cost, no context-window blowouts.
-- Default-off keeps cheap throwaway runs cheap and isolated.
+- Default `full+memory` (Q12) means handoff works out of the box; the cost is that context tokens are billed by default — operators must opt *out* for throwaway runs (documented in tool help + session tool).
 
 ### Negative / risks
-- Context tokens are billed to the child run — must stay opt-in and capped.
+- Context tokens are billed to the child run — default `full+memory` (Q12) is deliberate, but must stay capped and easily opted out of.
 - "Full" context is inherently bounded and may still omit what the child needed (no substitute for reading the repo on disk).
 - A poorly-chosen `auto` heuristic could over/under-inject (mitigated: `auto` is shallow and explicit `none`/list always wins).
 - Two config surfaces for the default (preset vs global) need clear precedence docs.
@@ -225,3 +228,4 @@ internal/api/
 | Date | Change |
 |------|--------|
 | 2026-09-16 | Proposed — context source-list, three-layer resolution, both subprocess paths |
+| 2026-09-17 | **Accepted** — locked Q1–Q11 rec; Q12 custom (default `full+memory`, not `none`) |

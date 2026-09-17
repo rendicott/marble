@@ -11,12 +11,13 @@
     <div class="brand">
       <span class="mark"></span>
       <span>Marble · ADR-0031</span>
-      <span class="status proposed">Proposed</span>
+      <span class="status accepted">Accepted</span>
     </div>
     <nav class="toc">
       <a href="index.html">Index</a>
       <a href="0031-subprocess-context.md">Markdown</a>
       <a href="0031-review.html">Review</a>
+      <a href="0031-answers.json">Answers</a>
       <a href="0030-doc.html">← 0030</a>
     </nav>
   </header>
@@ -33,7 +34,7 @@
 <tbody>
 <tr>
 <td><strong>Status</strong></td>
-<td><strong>Proposed</strong> (2026-09-16) — open for review</td>
+<td><strong>Accepted</strong> (2026-09-17) — Q1–Q11 rec, Q12 custom (default <code>full+memory</code>)</td>
 </tr>
 <tr>
 <td><strong>Date</strong></td>
@@ -56,6 +57,10 @@
 <td>ADR-0014 (<code>call_agent_process</code>), ADR-0030 (agent-process presets + turn send-routing), ADR-0018 (Selectable Models / <code>TurnOpts</code>), ADR-0026 (transcript density), ADR-0022 (long-turn efficiency)</td>
 </tr>
 <tr>
+<td><strong>Answers</strong></td>
+<td><a href="0031-answers.json">0031-answers.json</a> (<code>2026-09-17T09:44:42.123Z</code>) — Q1–Q11 locked (rec), Q12 custom</td>
+</tr>
+<tr>
 <td><strong>Review UI</strong></td>
 <td><a href="0031-review.html">0031-review.html</a></td>
 </tr>
@@ -63,7 +68,7 @@
 </table>
 <h2 id="summary">Summary</h2>
 <p><code>call_agent_process</code> (ADR-0014) and routed turns (ADR-0030) spawn a subprocess <strong>cold</strong>: the child receives only the prompt string — no session transcript, no digest, no memory, no files-read-so-far. The operator can hand context by pasting it into the prompt, but that is manual, lossy, and impossible to do reliably.</p>
-<p>This ADR adds an explicit, <strong>pick-and-choose</strong> <code>context</code> control to subprocess agent runs: a <strong>list of named context sources</strong> assembled into a single, size-capped block and injected into the child invocation. Default is <strong>off</strong> (<code>none</code>), preserving today&rsquo;s cost and behavior. The operator chooses at three granularities: <strong>per call</strong>, <strong>per session</strong>, and <strong>default</strong> (preset- or global-level).</p>
+<p>This ADR adds an explicit, <strong>pick-and-choose</strong> <code>context</code> control to subprocess agent runs: a <strong>list of named context sources</strong> assembled into a single, size-capped block and injected into the child invocation. The <strong>default is <code>full+memory</code></strong> (Q12, custom) — transcript plus memory by default, so cross-session handoff works without ceremony; the operator opts <em>out</em> (or narrows) at three granularities: <strong>per call</strong>, <strong>per session</strong>, and <strong>default</strong> (preset- or global-level).</p>
 <h2 id="context-pain">Context &amp; pain</h2>
 <h3 id="current-state-verified">Current state (verified)</h3>
 <table>
@@ -130,7 +135,7 @@
 <p>The core gap: <strong>context is all-or-nothing and it defaults to nothing</strong>, with no structured way to opt in, cap it, or scope it.</p>
 <h2 id="goals">Goals</h2>
 <ol>
-<li><strong>Structured opt-in</strong> — a <code>context</code> source-list on subprocess runs (<code>none</code> by default).</li>
+<li><strong>Structured control</strong> — a <code>context</code> source-list on subprocess runs; default <code>full+memory</code> (Q12), explicit opt-out/narrow via <code>[]</code> or a shorter list.</li>
 <li><strong>Composable sources</strong> — transcript (compact / full), memory search, and files-read-this-turn are independently selectable.</li>
 <li><strong>Bounded &amp; safe</strong> — every source is capped; the assembled block has a total cap; secrets never cross (memory/session already sanitize; no raw keys).</li>
 <li><strong>Three-layer resolution</strong> — per-call → per-session → default (preset/global), mirroring ADR-0030&rsquo;s resolver.</li>
@@ -208,9 +213,10 @@
 </table>
 <p>Shorthands (resolved once at spawn):</p>
 <ul>
-<li><code>"none"</code> → <code>[]</code> (today&rsquo;s behavior — the default)</li>
-<li><code>"auto"</code> → harness picks a shallow default: <code>read_paths</code> + <code>compact</code>; upgrades to <code>full</code>+<code>memory</code> only if the prompt references prior work (contains &ldquo;this session&rdquo;, &ldquo;what we discussed&rdquo;, &ldquo;the tracker&rdquo;, &ldquo;earlier&rdquo;, a session id, etc.)</li>
+<li><code>"none"</code> → <code>[]</code> (explicit opt-out of context)</li>
+<li><code>"auto"</code> → <code>full</code> + <code>memory</code> if the prompt references prior work (contains &ldquo;this session&rdquo;, &ldquo;what we discussed&rdquo;, &ldquo;the tracker&rdquo;, &ldquo;earlier&rdquo;, a session id, etc.), else <code>read_paths</code> + <code>compact</code></li>
 </ul>
+<p>Default (<code>agent_process.json</code> <code>context.default</code>) is <strong><code>["full", "memory"]</code></strong> per Q12.</p>
 <p><code>full</code> implies <code>compact</code> (its &ldquo;older history&rdquo; section <em>is</em> a compact); listing both is allowed but redundant. <code>full</code> and <code>compact</code> are mutually <em>exclusive in effect</em> — <code>full</code> wins if both present (no double-count).</p>
 <h3 id="b-assembly">B. Assembly</h3>
 <ol>
@@ -315,7 +321,7 @@
 <tbody>
 <tr>
 <td>Leaking unrelated history into a throwaway run</td>
-<td>Default <code>none</code>; explicit opt-in only</td>
+<td>Default <code>full+memory</code> (Q12) is a deliberate trade-off; narrow per call (<code>[]</code>/<code>["read_paths"]</code>) or per session for throwaway runs</td>
 </tr>
 <tr>
 <td>Blowing the child&rsquo;s context window</td>
@@ -331,7 +337,7 @@
 </tr>
 <tr>
 <td>Cost amplification</td>
-<td>Context tokens are charged to the child run; capped + opt-in keeps that deliberate</td>
+<td>Context tokens are charged to the child run; capped, but <strong>on by default</strong> (Q12) — opt out for throwaway runs</td>
 </tr>
 </tbody>
 </table>
@@ -403,7 +409,7 @@
 <tr>
 <td>Q12</td>
 <td>Default <code>none</code> (opt-in only) to preserve today&rsquo;s cost/behavior?</td>
-<td>Yes</td>
+<td><strong>Custom</strong> — default <code>full+memory</code> (opt-out, not opt-in)</td>
 </tr>
 </tbody>
 </table>
@@ -426,18 +432,18 @@ internal/session/
 internal/api/
   settings.go    — Agents preset editor gains context fields
 </code></pre>
-<p><strong>Tests:</strong> <code>Assemble</code> is a pure function (given fixture session + spec → deterministic block; truncation/drop order; shorthand resolution; <code>none</code> = empty); resolution order (call → session → default); routed-turn and tool both inject; default off when nothing set; no secrets in block (grep for <code>orb_ak_</code>/key patterns); marker-only in prompt_preview.</p>
+<p><strong>Tests:</strong> <code>Assemble</code> is a pure function (given fixture session + spec → deterministic block; truncation/drop order; shorthand resolution; <code>none</code> = empty; default <code>full+memory</code> when nothing set); resolution order (call → session → default); routed-turn and tool both inject; no secrets in block (grep for <code>orb_ak_</code>/key patterns); marker-only in prompt_preview.</p>
 <h2 id="consequences">Consequences</h2>
 <h3 id="positive">Positive</h3>
 <ul>
 <li>Removes the &ldquo;paste a paraphrase&rdquo; ritual for cross-session handoffs.</li>
 <li>One mechanism serves both the tool and routed turns.</li>
 <li>Composable + capped = predictable cost, no context-window blowouts.</li>
-<li>Default-off keeps cheap throwaway runs cheap and isolated.</li>
+<li>Default <code>full+memory</code> (Q12) means handoff works out of the box; the cost is that context tokens are billed by default — operators must opt <em>out</em> for throwaway runs (documented in tool help + session tool).</li>
 </ul>
 <h3 id="negative-risks">Negative / risks</h3>
 <ul>
-<li>Context tokens are billed to the child run — must stay opt-in and capped.</li>
+<li>Context tokens are billed to the child run — default <code>full+memory</code> (Q12) is deliberate, but must stay capped and easily opted out of.</li>
 <li>&ldquo;Full&rdquo; context is inherently bounded and may still omit what the child needed (no substitute for reading the repo on disk).</li>
 <li>A poorly-chosen <code>auto</code> heuristic could over/under-inject (mitigated: <code>auto</code> is shallow and explicit <code>none</code>/list always wins).</li>
 <li>Two config surfaces for the default (preset vs global) need clear precedence docs.</li>
@@ -474,6 +480,10 @@ internal/api/
 <tr>
 <td>2026-09-16</td>
 <td>Proposed — context source-list, three-layer resolution, both subprocess paths</td>
+</tr>
+<tr>
+<td>2026-09-17</td>
+<td><strong>Accepted</strong> — locked Q1–Q11 rec; Q12 custom (default <code>full+memory</code>, not <code>none</code>)</td>
 </tr>
 </tbody>
 </table>

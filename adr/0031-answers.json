@@ -1,0 +1,104 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0031",
+  "title": "Subprocess context injection — pick-and-choose session context",
+  "updated_at": "2026-09-17T09:44:42.123Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Source-list (composable) — context:['full','memory'] composes; an enum makes sources mutually exclusive.",
+      "notes": "",
+      "question": "context as a source-list vs a single enum?",
+      "rec": "Source-list (composable) — context:['full','memory'] composes; an enum makes sources mutually exclusive."
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes — compact, full, memory, read_paths all ship in v1.",
+      "notes": "",
+      "question": "Sources in v1: compact, full, memory, read_paths?",
+      "rec": "Yes — compact, full, memory, read_paths all ship in v1."
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "full = recent raw turns (capped) + compact of older; no double-count when both full and compact listed.",
+      "notes": "",
+      "question": "full = recent raw + compact of older (no double-count)?",
+      "rec": "full = recent raw turns (capped) + compact of older; no double-count when both full and compact listed."
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Prepend to prompt (driver-agnostic, one mechanism for grok/claude/opencode); claude --append-system-prompt and context-file are rejected as non-uniform.",
+      "notes": "",
+      "question": "Delivery — prepend vs --append-system-prompt vs context file?",
+      "rec": "Prepend to prompt (driver-agnostic, one mechanism for grok/claude/opencode); claude --append-system-prompt and context-file are rejected as non-uniform."
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Total cap 16000 chars; per-source caps compact 6000 / full 12000+6000 / memory 4000 / read_paths 1500.",
+      "notes": "",
+      "question": "Caps — total 16000, per-source as specced?",
+      "rec": "Total cap 16000 chars; per-source caps compact 6000 / full 12000+6000 / memory 4000 / read_paths 1500."
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "memory seeded from prompt + recent user turns, top-K = 5.",
+      "notes": "",
+      "question": "memory seeding — prompt + recent turns, top-K 5?",
+      "rec": "memory seeded from prompt + recent user turns, top-K = 5."
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes — TurnContext.ReadPaths already exists; near-free, useful for file-edit handoffs.",
+      "notes": "",
+      "question": "Include read_paths?",
+      "rec": "Yes — TurnContext.ReadPaths already exists; near-free, useful for file-edit handoffs."
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "New tool session_set_subprocess_context (mirrors session_set_model / session_set_agent_preset); echoes effective config; [] or clear reverts.",
+      "notes": "",
+      "question": "Per-session override via session_set_subprocess_context?",
+      "rec": "New tool session_set_subprocess_context (mirrors session_set_model / session_set_agent_preset); echoes effective config; [] or clear reverts."
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Preset default as agent_presets.context / context_max_chars (schema v9), edited in Settings → Agents (ADR-0030 preset editor).",
+      "notes": "",
+      "question": "Preset-level default in Settings → Agents?",
+      "rec": "Preset default as agent_presets.context / context_max_chars (schema v9), edited in Settings → Agents (ADR-0030 preset editor)."
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Per-call → per-session → preset/global default; max_chars resolves the same way.",
+      "notes": "",
+      "question": "Resolution order — call → session → default?",
+      "rec": "Per-call → per-session → preset/global default; max_chars resolves the same way."
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Yes — routed turns (ADR-0030) honor the same resolution via TurnOpts context override; one mechanism for both paths.",
+      "notes": "",
+      "question": "Routed turns honor the same mechanism?",
+      "rec": "Yes — routed turns (ADR-0030) honor the same resolution via TurnOpts context override; one mechanism for both paths."
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "custom",
+      "decision": "Default to full+memory.",
+      "notes": "Default context is full+memory (not none); operator opts out via per-call [] / session override / preset default. Changes the cost/leakage posture vs the rec (opt-in none).",
+      "question": "Default none (opt-in only)?",
+      "rec": "Default none (opt-in only) — preserves today's cost/behavior; cheap throwaway runs stay isolated."
+    }
+  }
+}

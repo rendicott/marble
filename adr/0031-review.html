@@ -92,7 +92,7 @@
     <div class="brand">
       <span class="mark"></span>
       <span>Marble · ADR-0031</span>
-      <span class="status">PROPOSED · open for review</span>
+      <span class="status" style="background:#1a3a28;color:var(--ok);border-color:#2d6a4f">ACCEPTED · Q1–Q12 locked</span>
     </div>
     <nav class="toc">
       <a href="0031-doc.html">Read ADR</a>
@@ -113,17 +113,17 @@
         <code>call_agent_process</code> and routed turns spawn the child <strong>cold</strong> — only the prompt crosses.
         This ADR adds an explicit <code>context</code> control: a <strong>list of named sources</strong>
         (transcript, memory, files-read) assembled into one size-capped block and injected into the child.
-        Default <strong>off</strong>. Chosen per call, per session, or as a preset/global default.
+        Default <strong>full+memory</strong>. Chosen per call, per session, or as a preset/global default.
       </p>
       <div class="meta-row">
-        <div class="meta"><b>Status</b> Proposed · open for review</div>
+        <div class="meta"><b>Status</b> Accepted · Q1–Q12 locked</div>
         <div class="meta"><b>Date</b> 2026-09-16</div>
         <div class="meta"><b>Extends</b> 0014 · 0030 · 0018 · 0026 · 0022</div>
       </div>
       <div class="chips">
         <span class="chip"><strong>shape</strong> source list, not enum</span>
         <span class="chip"><strong>sources</strong> compact · full · memory · read_paths</span>
-        <span class="chip"><strong>default</strong> none</span>
+        <span class="chip"><strong>default</strong> full+memory</span>
         <span class="chip"><strong>delivery</strong> prepend to prompt</span>
         <span class="chip"><strong>resolution</strong> call → session → default</span>
       </div>
@@ -226,64 +226,64 @@ session_set_subprocess_context { "context": ["full","memory"], "max_chars": 2400
       <h2>Open questions (Q1–Q12)</h2>
       <p class="muted">All recommend "use rec".</p>
 
-      <div class="q" data-qid="Q1" data-rec="Source-list (composable) — context:['full','memory'] composes; an enum makes sources mutually exclusive.">
+      <div class="q" data-qid="Q1" data-rec="Source-list (composable) — context:['full','memory'] composes; an enum makes sources mutually exclusive." data-status="locked" data-decision="Source-list (composable) — context:['full','memory'] composes; an enum makes sources mutually exclusive.">
         <strong>Q1</strong> <code>context</code> as a source-list vs a single enum?
         <div class="rec">Rec: <strong>source-list</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q2" data-rec="Yes — compact, full, memory, read_paths all ship in v1.">
+      <div class="q" data-qid="Q2" data-rec="Yes — compact, full, memory, read_paths all ship in v1." data-status="locked" data-decision="Yes — compact, full, memory, read_paths all ship in v1.">
         <strong>Q2</strong> Sources in v1: compact, full, memory, read_paths?
         <div class="rec">Rec: <strong>all four</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q3" data-rec="full = recent raw turns (capped) + compact of older; no double-count when both full and compact listed.">
+      <div class="q" data-qid="Q3" data-rec="full = recent raw turns (capped) + compact of older; no double-count when both full and compact listed." data-status="locked" data-decision="full = recent raw turns (capped) + compact of older; no double-count when both full and compact listed.">
         <strong>Q3</strong> <code>full</code> = recent raw + compact of older (no double-count)?
         <div class="rec">Rec: <strong>yes</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q4" data-rec="Prepend to prompt (driver-agnostic, one mechanism for grok/claude/opencode); claude --append-system-prompt and context-file are rejected as non-uniform.">
+      <div class="q" data-qid="Q4" data-rec="Prepend to prompt (driver-agnostic, one mechanism for grok/claude/opencode); claude --append-system-prompt and context-file are rejected as non-uniform." data-status="locked" data-decision="Prepend to prompt (driver-agnostic, one mechanism for grok/claude/opencode); claude --append-system-prompt and context-file are rejected as non-uniform.">
         <strong>Q4</strong> Delivery — prepend vs <code>--append-system-prompt</code> vs context file?
         <div class="rec">Rec: <strong>prepend to prompt</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q5" data-rec="Total cap 16000 chars; per-source caps compact 6000 / full 12000+6000 / memory 4000 / read_paths 1500.">
+      <div class="q" data-qid="Q5" data-rec="Total cap 16000 chars; per-source caps compact 6000 / full 12000+6000 / memory 4000 / read_paths 1500." data-status="locked" data-decision="Total cap 16000 chars; per-source caps compact 6000 / full 12000+6000 / memory 4000 / read_paths 1500.">
         <strong>Q5</strong> Caps — total 16000, per-source as specced?
         <div class="rec">Rec: <strong>yes</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q6" data-rec="memory seeded from prompt + recent user turns, top-K = 5.">
+      <div class="q" data-qid="Q6" data-rec="memory seeded from prompt + recent user turns, top-K = 5." data-status="locked" data-decision="memory seeded from prompt + recent user turns, top-K = 5.">
         <strong>Q6</strong> <code>memory</code> seeding — prompt + recent turns, top-K 5?
         <div class="rec">Rec: <strong>yes</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q7" data-rec="Yes — TurnContext.ReadPaths already exists; near-free, useful for file-edit handoffs.">
+      <div class="q" data-qid="Q7" data-rec="Yes — TurnContext.ReadPaths already exists; near-free, useful for file-edit handoffs." data-status="locked" data-decision="Yes — TurnContext.ReadPaths already exists; near-free, useful for file-edit handoffs.">
         <strong>Q7</strong> Include <code>read_paths</code>?
         <div class="rec">Rec: <strong>yes</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q8" data-rec="New tool session_set_subprocess_context (mirrors session_set_model / session_set_agent_preset); echoes effective config; [] or clear reverts.">
+      <div class="q" data-qid="Q8" data-rec="New tool session_set_subprocess_context (mirrors session_set_model / session_set_agent_preset); echoes effective config; [] or clear reverts." data-status="locked" data-decision="New tool session_set_subprocess_context (mirrors session_set_model / session_set_agent_preset); echoes effective config; [] or clear reverts.">
         <strong>Q8</strong> Per-session override via <code>session_set_subprocess_context</code>?
         <div class="rec">Rec: <strong>yes</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q9" data-rec="Preset default as agent_presets.context / context_max_chars (schema v9), edited in Settings → Agents (ADR-0030 preset editor).">
+      <div class="q" data-qid="Q9" data-rec="Preset default as agent_presets.context / context_max_chars (schema v9), edited in Settings → Agents (ADR-0030 preset editor)." data-status="locked" data-decision="Preset default as agent_presets.context / context_max_chars (schema v9), edited in Settings → Agents (ADR-0030 preset editor).">
         <strong>Q9</strong> Preset-level default in Settings → Agents?
         <div class="rec">Rec: <strong>yes</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q10" data-rec="Per-call → per-session → preset/global default; max_chars resolves the same way.">
+      <div class="q" data-qid="Q10" data-rec="Per-call → per-session → preset/global default; max_chars resolves the same way." data-status="locked" data-decision="Per-call → per-session → preset/global default; max_chars resolves the same way.">
         <strong>Q10</strong> Resolution order — call → session → default?
         <div class="rec">Rec: <strong>yes</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q11" data-rec="Yes — routed turns (ADR-0030) honor the same resolution via TurnOpts context override; one mechanism for both paths.">
+      <div class="q" data-qid="Q11" data-rec="Yes — routed turns (ADR-0030) honor the same resolution via TurnOpts context override; one mechanism for both paths." data-status="locked" data-decision="Yes — routed turns (ADR-0030) honor the same resolution via TurnOpts context override; one mechanism for both paths.">
         <strong>Q11</strong> Routed turns honor the same mechanism?
         <div class="rec">Rec: <strong>yes</strong>.</div>
       </div>
 
-      <div class="q" data-qid="Q12" data-rec="Default none (opt-in only) — preserves today's cost/behavior; cheap throwaway runs stay isolated.">
+      <div class="q" data-qid="Q12" data-rec="Default none (opt-in only) — preserves today's cost/behavior; cheap throwaway runs stay isolated." data-status="locked" data-decision="Default to full+memory.">
         <strong>Q12</strong> Default <code>none</code>?
-        <div class="rec">Rec: <strong>yes, opt-in only</strong>.</div>
+        <div class="rec">Locked (custom): <strong>default to full+memory</strong> — not opt-in none.</div>
       </div>
     </section>
   </main>
@@ -291,7 +291,7 @@ session_set_subprocess_context { "context": ["full","memory"], "max_chars": 2400
   <footer>
     Marble · ADR-0031 · <strong>proposed</strong> ·
     <a href="0031-subprocess-context.md">markdown</a> ·
-    Q1–Q12 open
+    Q1–Q12 locked
   </footer>
   <script src="review-kit.js"></script>
 </body>
