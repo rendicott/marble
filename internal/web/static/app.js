@@ -9,6 +9,8 @@
     transcript: document.getElementById("transcript"),
     input: document.getElementById("input"),
     send: document.getElementById("btn-send"),
+    routePop: document.getElementById("route-popover"),
+    routePopList: document.getElementById("route-pop-list"),
     form: document.getElementById("composer"),
     newBtn: document.getElementById("btn-new"),
     sessionsBtn: document.getElementById("btn-sessions"),
@@ -517,18 +519,27 @@
   }
 
   let catalogModels = []; // cached for picker
+  let catalogPresets = [];
   let modelPickerBusy = false;
+  let pendingRoutePreset = "";
+  let routePopoverOpen = false;
 
   async function loadCatalogModels() {
     try {
       const data = await api("/api/models");
       catalogModels = data.models || [];
-      fillModelSelect(els.sessionModel, true);
-      const cronSel = document.getElementById("cron-model");
-      if (cronSel) fillModelSelect(cronSel, false);
     } catch {
       catalogModels = [];
     }
+    try {
+      const ap = await api("/api/agent-presets?detected=1");
+      catalogPresets = ap.presets || [];
+    } catch {
+      catalogPresets = [];
+    }
+    fillRouteSelect(els.sessionModel);
+    const cronSel = document.getElementById("cron-model");
+    if (cronSel) fillModelSelect(cronSel, false);
   }
 
   function fillModelSelect(sel, includeProcessEmpty) {
@@ -550,11 +561,44 @@
     if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
   }
 
-  function setSessionModelPicker(modelId, disabled) {
+  function fillRouteSelect(sel) {
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = "";
+    const opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = "Process default";
+    sel.appendChild(opt0);
+    const gModels = document.createElement("optgroup");
+    gModels.label = "Models";
+    for (const m of catalogModels) {
+      if (m.id === "process") continue;
+      if (m.enabled === false) continue;
+      const o = document.createElement("option");
+      o.value = m.id || "";
+      o.textContent = (m.display_name || m.id) + (m.model ? " · " + m.model : "");
+      gModels.appendChild(o);
+    }
+    if (gModels.childElementCount) sel.appendChild(gModels);
+    const gAgents = document.createElement("optgroup");
+    gAgents.label = "Subprocess";
+    for (const p of catalogPresets) {
+      if (p.enabled === false) continue;
+      const o = document.createElement("option");
+      o.value = "agent:" + (p.id || "");
+      o.textContent = "↳ " + (p.display_name || p.id) + (p.driver ? " · " + p.driver : "");
+      gAgents.appendChild(o);
+    }
+    if (gAgents.childElementCount) sel.appendChild(gAgents);
+    if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  }
+
+  function setSessionModelPicker(modelId, disabled, agentPresetId) {
     if (!els.sessionModel) return;
     modelPickerBusy = true;
-    fillModelSelect(els.sessionModel, true);
-    els.sessionModel.value = modelId || "";
+    fillRouteSelect(els.sessionModel);
+    const v = agentPresetId ? "agent:" + agentPresetId : modelId || "";
+    els.sessionModel.value = v;
     els.sessionModel.disabled = !!disabled;
     modelPickerBusy = false;
   }
@@ -2047,8 +2091,8 @@
       } else if (data.type === "confirm" && data.confirm) {
         showPeerConfirm(data.confirm);
       } else if (data.type === "session_meta") {
-        if (data.model_id !== undefined && data.model_id !== null) {
-          setSessionModelPicker(data.model_id || "", busy);
+        if (data.model_id !== undefined && data.model_id !== null || data.agent_preset_id !== undefined) {
+          setSessionModelPicker(data.model_id || "", busy, data.agent_preset_id || "");
         }
         if (data.model_effective && data.model_effective.capabilities) {
           activeCapImages = !!data.model_effective.capabilities.images;
@@ -2176,7 +2220,7 @@
     activeCapImages = !!(me.capabilities && me.capabilities.images);
     updateAttachWarn();
     renderTranscript({ forceScroll: true });
-    setSessionModelPicker(sum.model_id || "", sum.status === "closed" || busy);
+    setSessionModelPicker(sum.model_id || "", sum.status === "closed" || busy, sum.agent_preset_id || "");
     setComposerEnabled(sum.status !== "closed");
     paintDensityToggles();
     if (sum.status !== "closed") {
@@ -2377,20 +2421,23 @@
   if (els.sessionModel) {
     els.sessionModel.addEventListener("change", async () => {
       if (modelPickerBusy || !activeId || busy) return;
-      const modelId = els.sessionModel.value || "";
+      const raw = els.sessionModel.value || "";
+      const body = raw.startsWith("agent:")
+        ? { agent_preset_id: raw.slice("agent:".length) }
+        : { model_id: raw, agent_preset_id: "" };
       try {
         const res = await api(`/api/sessions/${encodeURIComponent(activeId)}`, {
           method: "PATCH",
-          body: JSON.stringify({ model_id: modelId }),
+          body: JSON.stringify(body),
         });
         const sum = res.session || {};
-        setSessionModelPicker(sum.model_id || modelId, false);
+        setSessionModelPicker(sum.model_id || "", false, sum.agent_preset_id || "");
       } catch (e) {
         alert(e.message || String(e));
-        // reload picker from session
         try {
           const data = await api(`/api/sessions/${encodeURIComponent(activeId)}`);
-          setSessionModelPicker((data.session && data.session.model_id) || "", busy);
+          const sum = (data && data.session) || {};
+          setSessionModelPicker(sum.model_id || "", busy, sum.agent_preset_id || "");
         } catch {
           /* ignore */
         }
@@ -2782,6 +2829,101 @@
     }
   }
 
+  function paintRouteChip() {
+    if (!els.send) return;
+    if (pendingRoutePreset) {
+      els.send.textContent = "Send → " + pendingRoutePreset;
+      els.send.title = "This turn routes to " + pendingRoutePreset + " (click Send). Right-click to change.";
+    } else {
+      els.send.textContent = "Send";
+      els.send.title = "Send · right-click / long-press to route this turn to a subprocess";
+    }
+  }
+
+  function hideRoutePopover() {
+    routePopoverOpen = false;
+    if (els.routePop) els.routePop.hidden = true;
+  }
+
+  function showRoutePopover() {
+    if (!els.routePop || !els.routePopList) return;
+    const list = catalogPresets.filter((p) => p.enabled !== false);
+    if (!list.length) {
+      els.routePopList.innerHTML = `<p class="hint" style="margin:0">No detected presets. Add one in Settings → Agents.</p>`;
+    } else {
+      els.routePopList.innerHTML = list
+        .map((p) => {
+          const id = p.id || "";
+          const sel = pendingRoutePreset === id ? " sel" : "";
+          return `<button type="button" class="icon-btn route-pick${sel}" data-id="${id}">↳ ${id}${p.driver ? " · " + p.driver : ""}</button>`;
+        })
+        .join("");
+      els.routePopList.querySelectorAll(".route-pick").forEach((btn) => {
+        btn.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          pendingRoutePreset = btn.getAttribute("data-id") || "";
+          paintRouteChip();
+          hideRoutePopover();
+        };
+      });
+    }
+    els.routePop.hidden = false;
+    routePopoverOpen = true;
+  }
+
+  if (els.send) {
+    const LONG_MS = 480;
+    let lpTimer = null;
+    let lpFired = false;
+    const clearLP = () => {
+      if (lpTimer) {
+        clearTimeout(lpTimer);
+        lpTimer = null;
+      }
+    };
+    const isCoarse = () => {
+      try {
+        return window.matchMedia("(pointer: coarse)").matches;
+      } catch {
+        return false;
+      }
+    };
+    els.send.addEventListener("pointerdown", (ev) => {
+      if (els.send.disabled) return;
+      if (ev.pointerType === "mouse" || (!ev.pointerType && !isCoarse())) return;
+      lpFired = false;
+      clearLP();
+      lpTimer = setTimeout(() => {
+        lpFired = true;
+        showRoutePopover();
+      }, LONG_MS);
+    });
+    els.send.addEventListener("pointerup", clearLP);
+    els.send.addEventListener("pointerleave", clearLP);
+    els.send.addEventListener("pointercancel", clearLP);
+    els.send.addEventListener("contextmenu", (ev) => {
+      if (els.send.disabled) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      lpFired = true;
+      if (routePopoverOpen) hideRoutePopover();
+      else showRoutePopover();
+    });
+    els.send.addEventListener("click", (ev) => {
+      if (lpFired) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        lpFired = false;
+      }
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!routePopoverOpen || !els.routePop) return;
+    if (els.routePop.contains(e.target) || (els.send && els.send.contains(e.target))) return;
+    hideRoutePopover();
+  });
+
   els.form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!activeId || busy || attachUploading > 0) return;
@@ -2802,9 +2944,15 @@
     setComposerEnabled(true);
     setStatus("running");
     try {
+      const payload = { content, attachment_ids: ids };
+      if (pendingRoutePreset) {
+        payload.agent_preset_id = pendingRoutePreset;
+        pendingRoutePreset = "";
+        paintRouteChip();
+      }
       await api(`/api/sessions/${activeId}/messages`, {
         method: "POST",
-        body: JSON.stringify({ content, attachment_ids: ids }),
+        body: JSON.stringify(payload),
       });
     } catch (err) {
       busy = false;

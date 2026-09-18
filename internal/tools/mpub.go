@@ -12,7 +12,7 @@ type mpubPublishArgs struct {
 	Title       string   `json:"title"`
 	Content     string   `json:"content"`
 	ContentType string   `json:"content_type"`
-	IfExists    string   `json:"if_exists"` // overwrite (default) | fail
+	IfExists    string   `json:"if_exists"`  // overwrite (default) | fail
 	Visibility  string   `json:"visibility"` // public | private (default private for new)
 	Tags        []string `json:"tags"`
 }
@@ -97,7 +97,7 @@ func (r *Registry) mpubList(argsJSON string) (string, error) {
 		rows = append(rows, row{
 			Slug: m.Slug, Title: m.Title, ContentType: m.ContentType,
 			Visibility: mpub.EffectiveVisibility(m),
-			UpdatedAt: m.UpdatedAt, Path: "/mpub/" + m.Slug,
+			UpdatedAt:  m.UpdatedAt, Path: "/mpub/" + m.Slug,
 			URL: mpub.PublicURL(r.publicAddr(), m.Slug), Tags: m.Tags,
 		})
 	}

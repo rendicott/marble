@@ -5,27 +5,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/memory"
 	"github.com/rendicott/marble/internal/model"
 )
 
 // Event is a streamable update for the UI.
 type Event struct {
-	Type        string                 `json:"type"`
-	SessionID   string                 `json:"session_id"`
-	Message     *Message               `json:"message,omitempty"`
-	Tool        *ToolInfo              `json:"tool,omitempty"`
-	Attachment  *AttachmentInfo        `json:"attachment,omitempty"`
-	Turn        *TurnProgress          `json:"turn,omitempty"`
-	Confirm     map[string]interface{} `json:"confirm,omitempty"` // computer_confirm pending (Accept/Deny in harness UI)
-	Error       string                 `json:"error,omitempty"`
-	Status      string                 `json:"status,omitempty"`
-	ModelID     string                 `json:"model_id,omitempty"`
-	Model       string                 `json:"model,omitempty"`
-	ModelEff    map[string]interface{} `json:"model_effective,omitempty"`
-	Title       string                 `json:"title,omitempty"` // session_meta title refresh
-	TitleCustom bool                   `json:"title_custom,omitempty"`
-	At          time.Time              `json:"at"`
+	Type          string                 `json:"type"`
+	SessionID     string                 `json:"session_id"`
+	Message       *Message               `json:"message,omitempty"`
+	Tool          *ToolInfo              `json:"tool,omitempty"`
+	Attachment    *AttachmentInfo        `json:"attachment,omitempty"`
+	Turn          *TurnProgress          `json:"turn,omitempty"`
+	Confirm       map[string]interface{} `json:"confirm,omitempty"` // computer_confirm pending (Accept/Deny in harness UI)
+	Error         string                 `json:"error,omitempty"`
+	Status        string                 `json:"status,omitempty"`
+	ModelID       string                 `json:"model_id,omitempty"`
+	Model         string                 `json:"model,omitempty"`
+	AgentPresetID string                 `json:"agent_preset_id,omitempty"`
+	ModelEff      map[string]interface{} `json:"model_effective,omitempty"`
+	Title         string                 `json:"title,omitempty"` // session_meta title refresh
+	TitleCustom   bool                   `json:"title_custom,omitempty"`
+	At            time.Time              `json:"at"`
 }
 
 // AttachmentInfo is a UI attachment (attach_file tool).
@@ -96,6 +98,10 @@ type Summary struct {
 	// Model selection (ADR-0018)
 	ModelID string `json:"model_id,omitempty"`
 	Model   string `json:"model,omitempty"` // last effective provider string
+	// AgentPresetID is subprocess session lock (ADR-0030); exclusive with ModelID.
+	AgentPresetID string `json:"agent_preset_id,omitempty"`
+	// SubprocessContext is the session override for ADR-0031 context injection.
+	SubprocessContext *agentproc.ContextSpec `json:"subprocess_context,omitempty"`
 	// Computer bind (ADR-0020)
 	ComputerID string `json:"computer_id,omitempty"`
 	// LastPeerAction is a short blurb from the latest computer_* tool (session info).
@@ -132,6 +138,10 @@ type Session struct {
 	ModelID string
 	// ProviderModel is last effective provider model string (KD12).
 	ProviderModel string
+	// AgentPresetID locks user turns to a subprocess preset (ADR-0030). Exclusive with ModelID.
+	AgentPresetID string
+	// subprocessContext is the ADR-0031 session override (Set=false → inherit).
+	subprocessContext agentproc.ContextSpec
 	// ComputerID is bound desktop peer slug (ADR-0020); "" = unbound.
 	ComputerID string
 	// ReasoningEffort is none|low|medium|high (operator preference for thinking models).
@@ -232,6 +242,7 @@ Desktop / Marble Peer (also called Pier): computer_list/bind/screenshot/desktop_
 Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), surgical edits (edit_file requires prior file_read in the same turn; apply_patch is atomic), shell_execute (policy-limited; prefer start_background_task for jobs >60s), background tasks, schedule_continuation, get_context_usage, session_compact when context is high, memory_* and skill_* for long-term knowledge, message_attach for durable chat chips the operator can download (png/jpeg/webp/gif, txt/md/csv/json/html/svg; no audio/PDF), attach_from_url to fetch remote images (http/https) into chat attachments — prefer that over shell-curl; attach_file only for ephemeral workspace preview (vanishes when the turn ends), web_fetch for HTTP(S) page retrieval.
 Cron: use cron_list/get/create/update/delete/run for durable recurring schedules (SQLite, survive restarts). schedule_continuation is one-shot delay or wait-for-background-task only. Prefer interval ≥ 60s; target a session_id for a known thread, or omit session_id so the first fire creates a session. Keep cron prompts short.
 Sinks: use manage_sinks to list/create/update/delete/test turn sinks (Orb, Slack, ntfy, Discord, webhook, stdout) that mirror finished turns. secret_env is an env-var NAME only — never the secret; operator stores KEY=secret in $MEMORY/env (Settings → Secrets). action=set_override (inherit|on|off) / pause_all / resume_all apply to THIS session only; create/update/delete change the global sinks.json.
+Subprocess presets: agent_preset_list / agent_preset_get / session_set_agent_preset lock this session to a local harness (grok/claude/opencode) so user turns skip the Marble model. Create/edit presets in Settings → Agents. call_agent_process remains for one-off tool calls. Subprocess context defaults to full+memory (transcript + memory hits); session_set_subprocess_context or call_agent_process context=[] / none for an isolated throwaway run.
 mpub_publish / mpub_list / mpub_get / mpub_unpublish / mpub_set_visibility: publish human-facing pages under $MEMORY/mpub, served at /mpub/{slug}. Default visibility is private (allowlisted admins only when OAuth is on). Set visibility=public only when the user explicitly asks to share openly. Use mpub_set_visibility to promote/demote without rewriting the body. Primary content_type text/html; markdown also supported. Use for research notes and shareable results — not for project source files (use workspace tools) and not for agent memory_write knowledge.
 MCP tools (if configured in mcp.json) appear as mcp_<server>_<tool> plus resource/prompt helpers — use them for web search (e.g. Tavily MCP) and other integrations.
 
@@ -259,25 +270,27 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 		kind = "user"
 	}
 	sum := Summary{
-		ID:              s.ID,
-		Title:           s.Title,
-		TitleCustom:     s.TitleCustom,
-		Kind:            kind,
-		ParentID:        s.ParentID,
-		CreatedAt:       s.CreatedAt,
-		UpdatedAt:       s.UpdatedAt,
-		ClosedAt:        s.ClosedAt,
-		Status:          st,
-		MessageCount:    len(s.ui),
-		Busy:            s.busy,
-		Loaded:          loaded,
-		Dirty:           s.dirty,
-		ModelID:         s.ModelID,
-		Model:           s.ProviderModel,
-		ComputerID:      s.ComputerID,
-		ReasoningEffort: s.ReasoningEffort,
-		LastPeerAction:  s.lastPeerAction,
-		SinkOverrides:   copySinkOverrides(s.SinkOverrides),
+		ID:                s.ID,
+		Title:             s.Title,
+		TitleCustom:       s.TitleCustom,
+		Kind:              kind,
+		ParentID:          s.ParentID,
+		CreatedAt:         s.CreatedAt,
+		UpdatedAt:         s.UpdatedAt,
+		ClosedAt:          s.ClosedAt,
+		Status:            st,
+		MessageCount:      len(s.ui),
+		Busy:              s.busy,
+		Loaded:            loaded,
+		Dirty:             s.dirty,
+		ModelID:           s.ModelID,
+		Model:             s.ProviderModel,
+		AgentPresetID:     s.AgentPresetID,
+		ComputerID:        s.ComputerID,
+		SubprocessContext: specPtr(s.subprocessContext),
+		ReasoningEffort:   s.ReasoningEffort,
+		LastPeerAction:    s.lastPeerAction,
+		SinkOverrides:     copySinkOverrides(s.SinkOverrides),
 	}
 	if !s.lastPeerActionAt.IsZero() {
 		t := s.lastPeerActionAt
@@ -488,21 +501,23 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 	}
 	return &memory.SessionDoc{
 		SessionMeta: memory.SessionMeta{
-			ID:              s.ID,
-			Title:           s.Title,
-			TitleCustom:     s.TitleCustom,
-			Kind:            kind,
-			ParentID:        s.ParentID,
-			CreatedAt:       s.CreatedAt,
-			UpdatedAt:       s.UpdatedAt,
-			ClosedAt:        s.ClosedAt,
-			Status:          st,
-			MessageCount:    len(msgs),
-			Workspace:       workspace,
-			Model:           model,
-			ModelID:         s.ModelID,
-			ReasoningEffort: s.ReasoningEffort,
-			SinkOverrides:   copySinkOverrides(s.SinkOverrides),
+			ID:                s.ID,
+			Title:             s.Title,
+			TitleCustom:       s.TitleCustom,
+			Kind:              kind,
+			ParentID:          s.ParentID,
+			CreatedAt:         s.CreatedAt,
+			UpdatedAt:         s.UpdatedAt,
+			ClosedAt:          s.ClosedAt,
+			Status:            st,
+			MessageCount:      len(msgs),
+			Workspace:         workspace,
+			Model:             model,
+			ModelID:           s.ModelID,
+			AgentPresetID:     s.AgentPresetID,
+			SubprocessContext: encodeSubprocessContext(s.subprocessContext),
+			ReasoningEffort:   s.ReasoningEffort,
+			SinkOverrides:     copySinkOverrides(s.SinkOverrides),
 		},
 		Messages: msgs,
 	}
@@ -542,6 +557,8 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	}
 	s.ModelID = doc.ModelID
 	s.ProviderModel = doc.Model
+	s.AgentPresetID = doc.AgentPresetID
+	s.subprocessContext = decodeSubprocessContext(doc.SubprocessContext)
 	s.ReasoningEffort = model.NormalizeReasoningEffort(doc.ReasoningEffort)
 	s.SinkOverrides = copySinkOverrides(doc.SinkOverrides)
 	s.ui = make([]Message, 0, len(doc.Messages))

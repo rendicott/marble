@@ -10,18 +10,20 @@ import (
 )
 
 type agentProcArgs struct {
-	Format       string   `json:"format"`
-	Prompt       string   `json:"prompt"`
-	CWD          string   `json:"cwd"`
-	Workdir      string   `json:"workdir"`
-	OutputFormat string   `json:"output_format"`
-	TimeoutSec   int      `json:"timeout_sec"`
-	Model        string   `json:"model"`
-	ExtraArgs    []string `json:"extra_args"`
-	Background   bool     `json:"background"`
-	TaskID       string   `json:"task_id"` // poll existing bg agent task
-	Detail       bool     `json:"detail"`  // include full command/prompt on poll
-	Kill         bool     `json:"kill"`    // with task_id: terminate agent process group
+	Format          string      `json:"format"`
+	Prompt          string      `json:"prompt"`
+	CWD             string      `json:"cwd"`
+	Workdir         string      `json:"workdir"`
+	OutputFormat    string      `json:"output_format"`
+	TimeoutSec      int         `json:"timeout_sec"`
+	Model           string      `json:"model"`
+	ExtraArgs       []string    `json:"extra_args"`
+	Background      bool        `json:"background"`
+	TaskID          string      `json:"task_id"` // poll existing bg agent task
+	Detail          bool        `json:"detail"`  // include full command/prompt on poll
+	Kill            bool        `json:"kill"`
+	Context         interface{} `json:"context"`
+	ContextMaxChars int         `json:"context_max_chars"`
 }
 
 func (r *Registry) callAgentProcess(argsJSON string, tc *TurnContext) (string, error) {
@@ -82,6 +84,10 @@ func (r *Registry) callAgentProcess(argsJSON string, tc *TurnContext) (string, e
 		ExtraArgs:    a.ExtraArgs,
 		Background:   a.Background,
 	}
+	if block, marker := r.assembleAgentContext(tc, a.Context, a.ContextMaxChars, a.Prompt); marker != "" || block != "" {
+		req.ContextBlock = block
+		req.ContextMarker = marker
+	}
 
 	// Prefer background for multi-minute agent runs so the Marble turn is not blocked.
 	if a.Background {
@@ -91,14 +97,14 @@ func (r *Registry) callAgentProcess(argsJSON string, tc *TurnContext) (string, e
 		}
 		// First response includes command once; subsequent polls omit unless detail=true
 		return mustJSON(map[string]interface{}{
-			"agent_task_id": t.ID,
-			"status":        t.Status,
-			"format":        t.Format,
-			"cwd":           t.CWD,
-			"pid":           t.PID,
-			"started_at":    t.StartedAt.Format(time.RFC3339),
-			"command":       t.Command,
-			"prompt_preview": truncateStr(t.Prompt, 200),
+			"agent_task_id":  t.ID,
+			"status":         t.Status,
+			"format":         t.Format,
+			"cwd":            t.CWD,
+			"pid":            t.PID,
+			"started_at":     t.StartedAt.Format(time.RFC3339),
+			"command":        t.Command,
+			"prompt_preview": contextPreview(t),
 			"poll": map[string]string{
 				"task_id": t.ID,
 			},
@@ -157,10 +163,13 @@ func taskView(t *agentproc.Task, detail bool) map[string]interface{} {
 	// Full command/prompt only when detail requested or task finished (result may need command for debug)
 	if detail || t.Status != agentproc.StatusRunning {
 		out["command"] = t.Command
-		out["prompt_preview"] = truncateStr(t.Prompt, 400)
+		out["prompt_preview"] = contextPreview(t)
 	} else {
 		out["command_preview"] = commandPreview(t.Command)
-		out["prompt_preview"] = truncateStr(t.Prompt, 120)
+		out["prompt_preview"] = contextPreview(t)
+	}
+	if t.ContextMarker != "" {
+		out["context"] = t.ContextMarker
 	}
 	return out
 }
@@ -195,6 +204,67 @@ func commandPreview(argv []string) string {
 	}
 	s := strings.Join(parts, " ")
 	return truncateStr(s, 160)
+}
+
+func contextPreview(t *agentproc.Task) string {
+	if t == nil {
+		return ""
+	}
+	p := truncateStr(t.Prompt, 160)
+	if t.ContextMarker != "" && t.ContextMarker != "none" {
+		if p == "" {
+			return "context: " + t.ContextMarker
+		}
+		return "context: " + t.ContextMarker + " | " + p
+	}
+	return p
+}
+
+func (r *Registry) assembleAgentContext(tc *TurnContext, raw interface{}, maxChars int, prompt string) (block, marker string) {
+	call, err := agentproc.ParseContextArg(raw)
+	if err != nil {
+		call = agentproc.ContextSpec{}
+	}
+	if maxChars > 0 {
+		call.MaxChars = maxChars
+		call.Set = true
+	}
+	var sessionSpec agentproc.ContextSpec
+	if tc != nil && tc.SubprocessContext != nil {
+		sessionSpec = tc.SubprocessContext()
+	}
+	fallback := agentproc.DefaultContextSpec()
+	if r.Agents != nil {
+		fallback = r.Agents.Config().GlobalContextSpec()
+	}
+	spec := agentproc.ResolveContextSpecWithPrompt(call, sessionSpec, fallback, prompt)
+	in := agentproc.ContextInputs{Prompt: prompt, SessionID: ""}
+	if tc != nil {
+		in.SessionID = tc.SessionID
+		if tc.HistoryTurns != nil {
+			in.Turns = tc.HistoryTurns()
+		}
+		if tc.ReadPaths != nil {
+			for p := range tc.ReadPaths {
+				in.ReadPaths = append(in.ReadPaths, p)
+			}
+		}
+	}
+	if containsSource(spec.Sources, "memory") && r != nil {
+		q := agentproc.MemorySeedQuery(prompt, in.Turns)
+		in.MemoryHits = r.MemoryHits(q, agentproc.MemoryTopK)
+	}
+	b := agentproc.Assemble(spec, in)
+	return b.Text, b.Marker
+}
+
+func containsSource(src []string, name string) bool {
+	for _, s := range src {
+		if s == name {
+			return true
+		}
+	}
+	return false
 }
 
 func truncateStr(s string, n int) string {

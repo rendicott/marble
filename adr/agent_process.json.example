@@ -27,5 +27,9 @@
   "max_output_bytes": 1048576,
   "system_agents_enabled": false,
   "stuck_after_sec": 480,
-  "stuck_kill": false
+  "stuck_kill": false,
+  "context": {
+    "default": ["full", "memory"],
+    "max_chars": 16000
+  }
 }

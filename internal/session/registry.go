@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/memory"
 	"github.com/rendicott/marble/internal/model"
@@ -414,7 +415,28 @@ func (r *Registry) PostUserMessageWithAttachments(id, text string, actor *Actor,
 			return err
 		}
 	}
-	if !r.runner.PostUserMessageWithAttachments(s, text, actor, attachmentIDs) {
+	return r.postUserMessageOpts(s, text, actor, attachmentIDs, TurnOpts{})
+}
+
+// PostUserMessageWithOpts is PostUserMessageWithAttachments plus turn-scoped routing (ADR-0030).
+func (r *Registry) PostUserMessageWithOpts(id, text string, actor *Actor, attachmentIDs []string, opts TurnOpts) error {
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return err
+	}
+	if s.Status == "closed" {
+		return fmt.Errorf("session is closed")
+	}
+	if len(attachmentIDs) > 0 {
+		if _, _, err := r.runner.buildUserContent(s.ID, text, attachmentIDs); err != nil {
+			return err
+		}
+	}
+	return r.postUserMessageOpts(s, text, actor, attachmentIDs, opts)
+}
+
+func (r *Registry) postUserMessageOpts(s *Session, text string, actor *Actor, attachmentIDs []string, opts TurnOpts) error {
+	if !r.runner.postMessage(s, text, false, actor, opts, attachmentIDs) {
 		return errBusy
 	}
 	return nil
@@ -509,6 +531,9 @@ func (r *Registry) setSessionModel(id, modelID string, allowBusy bool) (*Session
 
 	s.mu.Lock()
 	s.ModelID = modelID
+	if modelID != "" {
+		s.AgentPresetID = ""
+	}
 	s.dirty = true
 	s.UpdatedAt = time.Now()
 	s.mu.Unlock()
@@ -547,12 +572,100 @@ func (r *Registry) setSessionModel(id, modelID string, allowBusy bool) (*Session
 	}
 
 	s.publish(Event{
-		Type:     "session_meta",
-		ModelID:  storedID,
-		Model:    em.Model,
-		ModelEff: em.Public(),
+		Type:          "session_meta",
+		ModelID:       storedID,
+		AgentPresetID: "",
+		Model:         em.Model,
+		ModelEff:      em.Public(),
 	})
 	return s, em, nil
+}
+
+// SetSessionAgentPreset locks the session to a subprocess preset (ADR-0030).
+// Empty clears the lock. Mutually exclusive with model_id.
+func (r *Registry) SetSessionAgentPreset(id, presetID string) (*Session, error) {
+	return r.setSessionAgentPreset(id, presetID, true)
+}
+
+// SetSessionAgentPresetUI rejects while busy.
+func (r *Registry) SetSessionAgentPresetUI(id, presetID string) (*Session, error) {
+	return r.setSessionAgentPreset(id, presetID, false)
+}
+
+func (r *Registry) setSessionAgentPreset(id, presetID string, allowBusy bool) (*Session, error) {
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.Status == "closed" {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("session is closed")
+	}
+	if s.busy && !allowBusy {
+		s.mu.Unlock()
+		return nil, errBusy
+	}
+	s.mu.Unlock()
+
+	presetID = strings.TrimSpace(presetID)
+	presetID = strings.TrimPrefix(presetID, "agent:")
+	if presetID != "" {
+		if r.sqldb == nil || !r.sqldb.Writable() {
+			return nil, fmt.Errorf("agent presets unavailable")
+		}
+		row, err := r.sqldb.GetAgentPreset(presetID)
+		if err != nil || row == nil {
+			return nil, fmt.Errorf("agent preset %q not found", presetID)
+		}
+		if !row.Enabled {
+			return nil, fmt.Errorf("agent preset %q is disabled", presetID)
+		}
+	}
+
+	s.mu.Lock()
+	s.AgentPresetID = presetID
+	if presetID != "" {
+		s.ModelID = ""
+	}
+	s.dirty = true
+	s.UpdatedAt = time.Now()
+	stored := s.AgentPresetID
+	s.mu.Unlock()
+
+	r.syncSessionRow(s)
+	_ = r.PersistSession(s)
+	s.publish(Event{
+		Type:          "session_meta",
+		ModelID:       "",
+		AgentPresetID: stored,
+	})
+	return s, nil
+}
+
+// SetSessionSubprocessContext sets or clears the ADR-0031 session override.
+func (r *Registry) SetSessionSubprocessContext(id string, spec agentproc.ContextSpec, clear bool) (*Session, error) {
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.Status == "closed" {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("session is closed")
+	}
+	if clear {
+		s.subprocessContext = agentproc.ContextSpec{}
+	} else {
+		s.subprocessContext = spec
+		s.subprocessContext.Set = true
+	}
+	s.dirty = true
+	s.UpdatedAt = time.Now()
+	s.mu.Unlock()
+	r.syncSessionRow(s)
+	_ = r.PersistSession(s)
+	return s, nil
 }
 
 // EffectiveModelFor returns resolve for session (interactive opts).

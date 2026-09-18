@@ -7,24 +7,24 @@ import (
 
 // Event is a session_events row (before insert).
 type Event struct {
-	SessionID          string
-	Seq                int
-	TS                 string
-	Kind               string
-	Role               string
-	Content            string
-	ToolName           string
-	ToolCallID         string
-	ToolArgsJSON       string
-	Model              string
-	TokensInReported   *int
-	TokensOutReported  *int
-	TokensInEst        *int
-	TokensOutEst       *int
-	LatencyMs          *int
-	FinishReason       string
-	Error              string
-	MetaJSON           string
+	SessionID         string
+	Seq               int
+	TS                string
+	Kind              string
+	Role              string
+	Content           string
+	ToolName          string
+	ToolCallID        string
+	ToolArgsJSON      string
+	Model             string
+	TokensInReported  *int
+	TokensOutReported *int
+	TokensInEst       *int
+	TokensOutEst      *int
+	LatencyMs         *int
+	FinishReason      string
+	Error             string
+	MetaJSON          string
 }
 
 // AppendEvent writes an event, spilling oversize content to blobs.

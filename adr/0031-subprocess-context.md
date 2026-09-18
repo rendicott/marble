@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Accepted** (2026-09-17) — Q1–Q11 rec, Q12 custom (default `full+memory`) |
+| **Status** | **Accepted** (2026-09-17) — implemented (schema v9) |
 | **Date** | 2026-09-16 |
 | **Author** | — |
 | **Deciders** | Project owner |
@@ -130,9 +130,19 @@ Missing/empty at priority 1 → fall through to 2 → 3. `context_max_chars` res
 | Per-call | tool arg / `TurnOpts` | Agent emits it, or operator instructs |
 | Per-session | `sessions.subprocess_context` (JSON: `{context:[…], max_chars}`) | New tool `session_set_subprocess_context` (mirrors `session_set_model` / `session_set_agent_preset`); empty/`"clear"` reverts |
 | Preset default | `agent_presets.context` + `agent_presets.context_max_chars` (schema v9) | Settings ⚙ → Agents → preset editor |
-| Global default | `agent_process.json` `context` block (global caps file) | Hand-edited; seed for presets on migrate (ADR-0030 pattern) |
+| Global default | `agent_process.json` `context` block (global caps file) | Settings ⚙ → Agents → **Default subprocess context** (`PUT /api/settings/agents/context`); still hand-editable on disk |
 
 Secrets: **none**. Context sources are transcript/memory/paths — already sanitized by existing paths; the block is plain text, never contains raw keys, and is never logged verbatim (only the size marker).
+
+### H. Settings UI (follow-up)
+
+The Agents pane is the operator surface for Q9 + the global default (not a freeform-only field). Two follow-ups after M1:
+
+**1. Multi-select source chips.** Source tokens (`full`, `compact`, `memory`, `read_paths`) are **toggles**. Each click adds or removes that token and the text field is rewritten as a comma-separated list in canonical order. Shortcuts (**Default** = `full,memory`, **Isolated** = `none`, **Auto** = `auto`, **Inherit** on a preset = empty/inherit global) **replace** the whole set in one click. Full and Compact stay exclusive in the UI (Full already includes a digest of older turns). The text field remains editable; typing syncs chip selection.
+
+**2. Hover tooltips.** Labels use the Settings floating `?` (`data-tip`, same portal as Runtime/Models — native `title` is unreliable in the overflow pane). Each chip carries the same help: what the source injects, size cap, and when to use it (Full vs Compact, Memory seeding, Files = this-turn paths, Isolated vs Auto vs Inherit).
+
+Both the **global default** block and each **preset editor** share this control. Per-session / per-call overrides stay on the tools (`session_set_subprocess_context`, `call_agent_process.context`).
 
 ### F. Tools
 
@@ -185,7 +195,10 @@ internal/session/
   loop.go        — build TurnContext.ContextSources / pass session.subprocess_context into routed-turn TurnOpts
 
 internal/api/
-  settings.go    — Agents preset editor gains context fields
+  agents.go      — Agents preset editor + PUT /api/settings/agents/context (global default)
+
+internal/web/static/
+  settings.js    — multi-select source chips (compose the comma list) + floating tooltips
 ```
 
 **Tests:** `Assemble` is a pure function (given fixture session + spec → deterministic block; truncation/drop order; shorthand resolution; `none` = empty; default `full+memory` when nothing set); resolution order (call → session → default); routed-turn and tool both inject; no secrets in block (grep for `orb_ak_`/key patterns); marker-only in prompt_preview.
@@ -221,7 +234,7 @@ internal/api/
 - ADR-0030 Agent-process presets & turn send-routing (presets, resolver, `TurnOpts`, session lock)
 - ADR-0018 Selectable Models (`TurnOpts`, resolver, session-preference symmetry)
 - ADR-0026 transcript density, ADR-0022 long-turn efficiency
-- Code: `internal/tools/agentproc.go`, `internal/agentproc/{driver,manager}.go`, `internal/tools/registry.go` (TurnContext), `internal/session/loop.go`
+- Code: `internal/tools/agentproc.go`, `internal/agentproc/{driver,manager,context}.go`, `internal/tools/registry.go` (TurnContext), `internal/session/loop.go`, `internal/web/static/settings.js` (Agents context chips + tooltips)
 
 ## Changelog
 
@@ -229,3 +242,5 @@ internal/api/
 |------|--------|
 | 2026-09-16 | Proposed — context source-list, three-layer resolution, both subprocess paths |
 | 2026-09-17 | **Accepted** — locked Q1–Q11 rec; Q12 custom (default `full+memory`, not `none`) |
+| 2026-09-17 | **Implemented** — `Assemble` prepend, schema v9, `session_set_subprocess_context`, tool+routed-turn injection, Settings → Agents context fields |
+| 2026-09-17 | **Settings UI** — global default editor (`PUT /api/settings/agents/context`); multi-select source chips compose the comma-separated field; floating `?` / chip hover tooltips explain each source and shortcut |

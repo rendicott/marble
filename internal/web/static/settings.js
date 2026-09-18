@@ -1,6 +1,60 @@
 /* Settings modal (ADR-0007) — tooltips, grouped runtime, MCP tool hover */
 (() => {
   const UI_PREFS_KEY = "marble.ui.prefs";
+  const THEME_COOKIE = "marble_theme";
+  const THEME_IDS = ["dark", "light", "tan"];
+
+  function normalizeTheme(id) {
+    return THEME_IDS.indexOf(id) >= 0 ? id : "dark";
+  }
+  function readThemeCookie() {
+    const m = document.cookie.match(/(?:^|; )marble_theme=([^;]*)/);
+    return normalizeTheme(m ? decodeURIComponent(m[1]) : "dark");
+  }
+  function writeThemeCookie(id) {
+    const v = normalizeTheme(id);
+    let c =
+      THEME_COOKIE +
+      "=" +
+      encodeURIComponent(v) +
+      "; Path=/; Max-Age=31536000; SameSite=Lax";
+    if (location.protocol === "https:") c += "; Secure";
+    document.cookie = c;
+  }
+  function applyTheme(id) {
+    const v = normalizeTheme(id);
+    document.documentElement.setAttribute("data-theme", v);
+    document.documentElement.style.colorScheme = v === "dark" ? "dark" : "light";
+    writeThemeCookie(v);
+  }
+  function themeSwatchesHtml() {
+    const cur = readThemeCookie();
+    return (
+      `<div class="theme-swatches" role="radiogroup" aria-label="Theme">` +
+      THEME_IDS.map((id) => {
+        const sel = id === cur;
+        const note = id === "dark" ? `<span class="sw-note">default</span>` : "";
+        return `<button type="button" class="theme-swatch${sel ? " sel" : ""}" data-theme-choice="${id}" role="radio" aria-checked="${sel ? "true" : "false"}">
+        <span class="theme-swatch-preview" aria-hidden="true"><span class="sw-bg"></span><span class="sw-bar"><i></i><i></i><i></i></span></span>
+        <span class="theme-swatch-cap">${id}${note}</span>
+      </button>`;
+      }).join("") +
+      `</div>`
+    );
+  }
+  function bindThemeSwatches() {
+    els.pane.querySelectorAll(".theme-swatch").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-theme-choice");
+        applyTheme(id);
+        els.pane.querySelectorAll(".theme-swatch").forEach((b) => {
+          const on = b.getAttribute("data-theme-choice") === normalizeTheme(id);
+          b.classList.toggle("sel", on);
+          b.setAttribute("aria-checked", on ? "true" : "false");
+        });
+      });
+    });
+  }
 
   const TIPS = {
     // runtime / model
@@ -36,6 +90,28 @@
       "Path to mcp.json (default $MEMORY/mcp.json). Edit servers under the MCP section.",
     sinks:
       "Turn sinks (ADR-0028): when a session goes idle, mirror the final assistant message to Orb/Slack/ntfy/Discord/webhook/stdout. Secrets are env-var names only.",
+    agents:
+      "Subprocess presets (ADR-0030): named grok/claude/opencode invocations. Detected binaries can lock a session or route a single send.",
+    subprocess_context:
+      "What Marble prepends to a grok/claude/opencode prompt. Resolution: this call → session_set_subprocess_context → this preset → this global default. Toggle sources (multi-select); shortcuts replace the whole set. Default is full+memory. Isolated (none) sends only the user prompt.",
+    subprocess_context_max:
+      "Hard cap on the assembled context block (characters, not tokens). Default 16000. Oversized sources are truncated, then dropped in order: files → memory → full → compact.",
+    ctx_full:
+      "Full: recent raw transcript (newest first, ~12k chars) plus a digest of anything older (~6k). Use for handoffs that need the conversation. Already includes a compact of older turns — no need to also toggle Compact.",
+    ctx_compact:
+      "Compact: extractive digest of the session only (~6k chars). Cheaper than Full. Ignored if Full is also on.",
+    ctx_memory:
+      "Memory: top 5 hits from $MEMORY (session/daily/knowledge) seeded from the prompt plus recent user messages (~4k chars). Good with Full for “what did we decide?”.",
+    ctx_read_paths:
+      "Files: workspace paths read or written this Marble turn (~1.5k chars). Useful when the child should open the same files; it still has to read them from disk.",
+    ctx_default:
+      "Shortcut for Full + Memory — the shipped global default. Transcript plus memory hits.",
+    ctx_isolated:
+      "Shortcut none: inject nothing. The child sees only the user prompt. Use for cheap throwaway runs.",
+    ctx_auto:
+      "Shortcut auto: Full+Memory if the prompt looks like a handoff (“this session”, “earlier”, a session id, …); otherwise Files+Compact.",
+    ctx_inherit:
+      "Clear this preset’s override so it uses the global default at the top of Agents.",
 
     // memory
     blob_max_age_days:
@@ -745,11 +821,15 @@
           if (e.in_managed_file) flags.push("file");
           if (e.in_process) flags.push("process");
           const revealed = !!e._reveal;
+          const shadowWarn = e.process_differs
+            ? `<p class="hint env-shadow-warn">⚠ Also set in the running process with a <em>different</em> (stale) value. The file value now wins — edits apply live. Restart <code>marble-harness</code> to clear the stale process copy.</p>`
+            : "";
           return `<div class="settings-group env-row" data-name="${escapeAttr(name)}">
             <div class="env-row-head">
               <code class="env-name">${escapeHtml(name)}</code>
               <span class="settings-chip muted">${escapeHtml(flags.join(" · ") || "—")}</span>
             </div>
+            ${shadowWarn}
             <div class="env-value-row">
               <input type="${revealed ? "text" : "password"}" class="env-value mono" data-name="${escapeAttr(name)}" value="${escapeAttr(e.value || "")}" spellcheck="false" autocomplete="off" />
               <button type="button" class="icon-btn env-toggle" data-name="${escapeAttr(name)}" title="Show / hide">👁</button>
@@ -775,7 +855,7 @@
             Catalog/MCP store <em>names</em> only. File mode ${escapeHtml(String(sec.file_mode || "0600"))}.
           </p>
           <p class="hint"><strong>This tab writes:</strong> <code class="env-path">${escapeHtml(path)}</code></p>
-          <p class="hint">Chips (<code>file</code> · <code>process</code>) show where Marble sees that name — tap <strong>?</strong> for load order.</p>
+          <p class="hint">The <code>file</code> value is authoritative (edits apply live, no restart). A <code>process</code> chip means the name is <em>also</em> set on the running process — tap <strong>?</strong> for load order.</p>
         </div>
 
         <div class="settings-group">
@@ -914,11 +994,11 @@
       <h4>Load order (first match wins)</h4>
       <p>When Marble needs a secret, it looks in this order and <strong>stops at the first non-empty value</strong>:</p>
       <ol class="env-docs-ol">
-        <li><strong>Process environment</strong> — already loaded into the running harness (e.g. systemd <code>EnvironmentFile=</code> at start, or <code>export</code> before launch).</li>
-        <li><strong>Managed file</strong> — <code>${escapeHtml(managedPath || "$MEMORY/env")}</code> — <strong>this is what Secrets edits</strong>. Re-read live (~2s).</li>
+        <li><strong>Managed file</strong> — <code>${escapeHtml(managedPath || "$MEMORY/env")}</code> — <strong>this is what Secrets edits</strong>. Authoritative; re-read live (~2s) so edits apply without restart.</li>
+        <li><strong>Process environment</strong> — used only as a <em>fallback</em> for names not present in the managed file (e.g. <code>export</code> before launch, or systemd <code>EnvironmentFile=</code>).</li>
       </ol>
-      <pre class="env-docs-pre">1. process env   ← if set here, the file below is ignored for that key
-2. $MEMORY/env   ← Secrets tab writes here</pre>
+      <pre class="env-docs-pre">1. $MEMORY/env   ← Secrets tab writes here (authoritative, live)
+2. process env   ← fallback for names not in the file</pre>
 
       <h4>Pros / cons</h4>
       <table class="env-docs-table">
@@ -929,11 +1009,11 @@
           <tr>
             <td><strong>Process</strong><br/><span class="muted">systemd / shell export</span></td>
             <td>Familiar; good for baseline host secrets at boot</td>
-            <td><strong>Always wins</strong> for that key until you clear it and restart; Secrets “Update” cannot override it</td>
+            <td>Fallback only — ignored for a name once the managed file defines it; a stale process copy needs a restart to clear</td>
           </tr>
           <tr>
             <td><strong>Managed file</strong><br/><code class="muted">${escapeHtml(managedPath || "$MEMORY/env")}</code></td>
-            <td><strong>Recommended</strong>; mode 0600; live re-read; one clear write target</td>
+            <td><strong>Recommended</strong>; mode 0600; live re-read; authoritative; edits apply without restart</td>
             <td>Gone if you wipe <code>--memory</code>; readable by anything running as your OS user</td>
           </tr>
         </tbody>
@@ -941,15 +1021,16 @@
 
       <h4>What the chips mean</h4>
       <ul class="env-docs-ul">
-        <li><code>file</code> — key exists in <code>$MEMORY/env</code> (what this tab edits)</li>
-        <li><code>process</code> — key is set on the running process; that value is the one Marble actually uses</li>
+        <li><code>file</code> — key exists in <code>$MEMORY/env</code> (authoritative; what this tab edits and what Marble uses)</li>
+        <li><code>process</code> — key is <em>also</em> set on the running process (used only as a fallback when the name is not in the file)</li>
       </ul>
 
       <h4>Recommendation</h4>
       <p>
         Put secrets in the managed file via this tab (or point systemd
         <code>EnvironmentFile=</code> at the same <code>$MEMORY/env</code> path).
-        If a name is also set in process env, clear/restart before expecting Secrets edits to win.
+        The managed file is authoritative, so edits here apply live. If a name is also set in
+        process env, its stale copy is ignored — restart when convenient to clear it.
       </p>
     `;
     overlay.hidden = false;
@@ -1046,6 +1127,323 @@
       });
     } catch (e) {
       els.pane.innerHTML = `<h3>Computers</h3><p class="hint model-editor-err">${escapeHtml(e.message || String(e))}</p>`;
+    }
+  }
+
+  const CONTEXT_SOURCES = [
+    { token: "full", label: "Full", tip: "ctx_full" },
+    { token: "compact", label: "Compact", tip: "ctx_compact" },
+    { token: "memory", label: "Memory", tip: "ctx_memory" },
+    { token: "read_paths", label: "Files", tip: "ctx_read_paths" },
+  ];
+  const CONTEXT_SHORTCUTS = [
+    { label: "Default", value: "full,memory", tip: "ctx_default" },
+    { label: "Isolated", value: "none", tip: "ctx_isolated" },
+    { label: "Auto", value: "auto", tip: "ctx_auto" },
+  ];
+  const CONTEXT_SOURCE_ORDER = CONTEXT_SOURCES.map((s) => s.token);
+
+  function parseCtxTokens(v) {
+    if (v == null) return [];
+    const raw = Array.isArray(v) ? v.join(",") : String(v);
+    return raw
+      .split(/[,\s]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  function composeCtxValue(tokens) {
+    const special = tokens.find((t) => t === "none" || t === "auto");
+    if (special) return special;
+    const seen = new Set();
+    const out = [];
+    for (const t of CONTEXT_SOURCE_ORDER) {
+      if (tokens.includes(t) && !seen.has(t)) {
+        seen.add(t);
+        out.push(t);
+      }
+    }
+    for (const t of tokens) {
+      if (!seen.has(t) && CONTEXT_SOURCE_ORDER.includes(t)) {
+        seen.add(t);
+        out.push(t);
+      }
+    }
+    return out.join(",");
+  }
+
+  function contextPresetButtons(inputId, current, extraShortcuts) {
+    const tokens = parseCtxTokens(current);
+    const isNone = tokens.length === 1 && tokens[0] === "none";
+    const isAuto = tokens.length === 1 && tokens[0] === "auto";
+    const isInherit = tokens.length === 0;
+    const shortcuts = (extraShortcuts || []).concat(CONTEXT_SHORTCUTS);
+    const shortcutChips = shortcuts
+      .map((p) => {
+        const val = (p.value || "").trim();
+        let sel = false;
+        if (val === "" && isInherit) sel = true;
+        else if (val === "none" && isNone) sel = true;
+        else if (val === "auto" && isAuto) sel = true;
+        else if (val && val !== "none" && val !== "auto" && composeCtxValue(parseCtxTokens(val)) === composeCtxValue(tokens) && !isNone && !isAuto && !isInherit) sel = true;
+        return `<button type="button" class="ctx-chip ctx-shortcut${sel ? " sel" : ""}" data-ctx-for="${escapeAttr(inputId)}" data-ctx-mode="set" data-ctx-value="${escapeAttr(val)}" data-tip="${escapeAttr(TIPS[p.tip] || p.hint || p.label)}">${escapeHtml(p.label)}</button>`;
+      })
+      .join("");
+    const sourceChips = CONTEXT_SOURCES.map((s) => {
+      const on = !isNone && !isAuto && tokens.includes(s.token);
+      return `<button type="button" class="ctx-chip ctx-source${on ? " sel" : ""}" data-ctx-for="${escapeAttr(inputId)}" data-ctx-mode="toggle" data-ctx-value="${escapeAttr(s.token)}" aria-pressed="${on ? "true" : "false"}" data-tip="${escapeAttr(TIPS[s.tip] || s.token)}">${escapeHtml(s.label)}</button>`;
+    }).join("");
+    return `<div class="ctx-presets ctx-shortcuts" role="group" aria-label="Context shortcuts">${shortcutChips}</div>
+      <div class="ctx-presets ctx-sources" role="group" aria-label="Context sources (multi-select)">${sourceChips}</div>
+      <p class="hint ctx-presets-hint">Hover a chip for what it injects. Toggle sources (multi-select); shortcuts replace the whole set.</p>`;
+  }
+
+  function syncCtxChips(input) {
+    if (!input) return;
+    const id = input.id;
+    const tokens = parseCtxTokens(input.value);
+    const isNone = tokens.length === 1 && tokens[0] === "none";
+    const isAuto = tokens.length === 1 && tokens[0] === "auto";
+    const isInherit = tokens.length === 0;
+    const composed = composeCtxValue(tokens);
+    document.querySelectorAll(`.ctx-source[data-ctx-for="${CSS.escape(id)}"]`).forEach((btn) => {
+      const tok = btn.getAttribute("data-ctx-value") || "";
+      const on = !isNone && !isAuto && tokens.includes(tok);
+      btn.classList.toggle("sel", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    document.querySelectorAll(`.ctx-shortcut[data-ctx-for="${CSS.escape(id)}"]`).forEach((btn) => {
+      const val = (btn.getAttribute("data-ctx-value") || "").trim();
+      let sel = false;
+      if (val === "" && isInherit) sel = true;
+      else if (val === "none" && isNone) sel = true;
+      else if (val === "auto" && isAuto) sel = true;
+      else if (val && val !== "none" && val !== "auto" && composeCtxValue(parseCtxTokens(val)) === composed && !isNone && !isAuto && !isInherit) sel = true;
+      btn.classList.toggle("sel", sel);
+    });
+  }
+
+  function bindContextPresetButtons(root) {
+    const scope = root || document;
+    scope.querySelectorAll(".ctx-chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-ctx-for");
+        const input = id ? document.getElementById(id) : null;
+        if (!input) return;
+        const mode = btn.getAttribute("data-ctx-mode") || "set";
+        const val = btn.getAttribute("data-ctx-value") || "";
+        if (mode === "toggle") {
+          let tokens = parseCtxTokens(input.value).filter((t) => t !== "none" && t !== "auto");
+          if (tokens.includes(val)) tokens = tokens.filter((t) => t !== val);
+          else tokens.push(val);
+          if (val === "full") tokens = tokens.filter((t) => t !== "compact");
+          if (val === "compact") tokens = tokens.filter((t) => t !== "full");
+          input.value = composeCtxValue(tokens);
+        } else {
+          input.value = val;
+        }
+        syncCtxChips(input);
+      });
+    });
+    scope.querySelectorAll("input.mono[id$='-ctx'], input#ag-ctx, input#ae-ctx").forEach((input) => {
+      input.addEventListener("input", () => syncCtxChips(input));
+    });
+  }
+
+  async function renderAgentsSection(editable) {
+    try {
+      const res = await api("/api/settings/agents");
+      const presets = res.presets || [];
+      const drivers = res.drivers || ["grok", "claude", "opencode"];
+      const caps = res.caps || {};
+      const rows = presets
+        .map((p) => {
+          const det = p.detected
+            ? `<span class="settings-chip ok">detected${p.detected_version ? " · " + escapeHtml(p.detected_version) : ""}</span>`
+            : `<span class="settings-chip muted">not found</span>`;
+          const on = p.enabled !== false;
+          return `<div class="settings-group model-row" data-id="${escapeAttr(p.id || "")}">
+            <div class="model-row-head">
+              <div class="model-row-title">
+                <span class="model-row-name">${escapeHtml(p.display_name || p.id)}</span>
+                <span class="settings-chip">${escapeHtml(p.driver || "")}</span>
+                ${det}
+                ${on ? "" : `<span class="settings-chip">disabled</span>`}
+              </div>
+              <div class="model-row-actions">
+                ${editable ? `<button type="button" class="icon-btn agent-edit" data-id="${escapeAttr(p.id)}">Edit</button>` : ""}
+                ${editable ? `<button type="button" class="icon-btn agent-del" data-id="${escapeAttr(p.id)}">Delete</button>` : ""}
+              </div>
+            </div>
+            <div class="model-row-meta mono muted">
+              <span>${escapeHtml(p.id || "")}</span>
+              <span>${escapeHtml(p.command || "")}</span>
+              ${p.model ? `<span>${escapeHtml(p.model)}</span>` : ""}
+              <span>ctx ${escapeHtml(Array.isArray(p.context) && p.context.length ? p.context.join("+") : "inherit")}</span>
+              ${p.detected_path ? `<span>${escapeHtml(p.detected_path)}</span>` : ""}
+            </div>
+          </div>`;
+        })
+        .join("");
+      const gctx = Array.isArray(caps.context_default) ? caps.context_default.join(",") : "full,memory";
+      const gmax = caps.context_max_chars || 16000;
+      els.pane.innerHTML = `
+        <h3>Agents / Subprocesses</h3>
+        <p class="hint">Named local harness CLIs (ADR-0030). Global caps live in <code class="mono">${escapeHtml(caps.config_path || "$MEMORY/agent_process.json")}</code>. Detection is advisory — fire still LookPaths. Max 32 presets.</p>
+        <p class="hint">Timeouts: default ${caps.default_timeout_sec || "—"}s · max ${caps.max_timeout_sec || "—"}s · max/session ${caps.max_per_session || "—"}</p>
+        <div class="settings-group" id="agent-global-ctx">
+          <h4>Default subprocess context ${tip("subprocess_context")}</h4>
+          <p class="hint">Used when a preset does not set its own sources, and the session/call does not override. Per-call <code>context=[]</code> / <code>none</code> still isolates a run.</p>
+          <div class="settings-field"><label>${labelWithTip("Sources", "subprocess_context")}</label>
+            <input type="text" id="ag-ctx" class="mono" value="${escapeAttr(gctx)}" ${editable ? "" : "readonly"}/></div>
+          ${contextPresetButtons("ag-ctx", gctx)}
+          <div class="settings-field"><label>${labelWithTip("Max chars", "subprocess_context_max")}</label>
+            <input type="number" id="ag-ctxmax" value="${escapeAttr(String(gmax))}" ${editable ? "" : "readonly"}/></div>
+          ${editable ? `<div class="model-list-actions"><button type="button" class="icon-btn" id="ag-ctx-save">Save default</button></div>` : ""}
+        </div>
+        ${rows || "<p class='hint'>No presets yet.</p>"}
+        <div class="model-list-actions">
+          ${editable ? `<button type="button" class="icon-btn" id="agent-add">+ Add preset</button>
+          <button type="button" class="icon-btn" id="agent-detect">Detect</button>` : "<p class='hint'>Read-only (limp).</p>"}
+        </div>
+        <div id="agent-editor" class="settings-group model-editor" hidden></div>
+        <p class="hint model-editor-err" id="agent-err" hidden></p>
+      `;
+      const errEl = () => document.getElementById("agent-err");
+      const showErr = (msg) => {
+        const el = errEl();
+        if (!el) return;
+        el.hidden = !msg;
+        el.textContent = msg || "";
+      };
+      const editor = document.getElementById("agent-editor");
+      const openEditor = (p, isNew) => {
+        if (!editor) return;
+        editor.hidden = false;
+        const args = Array.isArray(p.default_args) ? p.default_args.join(" ") : "";
+        editor.innerHTML = `
+          <h4>${isNew ? "Add preset" : "Edit " + escapeHtml(p.id || "")}</h4>
+          <div class="settings-field"><label>Id</label>
+            <input type="text" id="ae-id" class="mono" value="${escapeAttr(p.id || "")}" ${isNew ? "" : "readonly"}/></div>
+          <div class="settings-field"><label>Driver</label>
+            <select id="ae-driver">${drivers.map((d) => `<option ${p.driver === d ? "selected" : ""}>${d}</option>`).join("")}</select></div>
+          <div class="settings-field"><label>Display name</label>
+            <input type="text" id="ae-name" value="${escapeAttr(p.display_name || "")}"/></div>
+          <div class="settings-field"><label>Command</label>
+            <input type="text" id="ae-cmd" class="mono" value="${escapeAttr(p.command || "")}" placeholder="grok"/></div>
+          <div class="settings-field"><label>Model (optional)</label>
+            <input type="text" id="ae-model" class="mono" value="${escapeAttr(p.model || "")}"/></div>
+          <div class="settings-field"><label>Default args</label>
+            <input type="text" id="ae-args" class="mono" value="${escapeAttr(args)}" placeholder="--no-plan --effort medium"/></div>
+          <div class="settings-field"><label>Timeout sec (0 = global default)</label>
+            <input type="number" id="ae-timeout" value="${escapeAttr(String(p.timeout_sec || 0))}"/></div>
+          <div class="settings-field"><label>${labelWithTip("Context sources", "subprocess_context")}</label>
+            <input type="text" id="ae-ctx" class="mono" value="${escapeAttr(Array.isArray(p.context) ? p.context.join(",") : "")}" placeholder="empty = inherit global default"/></div>
+          ${contextPresetButtons("ae-ctx", Array.isArray(p.context) ? p.context.join(",") : "", [{ label: "Inherit", value: "", tip: "ctx_inherit" }])}
+          <div class="settings-field"><label>${labelWithTip("Context max chars", "subprocess_context_max")}</label>
+            <input type="number" id="ae-ctxmax" value="${escapeAttr(String(p.context_max_chars || 0))}"/></div>
+          <div class="settings-field"><label><input type="checkbox" id="ae-en" ${p.enabled !== false ? "checked" : ""}/> Enabled</label></div>
+          <div class="settings-field"><label>Notes</label>
+            <input type="text" id="ae-notes" value="${escapeAttr(p.notes || "")}"/></div>
+          <div class="model-list-actions">
+            <button type="button" class="icon-btn" id="ae-save">Save</button>
+            <button type="button" class="icon-btn" id="ae-cancel">Cancel</button>
+          </div>
+        `;
+        bindContextPresetButtons(editor);
+        document.getElementById("ae-cancel").onclick = () => {
+          editor.hidden = true;
+        };
+        document.getElementById("ae-save").onclick = async () => {
+          const body = {
+            id: document.getElementById("ae-id").value.trim(),
+            driver: document.getElementById("ae-driver").value,
+            display_name: document.getElementById("ae-name").value.trim(),
+            command: document.getElementById("ae-cmd").value.trim(),
+            model: document.getElementById("ae-model").value.trim(),
+            default_args: document.getElementById("ae-args").value.trim(),
+            timeout_sec: parseInt(document.getElementById("ae-timeout").value, 10) || 0,
+            context: document.getElementById("ae-ctx").value.trim(),
+            context_max_chars: parseInt(document.getElementById("ae-ctxmax").value, 10) || 0,
+            enabled: document.getElementById("ae-en").checked,
+            notes: document.getElementById("ae-notes").value.trim(),
+          };
+          if (body.context === "") delete body.context;
+          try {
+            if (isNew) {
+              await api("/api/settings/agents/presets", { method: "POST", body: JSON.stringify(body) });
+            } else {
+              await api("/api/settings/agents/presets/" + encodeURIComponent(body.id), {
+                method: "PUT",
+                body: JSON.stringify(body),
+              });
+            }
+            flashBanner("Preset saved", false);
+            renderAgentsSection(editable);
+          } catch (e) {
+            showErr(e.message || String(e));
+          }
+        };
+      };
+      bindContextPresetButtons(document.getElementById("agent-global-ctx"));
+      const gsave = document.getElementById("ag-ctx-save");
+      if (gsave) {
+        gsave.onclick = async () => {
+          const raw = (document.getElementById("ag-ctx").value || "").trim();
+          let def = ["full", "memory"];
+          if (raw === "none") {
+            def = ["none"];
+          } else if (raw) {
+            def = raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+          }
+          const max = parseInt(document.getElementById("ag-ctxmax").value, 10) || 16000;
+          try {
+            await api("/api/settings/agents/context", {
+              method: "PUT",
+              body: JSON.stringify({ default: def, max_chars: max }),
+            });
+            flashBanner("Global context default saved", false);
+            renderAgentsSection(editable);
+          } catch (e) {
+            showErr(e.message || String(e));
+          }
+        };
+      }
+      const add = document.getElementById("agent-add");
+      if (add) add.onclick = () => openEditor({ driver: "grok", enabled: true, command: "grok" }, true);
+      const det = document.getElementById("agent-detect");
+      if (det) {
+        det.onclick = async () => {
+          try {
+            await api("/api/settings/agents/detect", { method: "POST", body: "{}" });
+            flashBanner("Detection refreshed", false);
+            renderAgentsSection(editable);
+          } catch (e) {
+            showErr(e.message || String(e));
+          }
+        };
+      }
+      els.pane.querySelectorAll(".agent-edit").forEach((btn) => {
+        btn.onclick = () => {
+          const p = presets.find((x) => x.id === btn.getAttribute("data-id"));
+          if (p) openEditor(p, false);
+        };
+      });
+      els.pane.querySelectorAll(".agent-del").forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute("data-id");
+          if (!id || !confirm("Delete preset " + id + "?")) return;
+          try {
+            await api("/api/settings/agents/presets/" + encodeURIComponent(id), { method: "DELETE" });
+            flashBanner("Deleted " + id, false);
+            renderAgentsSection(editable);
+          } catch (e) {
+            showErr(e.message || String(e));
+          }
+        };
+      });
+    } catch (e) {
+      els.pane.innerHTML = `<h3>Agents</h3><p class="hint model-editor-err">${escapeHtml(e.message || String(e))}</p>`;
     }
   }
 
@@ -1687,6 +2085,9 @@
     } else if (section === "models") {
       els.pane.innerHTML = `<h3>Models</h3><p class="hint">Loading catalog…</p>`;
       renderModelsSection(editable);
+    } else if (section === "agents") {
+      els.pane.innerHTML = `<h3>Agents</h3><p class="hint">Loading presets…</p>`;
+      renderAgentsSection(editable);
     } else if (section === "computers") {
       els.pane.innerHTML = `<h3>Computers</h3><p class="hint">Loading peers…</p>`;
       renderComputersSection(editable);
@@ -1747,7 +2148,11 @@
       const df = uiPrefs.show_dotfiles != null ? !!uiPrefs.show_dotfiles : true;
       els.pane.innerHTML = `
         <h3>UI preferences</h3>
-        <p class="hint">Stored in this browser. Existing toggles still work; these set defaults on load.</p>
+        <p class="hint">Theme is stored in a cookie on this browser. Applies immediately. Other prefs save to this browser on Save.</p>
+        <div class="settings-field">
+          <label>Theme</label>
+          ${themeSwatchesHtml()}
+        </div>
         <div class="settings-field">
           <label>${labelWithTip("Show closed sessions by default", "show_closed")}</label>
           <label class="check-row"><input type="checkbox" id="pref-show-closed" ${sc ? "checked" : ""}/> Enable</label>
@@ -1757,6 +2162,7 @@
           <label class="check-row"><input type="checkbox" id="pref-dotfiles" ${df ? "checked" : ""}/> Enable</label>
         </div>
       `;
+      bindThemeSwatches();
       const a = document.getElementById("pref-show-closed");
       const b = document.getElementById("pref-dotfiles");
       const mark = () => {
@@ -2088,6 +2494,7 @@
 
   async function resetSection() {
     if (!data || !data.editable) return;
+    // ADR-0032 Q11: UI-section Reset does not change theme.
     const sec =
       section === "memory" ? "memory" : section === "shell" ? "shell" : "";
     if (!sec) return;

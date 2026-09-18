@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/tools"
@@ -212,6 +213,25 @@ func (r *Runner) runTurn(s *Session) {
 	defer cancel()
 	s.setTurnCancel(cancel)
 
+	userText := lastUserText(s)
+	isCont := strings.HasPrefix(strings.TrimSpace(userText), "[scheduled continuation]")
+	if !isCont {
+		if pid, note := r.ResolveAgentPresetID(s, opts); pid != "" {
+			if r.Reg != nil && r.Reg.sqldb != nil {
+				if row, err := r.Reg.sqldb.GetAgentPreset(pid); err == nil && row != nil {
+					r.runRoutedTurn(s, ctx, row, opts)
+					return
+				}
+			}
+			if note == "" {
+				note = "[harness] agent preset unavailable; using Marble model"
+			}
+			r.advisory(s, note)
+		} else if note != "" {
+			r.advisory(s, note)
+		}
+	}
+
 	client := r.clientFor(em)
 	var toolSpecs []model.ToolSpec
 	if em.CapTools && r.Tools != nil {
@@ -235,6 +255,12 @@ func (r *Runner) runTurn(s *Session) {
 		SessionKind: s.Kind,
 		ReadPaths:   readPaths,
 		Ctx:         ctx,
+		HistoryTurns: func() []agentproc.TurnText {
+			return sessionTurns(s)
+		},
+		SubprocessContext: func() agentproc.ContextSpec {
+			return s.subprocessContextSpec()
+		},
 		GetUsage: func() map[string]interface{} {
 			return r.usageSnapshot(s, em, toolEst, lastReportedIn, lastReportedOut)
 		},

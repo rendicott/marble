@@ -4,7 +4,34 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.4
+## What's new in v0.4.5
+
+Highlights since **[v0.4.4](https://github.com/rendicott/marble/releases/tag/v0.4.4)** (schema **v8–v9**):
+
+### Selectable UI themes (ADR-0032)
+- Settings ⚙ → **UI** — **dark** (default, today's look), **light**, and **tan** swatches
+- Choice remembered in a `marble_theme` cookie (1 year, `SameSite=Lax`; `Secure` only on https)
+- Applies immediately on click (Save not required); inline boot script avoids a flash of the wrong theme
+- Chrome colors go through CSS tokens (`html[data-theme]`); web SPA only
+
+### Subprocess context (ADR-0031) — schema v9
+- `call_agent_process` and routed turns can inject a **pick-and-choose** context block (transcript, memory, files-read)
+- Default **`full+memory`**; opt out with `context=none` / `[]`
+- Per-call → per-session → preset/global; tool `session_set_subprocess_context`
+
+### Agent-process presets (ADR-0030) — schema v8
+- Settings → **Agents** catalog of grok/claude/opencode CLIs with host detection
+- Session **route** picker locks a session to a subprocess; right-click / long-press Send routes one turn
+- Tools: `agent_preset_list` / `agent_preset_get` / `session_set_agent_preset`
+
+### Secrets — `$MEMORY/env` is authoritative
+- **Settings → Secrets** writes `$MEMORY/env` (mode 0600). That file now **wins** over process env for any name it contains, so edits apply live (~2s) with **no restart**.
+- Process env (systemd `EnvironmentFile=` snapshot, shell `export`) is a **fallback** only for names *not* in the file.
+- When a name is also set on the running process with a **different** (stale) value, the Secrets row shows an amber warning. Restart to clear the leftover process copy.
+- **Delete caveat:** removing a name from the file still falls back to a leftover process-env value until restart. Updates are live; deletes need a restart to fully take effect.
+- v0.4.3 documented “process env still wins”; that order is inverted here.
+
+### Earlier — v0.4.4
 
 Highlights since **[v0.4.3](https://github.com/rendicott/marble/releases/tag/v0.4.3)**:
 
@@ -36,7 +63,7 @@ Highlights since **[v0.4.2](https://github.com/rendicott/marble/releases/tag/v0.
 
 ### Secrets UI
 - **Settings → Secrets** edits `$MEMORY/env` (mode 0600) live — catalog `api_key_env` names, no restart
-- Process env still wins; systemd example uses `EnvironmentFile=-%h/.marble/env` (dropped `~/.config/marble/env`)
+- Process env still wins (inverted later; see **v0.4.5**); systemd example uses `EnvironmentFile=-%h/.marble/env` (dropped `~/.config/marble/env`)
 
 ### Computer use
 - Harness **Accept/Deny confirm page** (`/confirm/{id}`) plus live session card for `computer_confirm`
@@ -140,7 +167,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Process CLI model** — `--base-url`, `--model`, context flags, optional `--api-key-env` (always available as fallback)
 - **Catalog models (ADR-0018)** — additional endpoints/models from Settings; per-entry base URL and `api_key_env`; session picker + cron pin
 - **Local / open endpoints** — no API key by default (no `Authorization` header)
-- **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` (and catalog `api_key_env`) names only; first non-empty wins from **process env**, then **`$MEMORY/env`** (file re-read so new catalog keys need no restart; Settings → Secrets)
+- **Optional API key auth (ADR-0016)** — `--api-key-env=NAME[,NAME2…]` (and catalog `api_key_env`) names only; first non-empty wins from **`$MEMORY/env`** (authoritative; Settings → Secrets; live re-read ~2s), then **process env** as fallback for names not in the file
 - **Health / Settings** show auth mode, env name, **key ok / key missing** chips — never the secret
 - **Multimodal (ADR-0019)** — image (+ basic document, including SVG as a downloadable document) parts; process default **`CapImages=true`** (catalog row can set `cap_images=0` for text-only endpoints)
 
@@ -160,6 +187,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Continuations** — one-shot delayed resume (`schedule_continuation`: delay and/or wait for BG task); harness **auto-continue** near hard iter caps
 - **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
 - **Turn sinks (ADR-0028)** — mirror finished turns to Orb / Slack / ntfy / Discord / webhook / stdout (`$MEMORY/sinks.json`). Settings → Sinks plus `manage_sinks` (list/create/update/delete/test; per-session `set_override`). Secrets by env-var **name** only.
+- **Agent presets (ADR-0030 / ADR-0031)** — Settings → Agents catalog of grok/claude/opencode CLIs with host detection; session **route** picker locks a session to a subprocess; right-click/long-press Send routes one turn. Subprocess **context** defaults to `full+memory` (opt out with `context=none`). Tools: `agent_preset_list` / `agent_preset_get` / `session_set_agent_preset` / `session_set_subprocess_context`.
 - **Models (ADR-0018)** — `model_list` / `model_get` / **`model_add`** / **`model_update`** / `session_set_model` (catalog writes store env **names** only; agent can research base_url & limits via web tools)
 - **Computer use (ADR-0020)** — `computer_*` tools against a paired **[marble-peer](https://github.com/rendicott/marble-desktop-peer)** (browser CDP + desktop + confirm). Confirm cards in the session UI and a Tailscale-reachable `/confirm/{id}` page.
 - **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available; image URLs go through `attach_from_url`
@@ -177,7 +205,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Titles** — auto from last user message unless operator **renames** (`title_custom`)
 - **Markdown-first** transcripts under `$MEMORY/session/<id>.md` (including attachment sentinels)
 - **SQLite dual-write** (`marble.db`) for index, events, settings, cron, **model catalog**, **attachments**, **computers**, **clerk**, daemon state
-- **Schema** — binary supports **v7** (v3 catalog · v4 attachments · v5 computers · v6 clerk · v7 clerk snooze); stepwise migrate on open
+- **Schema** — binary supports **v9** (v3 catalog · v4 attachments · v5 computers · v6 clerk · v7 clerk snooze · v8 agent presets · v9 subprocess context); stepwise migrate on open
 - **Limp mode** if the DB schema is unreadable/mismatched (chat + MD still work)
 - **Daemon** — periodic flush, prune closed sessions, blob/attachment GC, daily compaction
 - **Session info** panel — tokens, tool histogram, recent events
@@ -195,7 +223,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Workspace explorer** modal (browse/edit/upload under the tool jail)
 - **System prompt & soul** modal (👁) — immutable system prompt + editable soul
 - **Cron jobs** modal (🕐) — list/create/edit/enable/run-now/history + next-fire preview + optional model pin
-- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, **Secrets** (`$MEMORY/env`), **Computers** ([marble-peer](https://github.com/rendicott/marble-desktop-peer) pairing), DB settings, MCP, UI prefs
+- **Settings** modal (⚙) — runtime (CLI model + OAuth), **Models** catalog, **Agents** presets (ADR-0030), **Secrets** (`$MEMORY/env`; file authoritative), **Computers** ([marble-peer](https://github.com/rendicott/marble-desktop-peer) pairing), DB settings, MCP, **UI** prefs + **themes** (ADR-0032: dark / light / tan, cookie)
 - **Compact tools** (ADR-0026) — tool rows collapsed by default; timestamps on user/assistant/tool
 - **Mobile-first** polish for composer, panels, and session chrome
 - SSE live updates for messages, tools, turn progress, attachments, peer confirms
@@ -328,8 +356,10 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h
-# Optional: inject secrets into process env at start (same file Secrets UI edits).
-# Catalog keys also re-read this path live without restart.
+# Optional: seed process env at start for consumers that read os.Getenv
+# directly (OAuth client secret, etc.). Settings → Secrets writes this same
+# path; the harness treats the file as authoritative for ResolveAPIKeyEnv
+# (model/sink/TTS/MCP keys) and re-reads it live — no restart for updates.
 EnvironmentFile=-%h/.marble/env
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/src/marble/bin/marble-harness \
@@ -370,7 +400,7 @@ go build -o bin/marble-harness ./cmd/marble-harness
 systemctl --user restart marble-harness
 ```
 
-Put secrets (e.g. `TAVILY_API_KEY`, `GROK_API_KEY`) in **`$MEMORY/env`** (Settings → Secrets) or the process environment — **not** in the unit `ExecStart` line, and **never** in git.
+Put secrets (e.g. `TAVILY_API_KEY`, `GROK_API_KEY`) in **`$MEMORY/env`** (Settings → Secrets). That file is authoritative for names it contains; process env is fallback only. **Not** in the unit `ExecStart` line, and **never** in git.
 
 ### 5. Google OAuth + multi-user (ADR-0017)
 
@@ -492,7 +522,7 @@ Operator secrets (API keys) live **outside** the repo and **outside SQLite**. Ca
 ~/.marble/env              # $MEMORY/env — Settings → Secrets + live re-read (mode 0600)
 ```
 
-Resolve order: **process env** (wins), then **`$MEMORY/env`**.
+Resolve order: **`$MEMORY/env`** (authoritative for names it contains), then **process env** (fallback). Settings → Secrets edits apply live (~2s). A leftover process copy (systemd `EnvironmentFile=` snapshot) is ignored while the file defines the name; restart to clear it. Deleting a name from the file still falls back to process env until restart.
 
 Example after adding a Gemini catalog row with `api_key_env=GEMINI_API_KEY`:
 
@@ -501,7 +531,8 @@ umask 077
 printf 'GEMINI_API_KEY=…\n' >> ~/.marble/env
 # Or use Settings → Secrets in the UI.
 # Catalog models pick this up within ~2s (no restart).
-# If the var is only set in process env from an old EnvironmentFile, restart:
+# Restart only to drop a stale process-env copy after a delete, or for
+# consumers that still read os.Getenv at startup (e.g. OAuth client secret):
 #   systemctl --user restart marble-harness
 ```
 
@@ -563,10 +594,16 @@ Notable ADRs:
 | 0021 | [marble-desktop-peer](https://github.com/rendicott/marble-desktop-peer) implementation (separate repo) |
 | 0022 | Long-turn efficiency (anti-thrash, walls, auto-continue) |
 | 0023 | Clerk — session attention dashboard (+ snooze) |
+| 0027 | Server-side TTS |
+| 0028 | Turn sinks (Orb / Slack / ntfy / Discord / webhook) |
+| 0029 | Reliable image attachments (`attach_from_url`) |
+| 0030 | Agent-process presets & turn send-routing |
+| 0031 | Subprocess context injection (pick-and-choose) |
+| 0032 | Selectable UI themes (dark / light / tan, cookie) |
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest: **[v0.4.2](https://github.com/rendicott/marble/releases/tag/v0.4.2)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.5](https://github.com/rendicott/marble/releases/tag/v0.4.5)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.0](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.0)**).
 
@@ -593,14 +630,14 @@ chmod +x marble-harness-linux-amd64
 **Publish a release** (maintainers — **GitHub Actions only**; do not upload locally built binaries):
 
 ```bash
-git tag v0.4.2
-git push origin v0.4.2
+git tag v0.4.5
+git push origin v0.4.5
 # Workflow "Release" builds on ubuntu-latest, tests, and attaches assets
 ```
 
 If a tag already exists but the workflow failed (e.g. GitHub outage), re-run from the Actions tab:
 
-**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.2`).
+**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.5`).
 
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 

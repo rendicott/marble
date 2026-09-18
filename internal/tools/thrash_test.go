@@ -135,10 +135,10 @@ func TestIsComputerFailUIUnchanged(t *testing.T) {
 
 func TestContinuePacket(t *testing.T) {
 	tc := &TurnContext{Thrash: &ThrashState{
-		LastURL:     "https://example.com",
-		LastFailure: "not_found",
-		ToolNames:   []string{"computer_screenshot", "computer_desktop_act"},
-		BanList:     []string{"shell_execute\x00{}"},
+		LastURL:      "https://example.com",
+		LastFailure:  "not_found",
+		ToolNames:    []string{"computer_screenshot", "computer_desktop_act"},
+		BanList:      []string{"shell_execute\x00{}"},
 		EscalateLock: true,
 	}}
 	p := tc.ContinuePacket("near max iters")

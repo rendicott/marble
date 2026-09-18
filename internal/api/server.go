@@ -66,6 +66,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/sessions/", s.handleSessionSub)
 	s.Mux.HandleFunc("/api/models", s.handleModels)
 	s.Mux.HandleFunc("/api/models/", s.handleModels)
+	s.Mux.HandleFunc("/api/agent-presets", s.handleAgentPresetsPublic)
 	s.Mux.HandleFunc("/api/workspace", s.handleWorkspace)
 	s.Mux.HandleFunc("/api/workspace/", s.handleWorkspace)
 	s.Mux.HandleFunc("/api/settings", s.handleSettings)
@@ -472,6 +473,7 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request, id string) 
 func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
 		ModelID         *string           `json:"model_id"`
+		AgentPresetID   *string           `json:"agent_preset_id"`
 		Title           *string           `json:"title"`
 		ReasoningEffort *string           `json:"reasoning_effort"`
 		SinkOverrides   map[string]string `json:"sink_overrides"`
@@ -480,8 +482,8 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if body.ModelID == nil && body.Title == nil && body.ReasoningEffort == nil && body.SinkOverrides == nil {
-		http.Error(w, "model_id, title, reasoning_effort, or sink_overrides required", http.StatusBadRequest)
+	if body.ModelID == nil && body.AgentPresetID == nil && body.Title == nil && body.ReasoningEffort == nil && body.SinkOverrides == nil {
+		http.Error(w, "model_id, agent_preset_id, title, reasoning_effort, or sink_overrides required", http.StatusBadRequest)
 		return
 	}
 
@@ -520,6 +522,19 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 			return
 		}
 		auth.LogAction("session_set_model", "session="+id+" model_id="+*body.ModelID, u)
+	}
+
+	if body.AgentPresetID != nil {
+		sess, err = s.Registry.SetSessionAgentPresetUI(id, *body.AgentPresetID)
+		if err != nil {
+			if session.IsBusy(err) {
+				http.Error(w, "session busy", http.StatusConflict)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		auth.LogAction("session_set_agent_preset", "session="+id+" preset="+*body.AgentPresetID, u)
 	}
 
 	if body.ReasoningEffort != nil {
@@ -581,6 +596,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request, id strin
 		Content       string                   `json:"content"`
 		AttachmentIDs []string                 `json:"attachment_ids"`
 		Client        *session.ClientAdvertise `json:"client"`
+		AgentPresetID string                   `json:"agent_preset_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -598,7 +614,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request, id strin
 	if u := auth.UserFromContext(r.Context()); u != nil {
 		actor = &session.Actor{Email: u.Email, Name: u.Name, Sub: u.Sub}
 	}
-	if err := s.Registry.PostUserMessageWithAttachments(id, body.Content, actor, body.AttachmentIDs); err != nil {
+	opts := session.TurnOpts{AgentPresetID: strings.TrimSpace(body.AgentPresetID)}
+	if err := s.Registry.PostUserMessageWithOpts(id, body.Content, actor, body.AttachmentIDs, opts); err != nil {
 		if session.IsBusy(err) {
 			http.Error(w, "session busy", http.StatusConflict)
 			return

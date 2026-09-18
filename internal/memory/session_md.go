@@ -11,18 +11,20 @@ import (
 
 // SessionMeta is list/index information from front matter.
 type SessionMeta struct {
-	ID           string     `json:"id"`
-	Title        string     `json:"title"`
-	Kind         string     `json:"kind,omitempty"` // user | system
-	ParentID     string     `json:"parent_session_id,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	ClosedAt     *time.Time `json:"closed_at,omitempty"`
-	Status       string     `json:"status"`
-	MessageCount int        `json:"message_count"`
-	Workspace    string     `json:"workspace,omitempty"`
-	Model        string     `json:"model,omitempty"`
-	ModelID      string     `json:"model_id,omitempty"` // catalog slug (ADR-0018)
+	ID                string     `json:"id"`
+	Title             string     `json:"title"`
+	Kind              string     `json:"kind,omitempty"` // user | system
+	ParentID          string     `json:"parent_session_id,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	ClosedAt          *time.Time `json:"closed_at,omitempty"`
+	Status            string     `json:"status"`
+	MessageCount      int        `json:"message_count"`
+	Workspace         string     `json:"workspace,omitempty"`
+	Model             string     `json:"model,omitempty"`
+	ModelID           string     `json:"model_id,omitempty"`           // catalog slug (ADR-0018)
+	AgentPresetID     string     `json:"agent_preset_id,omitempty"`    // ADR-0030 session lock
+	SubprocessContext string     `json:"subprocess_context,omitempty"` // ADR-0031 JSON
 	// ReasoningEffort is none|low|medium|high (thinking models); empty = provider default.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// TitleCustom is true when the operator set an explicit name (do not auto-title from messages).
@@ -86,6 +88,12 @@ func EncodeSession(doc *SessionDoc) string {
 	fmt.Fprintf(&b, "model: %q\n", doc.Model)
 	if doc.ModelID != "" {
 		fmt.Fprintf(&b, "model_id: %q\n", doc.ModelID)
+	}
+	if doc.AgentPresetID != "" {
+		fmt.Fprintf(&b, "agent_preset_id: %q\n", doc.AgentPresetID)
+	}
+	if strings.TrimSpace(doc.SubprocessContext) != "" {
+		fmt.Fprintf(&b, "subprocess_context: %s\n", doc.SubprocessContext)
 	}
 	if doc.ReasoningEffort != "" {
 		fmt.Fprintf(&b, "reasoning_effort: %s\n", doc.ReasoningEffort)
@@ -233,6 +241,10 @@ func parseFrontMatter(fm string) (SessionMeta, error) {
 			m.Model = val
 		case "model_id":
 			m.ModelID = val
+		case "agent_preset_id":
+			m.AgentPresetID = val
+		case "subprocess_context":
+			m.SubprocessContext = val
 		case "reasoning_effort":
 			m.ReasoningEffort = val
 		case "sink_overrides":

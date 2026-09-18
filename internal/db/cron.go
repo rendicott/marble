@@ -9,25 +9,25 @@ import (
 
 // CronJobRow is a durable cron job (ADR-0015).
 type CronJobRow struct {
-	ID          string
-	Name        string
-	Enabled     bool
+	ID           string
+	Name         string
+	Enabled      bool
 	ScheduleKind string // cron | interval
-	CronExpr    string
-	IntervalSec int
-	Timezone    string
-	SessionID   string
-	Prompt      string
-	CreatedBy   string
-	CreatedAt   string
-	UpdatedAt   string
-	NextRunAt   string
-	LastRunAt   string
-	LastStatus  string
-	LastError   string
-	RunCount    int
-	MaxRuns     *int
-	ModelID     string // catalog pin or "" (ADR-0018)
+	CronExpr     string
+	IntervalSec  int
+	Timezone     string
+	SessionID    string
+	Prompt       string
+	CreatedBy    string
+	CreatedAt    string
+	UpdatedAt    string
+	NextRunAt    string
+	LastRunAt    string
+	LastStatus   string
+	LastError    string
+	RunCount     int
+	MaxRuns      *int
+	ModelID      string // catalog pin or "" (ADR-0018)
 }
 
 // CronRunRow is one fire attempt.

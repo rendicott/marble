@@ -1,0 +1,112 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0030",
+  "title": "Agent-process presets & turn send-routing",
+  "updated_at": "2026-09-15T00:00:00.000Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "presets",
+      "notes": "",
+      "question": "Preset shape — generalize drivers → named presets?",
+      "rec": "presets"
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "sqlite",
+      "notes": "Schema v8 (ADR text said v4; current binary is v7).",
+      "question": "Preset storage",
+      "rec": "sqlite"
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "detect",
+      "notes": "",
+      "question": "Host detection",
+      "rec": "detect"
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "wrapped",
+      "notes": "",
+      "question": "Prompt wrapping for a routed turn",
+      "rec": "wrapped"
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "reuse",
+      "notes": "",
+      "question": "Result collection",
+      "rec": "reuse"
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "gesture",
+      "notes": "",
+      "question": "Per-turn override trigger",
+      "rec": "gesture"
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "unified_selector",
+      "notes": "",
+      "question": "Session lock (subprocess-only)",
+      "rec": "unified_selector"
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "verbatim",
+      "notes": "",
+      "question": "Marble model role on a routed turn",
+      "rec": "verbatim"
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "reuse_caps",
+      "notes": "",
+      "question": "Caps & concurrency",
+      "rec": "reuse_caps"
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "opencode",
+      "notes": "opencode run --format json --dir <cwd> [prompt]; --dangerously-skip-permissions when auto-approve.",
+      "question": "opencode + extensible driver registry",
+      "rec": "opencode"
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "fall_through",
+      "notes": "",
+      "question": "Fallback when preset missing / disabled / not detected",
+      "rec": "fall_through"
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "system_off",
+      "notes": "",
+      "question": "System agents",
+      "rec": "system_off"
+    },
+    "Q13": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "agent_tools",
+      "notes": "",
+      "question": "Agent tools for presets / routing",
+      "rec": "agent_tools"
+    }
+  }
+}

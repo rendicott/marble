@@ -78,6 +78,32 @@ func TestResolveAPIKeyFromMemoryEnvFile(t *testing.T) {
 	}
 }
 
+func TestResolveAPIKeyManagedFileWinsOverProcessEnv(t *testing.T) {
+	// Footgun regression: systemd EnvironmentFile= loads $MEMORY/env into process
+	// env at boot, leaving a stale snapshot. The managed file must win so Settings →
+	// Secrets edits apply live without a restart.
+	t.Setenv("MARBLE_SHADOWED_KEY", "stale-process-value")
+	dir := t.TempDir()
+	SetMemoryDirForEnv(dir)
+	t.Cleanup(func() { SetMemoryDirForEnv(""); InvalidateEnvOverlay() })
+	path := filepath.Join(dir, "env")
+	if err := os.WriteFile(path, []byte("MARBLE_SHADOWED_KEY=fresh-file-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateEnvOverlay()
+	key, used, ok := ResolveAPIKeyEnv("MARBLE_SHADOWED_KEY")
+	if !ok || key != "fresh-file-value" || used != "MARBLE_SHADOWED_KEY" {
+		t.Fatalf("got key=%q used=%q ok=%v (file must win over process env)", key, used, ok)
+	}
+
+	// Process env still resolves for names absent from the managed file.
+	t.Setenv("MARBLE_PROC_ONLY_KEY", "process-only")
+	key, used, ok = ResolveAPIKeyEnv("MARBLE_PROC_ONLY_KEY")
+	if !ok || key != "process-only" || used != "MARBLE_PROC_ONLY_KEY" {
+		t.Fatalf("got key=%q used=%q ok=%v", key, used, ok)
+	}
+}
+
 func TestParseEnvFileQuotesAndExport(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "e")

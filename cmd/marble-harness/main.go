@@ -166,6 +166,61 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: agent_process: %v\n", err)
 		os.Exit(2)
 	}
+	if sqldb.Writable() {
+		acfg := agents.Config()
+		var seed []db.AgentPresetRow
+		order := 0
+		seen := map[string]bool{}
+		for _, name := range db.KnownAgentDrivers {
+			dc, ok := acfg.Drivers[name]
+			if !ok {
+				continue
+			}
+			cmd := strings.TrimSpace(dc.Command)
+			if cmd == "" {
+				cmd = name
+			}
+			seed = append(seed, db.AgentPresetRow{
+				ID: name, Driver: name, DisplayName: name, Command: cmd,
+				DefaultArgs: dc.DefaultArgs, Enabled: dc.Enabled, SortOrder: order,
+			})
+			seen[name] = true
+			order++
+		}
+		for name, dc := range acfg.Drivers {
+			if seen[name] {
+				continue
+			}
+			cmd := strings.TrimSpace(dc.Command)
+			if cmd == "" {
+				cmd = name
+			}
+			seed = append(seed, db.AgentPresetRow{
+				ID: name, Driver: name, DisplayName: name, Command: cmd,
+				DefaultArgs: dc.DefaultArgs, Enabled: dc.Enabled, SortOrder: order,
+			})
+			order++
+		}
+		if n, err := sqldb.SeedAgentPresetsIfEmpty(seed); err != nil {
+			log.Printf("WARNING: agent presets seed: %v", err)
+		} else if n > 0 {
+			log.Printf("agent presets: seeded %d from agent_process.json", n)
+		}
+		if rows, err := sqldb.ListAgentPresets(); err == nil {
+			found := 0
+			for _, row := range rows {
+				p := agentproc.ProbeCommand(row.Command)
+				_ = sqldb.UpdateAgentPresetDetection(row.ID, p.Detected, p.Path, p.Version)
+				if p.Detected {
+					found++
+					log.Printf("agent preset %s: detected %s (%s)", row.ID, p.Path, p.Version)
+				} else {
+					log.Printf("agent preset %s: not found (%s)", row.ID, row.Command)
+				}
+			}
+			log.Printf("agent presets: %d/%d detected", found, len(rows))
+		}
+	}
 
 	client := model.New(cfg.BaseURL, cfg.Model, cfg.MaxOutput, cfg.APIKey, cfg.ModelTimeout)
 	if strings.TrimSpace(cfg.APIKeyEnv) == "" {
@@ -330,6 +385,66 @@ func main() {
 			"model_id":        mid,
 			"model_effective": em.Public(),
 			"applies":         "next_turn",
+		}, nil
+	}
+	toolReg.ListAgentPresets = func() ([]map[string]interface{}, error) {
+		if sqldb == nil || !sqldb.Writable() {
+			return []map[string]interface{}{}, nil
+		}
+		rows, err := sqldb.ListAgentPresets()
+		if err != nil {
+			return nil, err
+		}
+		out := make([]map[string]interface{}, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, row.Public())
+		}
+		return out, nil
+	}
+	toolReg.GetAgentPreset = func(id string) (map[string]interface{}, error) {
+		if sqldb == nil || !sqldb.Writable() {
+			return nil, fmt.Errorf("agent presets unavailable")
+		}
+		row, err := sqldb.GetAgentPreset(id)
+		if err != nil {
+			return nil, err
+		}
+		return row.Public(), nil
+	}
+	toolReg.SetSessionSubprocessContext = func(sessionID string, spec agentproc.ContextSpec, clear bool) (map[string]interface{}, error) {
+		s, err := reg.SetSessionSubprocessContext(sessionID, spec, clear)
+		if err != nil {
+			return nil, err
+		}
+		sum := s.Summary()
+		fb := agentproc.DefaultContextSpec()
+		if agents != nil {
+			fb = agents.Config().GlobalContextSpec()
+		}
+		sessSpec := agentproc.ContextSpec{}
+		if sum.SubprocessContext != nil {
+			sessSpec = *sum.SubprocessContext
+		}
+		eff := agentproc.ResolveContextSpecWithPrompt(agentproc.ContextSpec{}, sessSpec, fb, "")
+		return map[string]interface{}{
+			"ok":        true,
+			"session":   sum.ID,
+			"override":  sum.SubprocessContext,
+			"effective": map[string]interface{}{"context": eff.Sources, "max_chars": eff.MaxChars},
+			"note":      "[] or clear=true inherits preset/global default (full+memory). Throwaway runs: context=none.",
+		}, nil
+	}
+	toolReg.SetSessionAgentPreset = func(sessionID, presetID string) (map[string]interface{}, error) {
+		s, err := reg.SetSessionAgentPreset(sessionID, presetID)
+		if err != nil {
+			return nil, err
+		}
+		sum := s.Summary()
+		return map[string]interface{}{
+			"agent_preset_id": sum.AgentPresetID,
+			"model_id":        sum.ModelID,
+			"applies":         "next_turn",
+			"note":            "Selecting a preset locks this session to subprocess-only; empty clears.",
 		}, nil
 	}
 	toolReg.StageChatAttachment = func(sessionID, name string, data []byte, metaJSON string) (id, mime, kind string, err error) {

@@ -256,7 +256,33 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"id"},
 			}),
-		spec("session_set_model", "Set this session's catalog model_id for the *next* turn (empty string = process default). Safe during the current turn. model_id must exist and be enabled (model_list / model_add first).",
+		spec("agent_preset_list", "List subprocess presets (ADR-0030): driver, command, detected badge. Create/edit in Settings → Agents. Then session_set_agent_preset to lock this session.",
+			map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}),
+		spec("agent_preset_get", "Get one subprocess preset by id (no secrets).",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"id"},
+			}),
+		spec("session_set_subprocess_context", "Set what context this session injects into subprocess agents (call_agent_process and routed turns). context is a list: compact, full, memory, read_paths; or none/auto. Default is full+memory. Pass context=[] or clear=true to inherit the preset/global default. Echoes the effective config.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"context":   map[string]interface{}{"description": "source list, or none/auto/clear"},
+					"max_chars": map[string]interface{}{"type": "integer", "description": "total cap (default 16000)"},
+					"clear":     map[string]interface{}{"type": "boolean", "description": "revert to default"},
+				},
+			}),
+		spec("session_set_agent_preset", "Lock this session to a subprocess preset (every user turn routes there; no Marble model call). Empty string clears the lock. Mutually exclusive with session_set_model. Applies next turn if busy.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"preset_id": map[string]interface{}{"type": "string", "description": "enabled preset id from agent_preset_list, or empty to clear"},
+				},
+			}),
+		spec("session_set_model", "Set this session's catalog model_id for the *next* turn (empty string = process default). Clears subprocess session lock. Safe during the current turn. model_id must exist and be enabled (model_list / model_add first).",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -517,7 +543,7 @@ func allSpecs() []model.ToolSpec {
 				"required": []string{"url"},
 			}),
 		// call_agent_process (ADR-0014) — external coding harnesses (grok/claude)
-		spec("call_agent_process", "Run an external coding agent headless (format=grok|claude). Prefer background=true for app/multi-file work; poll {\"task_id\"}. Judge progress by progress.cwd_mtime_changed / stuck_hint — not identical poll text. Do not kill under ~5–8m unless stuck_hint. Short implement prompts beat long CRITICAL essays. Defaults (agent_process.json): medium effort, --no-plan, max-turns~40, timeout~15m. Allowlisted extra_args e.g. --effort low|medium|high, --max-turns N, --no-plan. Kill: {\"task_id\",\"kill\":true}. Prefer Marble tools for simple edits.",
+		spec("call_agent_process", "Run an external coding agent headless (format=grok|claude|opencode). Prefer background=true for app/multi-file work; poll {\"task_id\"}. Judge progress by progress.cwd_mtime_changed / stuck_hint — not identical poll text. Do not kill under ~5–8m unless stuck_hint. Short implement prompts beat long CRITICAL essays. Defaults (agent_process.json): medium effort, --no-plan, max-turns~40, timeout~15m. context defaults to full+memory (session transcript + memory hits); pass context=[] or none for a throwaway isolated run. Kill: {\"task_id\",\"kill\":true}. Prefer Marble tools for simple edits.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -569,6 +595,13 @@ func allSpecs() []model.ToolSpec {
 						"type":        "array",
 						"items":       map[string]interface{}{"type": "string"},
 						"description": "Allowlisted CLI flags, e.g. [\"--effort\",\"low\",\"--max-turns\",\"25\",\"--no-plan\"]",
+					},
+					"context": map[string]interface{}{
+						"description": "Source list compact|full|memory|read_paths, or none/auto. Default full+memory. [] or none = isolated run.",
+					},
+					"context_max_chars": map[string]interface{}{
+						"type":        "integer",
+						"description": "Total injected-context cap (default 16000)",
 					},
 				},
 			}),

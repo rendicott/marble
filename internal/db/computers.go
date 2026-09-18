@@ -271,16 +271,16 @@ func (d *DB) GetSessionComputerID(sessionID string) (string, error) {
 
 // PairingRow ephemeral pairing session.
 type PairingRow struct {
-	ID              string
-	HCode           string
-	PCode           string
-	DeviceID        string
+	ID               string
+	HCode            string
+	PCode            string
+	DeviceID         string
 	DeviceTokenPlain string // only while pending seal; cleared after
-	OS              string
-	CapsJSON        string
-	Status          string // pending | joined | sealed | expired
-	CreatedAt       int64
-	ExpiresAt       int64
+	OS               string
+	CapsJSON         string
+	Status           string // pending | joined | sealed | expired
+	CreatedAt        int64
+	ExpiresAt        int64
 }
 
 // CreatePairing inserts a new pairing with H-code.

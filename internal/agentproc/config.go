@@ -2,8 +2,10 @@ package agentproc
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -20,6 +22,14 @@ type Config struct {
 	StuckAfterSec int `json:"stuck_after_sec"`
 	// StuckKill: if true, auto-kill process group when stuck_hint would fire.
 	StuckKill bool `json:"stuck_kill"`
+	// Context is the global default source-list for subprocess injection (ADR-0031).
+	Context ContextConfig `json:"context"`
+}
+
+// ContextConfig is agent_process.json `context` (ADR-0031).
+type ContextConfig struct {
+	Default  []string `json:"default"`
+	MaxChars int      `json:"max_chars"`
 }
 
 // DriverConfig configures one harness CLI.
@@ -56,6 +66,13 @@ func DefaultConfig() Config {
 				DefaultArgs:         nil,
 				AutoApprove:         &t,
 			},
+			"opencode": {
+				Enabled:             true,
+				Command:             "opencode",
+				DefaultOutputFormat: "json",
+				DefaultArgs:         nil,
+				AutoApprove:         &t,
+			},
 		},
 		DefaultTimeoutSec:   900,  // 15m
 		MaxTimeoutSec:       1800, // 30m
@@ -64,6 +81,10 @@ func DefaultConfig() Config {
 		SystemAgentsEnabled: false,
 		StuckAfterSec:       480, // 8m with no cwd mtime change → stuck_hint
 		StuckKill:           false,
+		Context: ContextConfig{
+			Default:  DefaultContextSources(),
+			MaxChars: DefaultContextMaxChars,
+		},
 	}
 }
 
@@ -109,7 +130,29 @@ func Load(path string) (Config, error) {
 			cfg.Drivers[name] = d
 		}
 	}
+	if len(cfg.Context.Default) == 0 && cfg.Context.MaxChars == 0 {
+		cfg.Context = def.Context
+	}
+	if cfg.Context.MaxChars <= 0 {
+		cfg.Context.MaxChars = DefaultContextMaxChars
+	}
+	if cfg.Context.Default == nil {
+		cfg.Context.Default = DefaultContextSources()
+	}
 	return cfg, nil
+}
+
+// GlobalContextSpec is the process default (Q12 full+memory).
+func (c Config) GlobalContextSpec() ContextSpec {
+	src := c.Context.Default
+	if src == nil {
+		src = DefaultContextSources()
+	}
+	max := c.Context.MaxChars
+	if max <= 0 {
+		max = DefaultContextMaxChars
+	}
+	return ContextSpec{Sources: src, MaxChars: max, Set: true}
 }
 
 // StuckAfter returns the stuck-detection window.
@@ -124,6 +167,27 @@ func (c Config) StuckAfter() time.Duration {
 // ConfigPath returns $MEMORY/agent_process.json
 func ConfigPath(memoryRoot string) string {
 	return filepath.Join(memoryRoot, "agent_process.json")
+}
+
+// Save writes cfg to path (mode 0600).
+func Save(path string, cfg Config) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("agent_process.json path empty")
+	}
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (c Config) DefaultTimeout() time.Duration {

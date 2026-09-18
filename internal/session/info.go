@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/tools"
 )
@@ -14,30 +15,32 @@ const DefaultRecentEvents = 30
 
 // InfoSession is the session block of GET …/info.
 type InfoSession struct {
-	ID           string     `json:"id"`
-	Title        string     `json:"title"`
-	TitleCustom  bool       `json:"title_custom,omitempty"` // operator rename — not auto from messages
-	Status       string     `json:"status"`
-	Busy         bool       `json:"busy"`
-	Dirty        bool       `json:"dirty"`
-	Loaded       bool       `json:"loaded"`
-	Kind         string     `json:"kind,omitempty"`
-	ParentID     string     `json:"parent_session_id,omitempty"`
-	CreatedAt    string     `json:"created_at"`
-	UpdatedAt    string     `json:"updated_at"`
-	ClosedAt     *string    `json:"closed_at"`
-	Model        string     `json:"model"`
-	Workspace    string     `json:"workspace"`
-	MDPath       string     `json:"md_path"`
-	MDPathAbs    string     `json:"md_path_abs"`
-	MessageCount int        `json:"message_count"`
-	System       bool       `json:"system"`
+	ID           string  `json:"id"`
+	Title        string  `json:"title"`
+	TitleCustom  bool    `json:"title_custom,omitempty"` // operator rename — not auto from messages
+	Status       string  `json:"status"`
+	Busy         bool    `json:"busy"`
+	Dirty        bool    `json:"dirty"`
+	Loaded       bool    `json:"loaded"`
+	Kind         string  `json:"kind,omitempty"`
+	ParentID     string  `json:"parent_session_id,omitempty"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
+	ClosedAt     *string `json:"closed_at"`
+	Model        string  `json:"model"`
+	Workspace    string  `json:"workspace"`
+	MDPath       string  `json:"md_path"`
+	MDPathAbs    string  `json:"md_path_abs"`
+	MessageCount int     `json:"message_count"`
+	System       bool    `json:"system"`
 	// LastPeerAction is the latest computer_* blurb (in-memory; empty if never used).
 	LastPeerAction   string  `json:"last_peer_action,omitempty"`
 	LastPeerActionAt *string `json:"last_peer_action_at,omitempty"`
 	// Cron marks sessions used by durable cron jobs (ADR-0015); set by API.
 	Cron     bool     `json:"cron,omitempty"`
 	CronJobs []string `json:"cron_jobs,omitempty"`
+	// SubprocessContext is the ADR-0031 session override (null = inherit default).
+	SubprocessContext *agentproc.ContextSpec `json:"subprocess_context,omitempty"`
 }
 
 // InfoTTSArtifact is one session audio attachment produced by TTS (ADR-0027).
@@ -73,14 +76,14 @@ type InfoTTS struct {
 
 // InfoResponse is GET /api/sessions/{id}/info (ADR-0008).
 type InfoResponse struct {
-	Session         InfoSession          `json:"session"`
-	Usage           db.SessionUsage      `json:"usage"`
-	Tools           []db.ToolStat        `json:"tools"` // usage histogram (calls this session)
-	AvailableTools  []tools.CatalogEntry `json:"available_tools"`
-	RecentEvents    []db.EventSummary    `json:"recent_events"`
-	TTS             *InfoTTS             `json:"tts,omitempty"`
-	Source          string               `json:"source"` // db | memory | markdown
-	Partial         bool                 `json:"partial"`
+	Session        InfoSession          `json:"session"`
+	Usage          db.SessionUsage      `json:"usage"`
+	Tools          []db.ToolStat        `json:"tools"` // usage histogram (calls this session)
+	AvailableTools []tools.CatalogEntry `json:"available_tools"`
+	RecentEvents   []db.EventSummary    `json:"recent_events"`
+	TTS            *InfoTTS             `json:"tts,omitempty"`
+	Source         string               `json:"source"` // db | memory | markdown
+	Partial        bool                 `json:"partial"`
 }
 
 // Info returns structured session diagnostics (ADR-0008).
@@ -158,24 +161,25 @@ func (r *Registry) Info(id string) (*InfoResponse, error) {
 	if live != nil {
 		sum := live.Summary()
 		out.Session = InfoSession{
-			ID:           sum.ID,
-			Title:        sum.Title,
-			TitleCustom:  sum.TitleCustom,
-			Status:       sum.Status,
-			Busy:         sum.Busy,
-			Dirty:        sum.Dirty,
-			Loaded:       true,
-			Kind:         sum.Kind,
-			ParentID:     sum.ParentID,
-			CreatedAt:    sum.CreatedAt.UTC().Format(time.RFC3339),
-			UpdatedAt:    sum.UpdatedAt.UTC().Format(time.RFC3339),
-			MessageCount: sum.MessageCount,
-			System:       sum.Kind == "system",
-			Model:        r.model,
-			Workspace:    r.workspace,
-			MDPath:       mdRel,
-			MDPathAbs:    mdAbs,
-			LastPeerAction: sum.LastPeerAction,
+			ID:                sum.ID,
+			Title:             sum.Title,
+			TitleCustom:       sum.TitleCustom,
+			Status:            sum.Status,
+			Busy:              sum.Busy,
+			Dirty:             sum.Dirty,
+			Loaded:            true,
+			Kind:              sum.Kind,
+			ParentID:          sum.ParentID,
+			CreatedAt:         sum.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt:         sum.UpdatedAt.UTC().Format(time.RFC3339),
+			MessageCount:      sum.MessageCount,
+			System:            sum.Kind == "system",
+			Model:             r.model,
+			Workspace:         r.workspace,
+			MDPath:            mdRel,
+			MDPathAbs:         mdAbs,
+			LastPeerAction:    sum.LastPeerAction,
+			SubprocessContext: sum.SubprocessContext,
 		}
 		if sum.LastPeerActionAt != nil {
 			t := sum.LastPeerActionAt.UTC().Format(time.RFC3339)

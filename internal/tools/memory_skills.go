@@ -18,6 +18,35 @@ type memSearchArgs struct {
 	MaxResults int      `json:"max_results"`
 }
 
+// MemoryHits is a ranked excerpt list for subprocess context (ADR-0031).
+func (r *Registry) MemoryHits(query string, max int) []string {
+	if r == nil || strings.TrimSpace(r.Memory) == "" || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	if max <= 0 {
+		max = agentprocMemoryTopK()
+	}
+	out, err := r.memorySearchHits(query, "all", max)
+	if err != nil || len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func agentprocMemoryTopK() int { return 5 }
+
+func (r *Registry) memorySearchHits(query, scope string, max int) ([]string, error) {
+	a := memSearchArgs{Query: query, Scope: scope, MaxResults: max}
+	s, err := r.runMemorySearch(a)
+	if err != nil {
+		return nil, err
+	}
+	if s == "no matches" || s == "" {
+		return nil, nil
+	}
+	return strings.Split(s, "\n"), nil
+}
+
 func (r *Registry) memorySearch(argsJSON string) (string, error) {
 	var a memSearchArgs
 	if err := parseArgs(argsJSON, &a); err != nil {
@@ -28,6 +57,13 @@ func (r *Registry) memorySearch(argsJSON string) (string, error) {
 	}
 	if a.MaxResults <= 0 {
 		a.MaxResults = 20
+	}
+	return r.runMemorySearch(a)
+}
+
+func (r *Registry) runMemorySearch(a memSearchArgs) (string, error) {
+	if strings.TrimSpace(a.Query) == "" {
+		return "no matches", nil
 	}
 	scope := strings.ToLower(a.Scope)
 	if scope == "" {

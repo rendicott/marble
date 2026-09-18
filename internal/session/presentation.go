@@ -35,11 +35,11 @@ type Presentation struct {
 
 // Phase is one immersion beat (scrubber key = id).
 type Phase struct {
-	ID             string     `json:"id"`
-	SpeechText     string     `json:"speech_text"`
-	ProseMarkdown  string     `json:"prose_markdown,omitempty"`
-	Visual         *Visual    `json:"visual,omitempty"`
-	Audio          *PhaseAudio `json:"audio,omitempty"` // ADR-0027 additive; no protocol bump
+	ID            string      `json:"id"`
+	SpeechText    string      `json:"speech_text"`
+	ProseMarkdown string      `json:"prose_markdown,omitempty"`
+	Visual        *Visual     `json:"visual,omitempty"`
+	Audio         *PhaseAudio `json:"audio,omitempty"` // ADR-0027 additive; no protocol bump
 }
 
 // PhaseAudio is optional neural narration on a phase (ADR-0027).
@@ -233,9 +233,9 @@ func PresentationMetaJSON(p *Presentation) string {
 		return ""
 	}
 	b, err := json.Marshal(map[string]interface{}{
-		"has_presentation":  true,
-		"protocol_version":  p.ProtocolVersion,
-		"phase_count":       len(p.Phases),
+		"has_presentation": true,
+		"protocol_version": p.ProtocolVersion,
+		"phase_count":      len(p.Phases),
 	})
 	if err != nil {
 		return ""

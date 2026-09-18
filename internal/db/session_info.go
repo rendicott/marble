@@ -7,21 +7,21 @@ import (
 
 // SessionUsage aggregates from session_events for one session.
 type SessionUsage struct {
-	EventCount         int `json:"event_count"`
-	UserMessages       int `json:"user_messages"`
-	AssistantMessages  int `json:"assistant_messages"`
-	ModelCalls         int `json:"model_calls"`
-	ToolCalls          int `json:"tool_calls"`
-	ToolResults        int `json:"tool_results"`
-	Errors             int `json:"errors"`
-	BlobCount          int `json:"blob_count"`
-	TokensInReported   int `json:"tokens_in_reported"`
-	TokensOutReported  int `json:"tokens_out_reported"`
-	TokensInEst        int `json:"tokens_in_est"`
-	TokensOutEst       int `json:"tokens_out_est"`
-	LatencyMsSum       int `json:"latency_ms_sum"`
-	LatencyMsAvg       int `json:"latency_ms_avg"`
-	LatencyMsMax       int `json:"latency_ms_max"`
+	EventCount        int `json:"event_count"`
+	UserMessages      int `json:"user_messages"`
+	AssistantMessages int `json:"assistant_messages"`
+	ModelCalls        int `json:"model_calls"`
+	ToolCalls         int `json:"tool_calls"`
+	ToolResults       int `json:"tool_results"`
+	Errors            int `json:"errors"`
+	BlobCount         int `json:"blob_count"`
+	TokensInReported  int `json:"tokens_in_reported"`
+	TokensOutReported int `json:"tokens_out_reported"`
+	TokensInEst       int `json:"tokens_in_est"`
+	TokensOutEst      int `json:"tokens_out_est"`
+	LatencyMsSum      int `json:"latency_ms_sum"`
+	LatencyMsAvg      int `json:"latency_ms_avg"`
+	LatencyMsMax      int `json:"latency_ms_max"`
 }
 
 // ToolStat is a per-tool histogram entry.

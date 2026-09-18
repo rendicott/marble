@@ -47,17 +47,17 @@ type FingerprintEvent struct {
 
 // ThrashState is turn-scoped (lives on TurnContext).
 type ThrashState struct {
-	Events           []FingerprintEvent
-	ToolNames        []string // last tools for continue packet / computer-heavy compact
+	Events             []FingerprintEvent
+	ToolNames          []string // last tools for continue packet / computer-heavy compact
 	ComputerFailStreak int
-	EscalateLock     bool
-	EvalMutateRecent []bool // true = mutate eval in last calls (capped)
-	LastURL          string
-	LastFailure      string
-	BanList          []string
-	ChecklistHint    bool // advisory already fired
-	ScreenshotStreak int
-	WaitStreak       int
+	EscalateLock       bool
+	EvalMutateRecent   []bool // true = mutate eval in last calls (capped)
+	LastURL            string
+	LastFailure        string
+	BanList            []string
+	ChecklistHint      bool // advisory already fired
+	ScreenshotStreak   int
+	WaitStreak         int
 }
 
 func (tc *TurnContext) thrash() *ThrashState {

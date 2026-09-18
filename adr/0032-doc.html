@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0032</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0032</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0032-selectable-ui-themes.md">Markdown</a>
+      <a href="0032-review.html">Review</a>
+      <a href="0032-answers.json">Answers</a>
+      <a href="0031-doc.html">← 0031</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0032-selectable-ui-themes-light-tan-from-settings-remembered-in-a-cookie">ADR-0032: Selectable UI themes (light + tan) from Settings, remembered in a cookie</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (2026-09-18) — implemented</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-09-18</td>
+</tr>
+<tr>
+<td><strong>Accepted</strong></td>
+<td>2026-09-18</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>ui, settings, theme, css, cookie, web</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0007 (Settings UI / UI prefs), ADR-0001 (web SPA)</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0032-review.html">0032-review.html</a></td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><a href="0032-answers.json">0032-answers.json</a> (<code>2026-09-18T16:15:22.306Z</code>) — Q1–Q12 locked (rec)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p>Give the embedded web UI <strong>named, selectable themes</strong>. v1 ships three:</p>
+<table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dark</code></td>
+<td>Today&rsquo;s look. Default when no cookie is set.</td>
+</tr>
+<tr>
+<td><code>light</code></td>
+<td>Cool light chrome.</td>
+</tr>
+<tr>
+<td><code>tan</code></td>
+<td>Warm paper / kraft chrome.</td>
+</tr>
+</tbody>
+</table>
+<p>The operator picks a theme in <strong>Settings ⚙ → UI</strong>. The choice is remembered in a <strong>cookie</strong> (<code>marble_theme</code>) so the next load paints the right palette <strong>before first paint</strong> (inline boot script in <code>&lt;head&gt;</code>). No SQLite key, no <code>localStorage</code> for this pref — cookie is the source of truth.</p>
+<h2 id="context-pain">Context &amp; pain</h2>
+<h3 id="current-state-verified">Current state (verified)</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Palette</td>
+<td>Single dark theme. CSS custom properties on <code>:root</code> in <code>internal/web/static/style.css</code> (<code>--bg</code>, <code>--panel</code>, <code>--text</code>, <code>--accent</code>, …)</td>
+</tr>
+<tr>
+<td>Hardcoded hex</td>
+<td>Dozens of chrome colors still baked in (<code>#12151c</code> sidebar, <code>#0c0e13</code> inputs, <code>#0a0c11</code> code, status pills, limp banner, …). Switching <code>:root</code> tokens alone would leave a mottled dark-on-light UI.</td>
+</tr>
+<tr>
+<td>Settings ⚙</td>
+<td>Modal with an <strong>UI</strong> pane (<code>settings.js</code>). Stores <code>show_closed</code> / <code>show_dotfiles</code> in <strong><code>localStorage</code></strong> key <code>marble.ui.prefs</code>. Save is explicit; limp does not block the UI pane.</td>
+</tr>
+<tr>
+<td>Persistence split (ADR-0007 Q15)</td>
+<td>UI chrome prefs are <strong>browser-local</strong>, not SQLite. Explorer/session toggles remain independent.</td>
+</tr>
+<tr>
+<td>Boot</td>
+<td><code>index.html</code> is <code>&lt;link rel="stylesheet" href="/style.css" /&gt;</code> then <code>&lt;body&gt;</code> — no theme attribute, no blocking script.</td>
+</tr>
+<tr>
+<td>Other surfaces</td>
+<td>ADR pages (<code>adr/*.html</code>) have their own hardcoded dark kit. mpub, Wonderstand, desktop peer are separate.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="observed-pain">Observed pain</h3>
+<table>
+<thead>
+<tr>
+<th>Pain</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dark-only chrome</td>
+<td>Long sessions in a bright room are harsh; some operators want paper/light.</td>
+</tr>
+<tr>
+<td>Token layer is incomplete</td>
+<td><code>:root</code> vars exist but much of the UI ignores them. A theme switch today would be a half-theme.</td>
+</tr>
+<tr>
+<td><code>localStorage</code> is too late for paint</td>
+<td>Settings JS loads at the bottom of <code>index.html</code>. A theme stored only there flashes dark, then swaps.</td>
+</tr>
+<tr>
+<td>No operator control</td>
+<td>Gear → UI has toggles for closed sessions and dotfiles, nothing for look.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Selectable themes</strong> from Settings ⚙ → UI: <code>dark</code>, <code>light</code>, <code>tan</code>.</li>
+<li><strong>Remember with a cookie</strong> so a reload (and a new tab on this origin) keeps the choice.</li>
+<li><strong>No flash of the wrong theme</strong> — apply <code>html[data-theme]</code> in a blocking <code>&lt;head&gt;</code> script before CSS.</li>
+<li><strong>One token layer</strong> — chrome, transcript, modals, inputs, and status colors go through CSS variables. Hardcoded hex in <code>style.css</code> is a bug after this ADR.</li>
+<li><strong>Keep today&rsquo;s look as <code>dark</code>.</strong> No cookie ⇒ identical to current UI.</li>
+<li><strong>Per-browser, not per-harness.</strong> Theme is chrome, not a SQLite setting. Other devices / browsers keep their own cookie.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Auto <code>prefers-color-scheme</code></td>
+<td>Explicit pick only. OS light mode must not surprise a dark-default operator.</td>
+</tr>
+<tr>
+<td>Custom / uploaded palettes</td>
+<td>Named catalog only.</td>
+</tr>
+<tr>
+<td>Per-session theme</td>
+<td>One chrome for the SPA.</td>
+</tr>
+<tr>
+<td>Theming ADR pages, mpub, Wonderstand, desktop peer</td>
+<td>Separate surfaces, separate kits.</td>
+</tr>
+<tr>
+<td>Server-side theme (Set-Cookie from Go, SQLite key, account sync)</td>
+<td>Cookie written by the browser is enough.</td>
+</tr>
+<tr>
+<td>Stuffing theme into <code>marble.ui.prefs</code> localStorage</td>
+<td>Boot script needs a trivial parse; cookie is that.</td>
+</tr>
+<tr>
+<td>Runtime theme editor / contrast playground</td>
+<td>Palettes are code in <code>style.css</code>.</td>
+</tr>
+<tr>
+<td>Dark-dim / high-contrast / &ldquo;system&rdquo; extra ids</td>
+<td>Three ids in v1.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="design">Design</h2>
+<h3 id="a-theme-ids-and-default">A. Theme ids and default</h3>
+<p>Canonical ids (cookie value, <code>data-theme</code> value, Settings control value):</p>
+<pre><code>dark | light | tan
+</code></pre>
+<ul>
+<li>Unknown / missing / empty → <code>dark</code>.</li>
+<li>Default is <strong><code>dark</code></strong> so existing operators see no change until they pick.</li>
+</ul>
+<p><code>html</code> carries the active id:</p>
+<pre><code class="language-html">&lt;html lang=&quot;en&quot; data-theme=&quot;tan&quot;&gt;
+</code></pre>
+<p>Also set <code>color-scheme</code> (<code>dark</code> for <code>dark</code>, <code>light</code> for <code>light</code> and <code>tan</code>) so native scrollbars and form controls match.</p>
+<h3 id="b-token-layer">B. Token layer</h3>
+<p>Keep the existing names; add the tokens that are currently hardcoded. All three themes define the full set.</p>
+<table>
+<thead>
+<tr>
+<th>Token</th>
+<th>Purpose</th>
+<th>Dark (today)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--bg</code></td>
+<td>App canvas</td>
+<td><code>#0f1115</code></td>
+</tr>
+<tr>
+<td><code>--panel</code></td>
+<td>Cards, bubbles, dialogs</td>
+<td><code>#151922</code></td>
+</tr>
+<tr>
+<td><code>--panel-2</code></td>
+<td>Raised / nested</td>
+<td><code>#1b2130</code></td>
+</tr>
+<tr>
+<td><code>--sidebar</code></td>
+<td><code>#sidebar</code>, modal nav, list wells</td>
+<td><code>#12151c</code></td>
+</tr>
+<tr>
+<td><code>--border</code></td>
+<td>Hairlines</td>
+<td><code>#2a3142</code></td>
+</tr>
+<tr>
+<td><code>--text</code></td>
+<td>Primary copy</td>
+<td><code>#e8ecf4</code></td>
+</tr>
+<tr>
+<td><code>--muted</code></td>
+<td>Secondary copy</td>
+<td><code>#8b93a7</code></td>
+</tr>
+<tr>
+<td><code>--accent</code></td>
+<td>Links, focus, brand</td>
+<td><code>#7c9cff</code></td>
+</tr>
+<tr>
+<td><code>--accent-2</code></td>
+<td>Secondary accent (teal today)</td>
+<td><code>#5eead4</code></td>
+</tr>
+<tr>
+<td><code>--user</code></td>
+<td>User bubble fill</td>
+<td><code>#243056</code></td>
+</tr>
+<tr>
+<td><code>--assistant</code></td>
+<td>Assistant bubble fill</td>
+<td><code>#1a1f2a</code></td>
+</tr>
+<tr>
+<td><code>--tool</code></td>
+<td>Tool bubble fill</td>
+<td><code>#14241f</code></td>
+</tr>
+<tr>
+<td><code>--danger</code></td>
+<td>Errors, close</td>
+<td><code>#f87171</code></td>
+</tr>
+<tr>
+<td><code>--ok</code></td>
+<td>Success</td>
+<td><code>#4ade80</code></td>
+</tr>
+<tr>
+<td><code>--warn</code></td>
+<td>Warnings, running</td>
+<td><code>#fbbf24</code></td>
+</tr>
+<tr>
+<td><code>--input-bg</code></td>
+<td>Inputs, textarea, code wells</td>
+<td><code>#0c0e13</code></td>
+</tr>
+<tr>
+<td><code>--chip</code></td>
+<td>Chips, pills, code-inline bg</td>
+<td><code>#252b3a</code></td>
+</tr>
+<tr>
+<td><code>--mark-glow</code></td>
+<td>Brand mark halo</td>
+<td><code>rgba(124, 156, 255, 0.35)</code></td>
+</tr>
+<tr>
+<td><code>--overlay</code></td>
+<td>Hover / selected fills</td>
+<td><code>rgba(124, 156, 255, 0.08)</code></td>
+</tr>
+<tr>
+<td><code>--code-bg</code></td>
+<td>Markdown <code>pre</code></td>
+<td><code>#0a0c11</code></td>
+</tr>
+<tr>
+<td><code>--shadow</code></td>
+<td>Modal / menu shadow</td>
+<td><code>rgba(0, 0, 0, 0.45)</code></td>
+</tr>
+</tbody>
+</table>
+<p>Fonts (<code>--mono</code>, <code>--sans</code>) stay shared; not themed.</p>
+<p>CSS shape:</p>
+<pre><code class="language-css">:root, html[data-theme=&quot;dark&quot;] { /* dark tokens */ }
+html[data-theme=&quot;light&quot;] { /* light tokens */ }
+html[data-theme=&quot;tan&quot;] { /* tan tokens */ }
+</code></pre>
+<p><code>:root</code> <strong>is</strong> dark so a missing <code>data-theme</code> still matches today.</p>
+<p>Implementation rule: after this ADR, <code>style.css</code> must not introduce new raw chrome hexes. Status colors (<code>--ok</code> / <code>--warn</code> / <code>--danger</code>) stay recognizable across themes (green / amber / red), retinted for contrast on the new grounds. <code>color-mix(...)</code> against tokens is allowed; <code>rgba(124, 156, 255, …)</code> hardcoded to the dark accent is not.</p>
+<h3 id="c-proposed-palettes-starting-point-hex-may-tweak-for-contrast">C. Proposed palettes (starting point; hex may tweak for contrast)</h3>
+<p><strong>Light</strong> — cool paper, not stark white:</p>
+<table>
+<thead>
+<tr>
+<th>Token</th>
+<th>Hex</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--bg</code></td>
+<td><code>#f3f5f9</code></td>
+</tr>
+<tr>
+<td><code>--panel</code></td>
+<td><code>#ffffff</code></td>
+</tr>
+<tr>
+<td><code>--panel-2</code></td>
+<td><code>#e8ecf4</code></td>
+</tr>
+<tr>
+<td><code>--sidebar</code></td>
+<td><code>#eceff5</code></td>
+</tr>
+<tr>
+<td><code>--border</code></td>
+<td><code>#cfd6e4</code></td>
+</tr>
+<tr>
+<td><code>--text</code></td>
+<td><code>#1b2230</code></td>
+</tr>
+<tr>
+<td><code>--muted</code></td>
+<td><code>#5c6578</code></td>
+</tr>
+<tr>
+<td><code>--accent</code></td>
+<td><code>#3b6cff</code></td>
+</tr>
+<tr>
+<td><code>--accent-2</code></td>
+<td><code>#0f766e</code></td>
+</tr>
+<tr>
+<td><code>--user</code></td>
+<td><code>#dce6ff</code></td>
+</tr>
+<tr>
+<td><code>--assistant</code></td>
+<td><code>#eef1f7</code></td>
+</tr>
+<tr>
+<td><code>--tool</code></td>
+<td><code>#d8f3e8</code></td>
+</tr>
+<tr>
+<td><code>--danger</code></td>
+<td><code>#dc2626</code></td>
+</tr>
+<tr>
+<td><code>--ok</code></td>
+<td><code>#15803d</code></td>
+</tr>
+<tr>
+<td><code>--warn</code></td>
+<td><code>#b45309</code></td>
+</tr>
+<tr>
+<td><code>--input-bg</code></td>
+<td><code>#ffffff</code></td>
+</tr>
+<tr>
+<td><code>--chip</code></td>
+<td><code>#e2e8f4</code></td>
+</tr>
+<tr>
+<td><code>--code-bg</code></td>
+<td><code>#e8ecf4</code></td>
+</tr>
+<tr>
+<td><code>--mark-glow</code></td>
+<td><code>rgba(59, 108, 255, 0.28)</code></td>
+</tr>
+<tr>
+<td><code>--overlay</code></td>
+<td><code>rgba(59, 108, 255, 0.08)</code></td>
+</tr>
+<tr>
+<td><code>--shadow</code></td>
+<td><code>rgba(27, 34, 48, 0.18)</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tan</strong> — warm kraft / paper:</p>
+<table>
+<thead>
+<tr>
+<th>Token</th>
+<th>Hex</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--bg</code></td>
+<td><code>#e8dcc8</code></td>
+</tr>
+<tr>
+<td><code>--panel</code></td>
+<td><code>#f4ead8</code></td>
+</tr>
+<tr>
+<td><code>--panel-2</code></td>
+<td><code>#ddcfb6</code></td>
+</tr>
+<tr>
+<td><code>--sidebar</code></td>
+<td><code>#dccdb3</code></td>
+</tr>
+<tr>
+<td><code>--border</code></td>
+<td><code>#c4b396</code></td>
+</tr>
+<tr>
+<td><code>--text</code></td>
+<td><code>#3b2f1e</code></td>
+</tr>
+<tr>
+<td><code>--muted</code></td>
+<td><code>#7a6a52</code></td>
+</tr>
+<tr>
+<td><code>--accent</code></td>
+<td><code>#8b5e3c</code></td>
+</tr>
+<tr>
+<td><code>--accent-2</code></td>
+<td><code>#2f6f4e</code></td>
+</tr>
+<tr>
+<td><code>--user</code></td>
+<td><code>#e6d3b0</code></td>
+</tr>
+<tr>
+<td><code>--assistant</code></td>
+<td><code>#efe6d4</code></td>
+</tr>
+<tr>
+<td><code>--tool</code></td>
+<td><code>#d5e4c4</code></td>
+</tr>
+<tr>
+<td><code>--danger</code></td>
+<td><code>#b91c1c</code></td>
+</tr>
+<tr>
+<td><code>--ok</code></td>
+<td><code>#3f7d4e</code></td>
+</tr>
+<tr>
+<td><code>--warn</code></td>
+<td><code>#b45309</code></td>
+</tr>
+<tr>
+<td><code>--input-bg</code></td>
+<td><code>#f7f1e4</code></td>
+</tr>
+<tr>
+<td><code>--chip</code></td>
+<td><code>#e4d6be</code></td>
+</tr>
+<tr>
+<td><code>--code-bg</code></td>
+<td><code>#efe4d0</code></td>
+</tr>
+<tr>
+<td><code>--mark-glow</code></td>
+<td><code>rgba(139, 94, 60, 0.30)</code></td>
+</tr>
+<tr>
+<td><code>--overlay</code></td>
+<td><code>rgba(139, 94, 60, 0.10)</code></td>
+</tr>
+<tr>
+<td><code>--shadow</code></td>
+<td><code>rgba(59, 47, 30, 0.18)</code></td>
+</tr>
+</tbody>
+</table>
+<p>Hex values may shift during implementation if contrast on bubbles / buttons fails a quick WCAG-AA check on <code>--text</code> vs <code>--bg</code> / <code>--panel</code>. <strong>Do not add a fourth id</strong> without a follow-on ADR.</p>
+<h3 id="d-cookie-source-of-truth">D. Cookie (source of truth)</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Name</td>
+<td><code>marble_theme</code></td>
+</tr>
+<tr>
+<td>Value</td>
+<td><code>dark</code> | <code>light</code> | <code>tan</code></td>
+</tr>
+<tr>
+<td>Path</td>
+<td><code>/</code></td>
+</tr>
+<tr>
+<td>Max-Age</td>
+<td><code>31536000</code> (1 year)</td>
+</tr>
+<tr>
+<td>SameSite</td>
+<td><code>Lax</code></td>
+</tr>
+<tr>
+<td>Secure</td>
+<td>set <strong>only</strong> when <code>location.protocol === "https:"</code> (local UI is often <code>http://127.0.0.1</code>)</td>
+</tr>
+<tr>
+<td>HttpOnly</td>
+<td><strong>no</strong> — JS must read and write it</td>
+</tr>
+<tr>
+<td>Domain</td>
+<td>omit (host-only)</td>
+</tr>
+</tbody>
+</table>
+<p>Not a secret. Unknown values ignored. Cookie is <strong>not</strong> mixed into <code>marble.ui.prefs</code>.</p>
+<p>Write helper (settings + any future picker):</p>
+<pre><code class="language-js">function setThemeCookie(id) {
+  const v = (id === &quot;light&quot; || id === &quot;tan&quot;) ? id : &quot;dark&quot;;
+  let c = &quot;marble_theme=&quot; + encodeURIComponent(v)
+    + &quot;; Path=/; Max-Age=31536000; SameSite=Lax&quot;;
+  if (location.protocol === &quot;https:&quot;) c += &quot;; Secure&quot;;
+  document.cookie = c;
+}
+</code></pre>
+<p>Read helper is duplicated in the boot script (no module load before paint).</p>
+<h3 id="e-boot-script-no-fouc">E. Boot script (no FOUC)</h3>
+<p>In <code>index.html</code> <code>&lt;head&gt;</code>, <strong>before</strong> the stylesheet:</p>
+<pre><code class="language-html">&lt;script&gt;
+(function () {
+  try {
+    var m = document.cookie.match(/(?:^|; )marble_theme=([^;]*)/);
+    var t = m ? decodeURIComponent(m[1]) : &quot;dark&quot;;
+    if (t !== &quot;dark&quot; &amp;&amp; t !== &quot;light&quot; &amp;&amp; t !== &quot;tan&quot;) t = &quot;dark&quot;;
+    document.documentElement.setAttribute(&quot;data-theme&quot;, t);
+    document.documentElement.style.colorScheme = t === &quot;dark&quot; ? &quot;dark&quot; : &quot;light&quot;;
+  } catch (e) {}
+})();
+&lt;/script&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/style.css&quot; /&gt;
+</code></pre>
+<p>Tiny, synchronous, no network. <code>settings.js</code> reapplies the same pair (<code>data-theme</code> + <code>color-scheme</code> + cookie) when the operator picks a swatch.</p>
+<h3 id="f-settings-ui">F. Settings ⚙ → UI</h3>
+<p>Add a <strong>Theme</strong> control at the top of the existing UI pane, above the closed-sessions / dotfiles checkboxes.</p>
+<p><strong>Control:</strong> three <strong>swatch cards</strong>, not a <code>&lt;select&gt;</code>. Each card shows a mini strip of <code>--bg</code> / <code>--panel</code> / <code>--accent</code> and the id label. Selected card gets a border/check.</p>
+<p><strong>Apply:</strong> live. Changing the swatch:</p>
+<ol>
+<li>Sets <code>html[data-theme]</code> and <code>color-scheme</code> immediately (the open Settings modal restyles in place — that <em>is</em> the preview).</li>
+<li>Writes the cookie immediately.</li>
+<li>Does <strong>not</strong> require the pane&rsquo;s <strong>Save</strong> button (Save stays for <code>show_closed</code> / <code>show_dotfiles</code>).</li>
+</ol>
+<p>Hint copy: <code>Stored in a cookie on this browser. Applies immediately.</code></p>
+<p><strong>Reset</strong> (the existing UI-section Reset): does <strong>not</strong> change theme. Picking <code>dark</code> is how you go back. Theme is not a draft field in <code>marble.ui.prefs</code>.</p>
+<p>Limp mode: theme picker stays enabled (browser-local, like the rest of the UI pane).</p>
+<h3 id="g-scope-of-files">G. Scope of files</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>internal/web/static/index.html</code></td>
+<td>Boot script in <code>&lt;head&gt;</code> before CSS</td>
+</tr>
+<tr>
+<td><code>internal/web/static/style.css</code></td>
+<td>Token blocks for three themes; replace hardcoded chrome hex with vars</td>
+</tr>
+<tr>
+<td><code>internal/web/static/settings.js</code></td>
+<td>Swatch UI, cookie read/write, live apply</td>
+</tr>
+</tbody>
+</table>
+<p>No Go, no schema bump, no <code>/api/settings</code> key. Auth cookies (ADR-0017) are unrelated; do not reuse those names.</p>
+<p>Login / OAuth interstitial: if it is a separate HTML document that does not load <code>style.css</code>, leave it. If it is the SPA (<code>index.html</code> fallback), it inherits the cookie automatically.</p>
+<h3 id="h-security-privacy">H. Security / privacy</h3>
+<ul>
+<li>Cookie value is a 4–5 char enum. No PII.</li>
+<li>Not HttpOnly by design.</li>
+<li><code>SameSite=Lax</code> is enough for a same-origin SPA.</li>
+<li>Do not echo the cookie into SQLite, transcripts, or agent context.</li>
+<li>Theme ids are allow-listed on read; anything else → <code>dark</code>.</li>
+</ul>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Why not</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>localStorage</code> (<code>marble.ui.prefs.theme</code>)</td>
+<td>Matches other UI prefs, but the boot path is worse: <code>settings.js</code> is deferred. A second blocking script that parsed JSON from <code>localStorage</code> works, but the operator asked for a cookie, and a cookie is the natural &ldquo;read in <code>&lt;head&gt;</code>&rdquo; primitive.</td>
+</tr>
+<tr>
+<td>SQLite <code>settings.theme</code></td>
+<td>Wrong layer (per-harness, not per-browser). Would require an API round-trip before paint or a flash. Conflicts with ADR-0007&rsquo;s UI-prefs split.</td>
+</tr>
+<tr>
+<td><code>document.documentElement.classList</code> (<code>theme-tan</code>)</td>
+<td>Equivalent to <code>data-theme</code>; attribute is easier to target and inspect.</td>
+</tr>
+<tr>
+<td>CSS <code>@media (prefers-color-scheme)</code> as default</td>
+<td>Surprises operators; v1 is explicit. Can be a later <code>system</code> id.</td>
+</tr>
+<tr>
+<td>Separate <code>themes.css</code> file</td>
+<td>Extra request; v1 catalog is small. Keep tokens in <code>style.css</code>.</td>
+</tr>
+<tr>
+<td>Server <code>Set-Cookie</code> from <code>Accept</code> / query</td>
+<td>Overkill; the picker writes the cookie.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisions-locked-q1q12">Decisions locked (Q1–Q12)</h2>
+<p>All rec. Source: <code>adr/0032-answers.json</code> (<code>2026-09-18T16:15:22.306Z</code>).</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>Settings ⚙ → UI pane (existing). Theme swatches at the top, above closed-sessions / dotfiles.</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td><code>dark</code> (current look, default) + <code>light</code> + <code>tan</code>. Three ids in v1. No system / custom / high-contrast yet.</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>Cookie <code>marble_theme</code>. Not localStorage, not SQLite, not mixed into <code>marble.ui.prefs</code>.</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td><code>Path=/; Max-Age=31536000</code> (1 year); <code>SameSite=Lax</code>; <code>Secure</code> only when <code>location.protocol</code> is https; not HttpOnly; host-only (no Domain).</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>Live apply + write cookie immediately on swatch click. Settings Save is not required for theme.</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>Inline boot script in <code>index.html</code> <code>&lt;head&gt;</code> before the stylesheet. Sets <code>html[data-theme]</code> and <code>color-scheme</code> from the cookie.</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td><code>html[data-theme='dark\|light\|tan']</code> CSS variables. <code>:root</code> stays dark. Retokenize hardcoded chrome hex in <code>style.css</code> — leftover hex is a bug.</td>
+</tr>
+<tr>
+<td><strong>Q8</strong></td>
+<td>No in v1. Explicit pick only. Default <code>dark</code>. A later <code>system</code> id can follow <code>prefers-color-scheme</code>.</td>
+</tr>
+<tr>
+<td><strong>Q9</strong></td>
+<td>Three swatch cards (mini bg/panel/accent strip + id). Not a <code>&lt;select&gt;</code>.</td>
+</tr>
+<tr>
+<td><strong>Q10</strong></td>
+<td>Embedded web SPA only (<code>index.html</code> + <code>style.css</code> + <code>settings.js</code>). Not ADR pages, mpub, Wonderstand, or desktop peer.</td>
+</tr>
+<tr>
+<td><strong>Q11</strong></td>
+<td>UI-section Reset does not change theme. Picking <code>dark</code> is how you go back. Theme is not a <code>marble.ui.prefs</code> draft field.</td>
+</tr>
+<tr>
+<td><strong>Q12</strong></td>
+<td>Lock token names + proposed hex tables in this ADR. Contrast tweaks at implement are allowed. No fourth theme id without a follow-on ADR.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="open-questions">Open questions</h2>
+<p>None. Q1–Q12 locked.</p>
+<h2 id="implementation-order">Implementation order</h2>
+<ol>
+<li><strong>Boot + dark attribute</strong> — <code>index.html</code> script; <code>:root, html[data-theme="dark"]</code> (behavior-identical). Cookie helpers.</li>
+<li><strong>Retokenize <code>style.css</code></strong> — replace hardcoded chrome hex with the token table. Dark still looks like today.</li>
+<li><strong><code>light</code> + <code>tan</code> blocks</strong> — fill the token tables; fix leftover contrast bugs (markdown <code>strong</code>, code, pills).</li>
+<li><strong>Settings swatches</strong> — UI pane control; live apply; cookie write.</li>
+<li><strong>Browser check</strong> — dark (default, no cookie), light, tan, reload persistence, unknown cookie, http (no Secure), Settings Reset leaves theme, limp still allows picker.</li>
+</ol>
+<p>Suggested PRs (post-accept): one is fine (all UI, no schema). Split 1–2 vs 3–4 if the retokenize diff is large.</p>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>[x] Q1–Q12 answered and merged into this ADR</li>
+<li>[x] Three themes selectable from Settings ⚙ → UI</li>
+<li>[x] Choice remembered in <code>marble_theme</code> cookie and restored on reload with no wrong-theme flash</li>
+<li>[x] No cookie ⇒ today&rsquo;s dark UI</li>
+<li>[x] Hardcoded chrome hex in <code>style.css</code> replaced by tokens</li>
+<li>[x] No Go / SQLite / API change</li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<ul>
+<li>2026-09-18 — proposed (light + tan from Settings; cookie remember)</li>
+<li>2026-09-18 — accepted; Q1–Q12 locked (rec) from <code>0032-answers.json</code>; implemented (derived surface tokens <code>--warn-fill</code> / <code>--danger-fill</code> / <code>--ok-fill</code> + edges/text, <code>--scrim</code>, <code>--on-accent</code> — contrast tweaks allowed by Q12)</li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0032-selectable-ui-themes.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

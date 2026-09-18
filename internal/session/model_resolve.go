@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/model"
@@ -14,23 +15,23 @@ const ProcessCatalogID = "process"
 
 // EffectiveModel is the resolved model for one turn (ADR-0018).
 type EffectiveModel struct {
-	Source         string // process | catalog | fallthrough
-	CatalogID      string // "" for pure process; slug when catalog (even if fallthrough still sets attempted)
-	DisplayName    string
-	Model          string // provider model id
-	BaseURL        string
-	APIKey         string // resolved secret; never log
-	APIKeyEnv      string // config string for mode display
-	APIKeyMode     string // none | inherit | env | none_forced
+	Source           string // process | catalog | fallthrough
+	CatalogID        string // "" for pure process; slug when catalog (even if fallthrough still sets attempted)
+	DisplayName      string
+	Model            string // provider model id
+	BaseURL          string
+	APIKey           string // resolved secret; never log
+	APIKeyEnv        string // config string for mode display
+	APIKeyMode       string // none | inherit | env | none_forced
 	APIKeyConfigured bool
-	ContextLimit   int
-	MaxOutput      int
-	ContextReserve int
-	CapReasoning   bool
-	CapImages      bool
-	CapVoice       bool
-	CapTools       bool
-	Advisory       string // optional harness note (missing/disabled/empty key)
+	ContextLimit     int
+	MaxOutput        int
+	ContextReserve   int
+	CapReasoning     bool
+	CapImages        bool
+	CapVoice         bool
+	CapTools         bool
+	Advisory         string // optional harness note (missing/disabled/empty key)
 }
 
 // Budget returns prompt budget tokens.
@@ -46,17 +47,17 @@ func (e EffectiveModel) UsageRatio(est int) float64 {
 // Public maps to JSON for API (no secrets).
 func (e EffectiveModel) Public() map[string]interface{} {
 	return map[string]interface{}{
-		"source":           e.Source,
-		"catalog_id":       e.CatalogID,
-		"display_name":     e.DisplayName,
-		"model":            e.Model,
-		"base_url":         e.BaseURL,
-		"api_key_mode":     e.APIKeyMode,
+		"source":             e.Source,
+		"catalog_id":         e.CatalogID,
+		"display_name":       e.DisplayName,
+		"model":              e.Model,
+		"base_url":           e.BaseURL,
+		"api_key_mode":       e.APIKeyMode,
 		"api_key_configured": e.APIKeyConfigured,
-		"context_limit":    e.ContextLimit,
-		"max_output":       e.MaxOutput,
-		"context_reserve":  e.ContextReserve,
-		"budget":           e.Budget(),
+		"context_limit":      e.ContextLimit,
+		"max_output":         e.MaxOutput,
+		"context_reserve":    e.ContextReserve,
+		"budget":             e.Budget(),
 		"capabilities": map[string]bool{
 			"reasoning": e.CapReasoning,
 			"images":    e.CapImages,
@@ -81,7 +82,9 @@ func (e EffectiveModel) clientCacheKey() string {
 
 // TurnOpts carries turn-scoped options set before go runTurn (ADR-0018 KD11).
 type TurnOpts struct {
-	CronModelID string
+	CronModelID   string
+	AgentPresetID string
+	Context       agentproc.ContextSpec
 }
 
 // CatalogLookup fetches a catalog row by id (nil if missing).
@@ -157,7 +160,7 @@ func (r *Runner) processEffective() EffectiveModel {
 		ContextLimit:     r.Cfg.ContextLimit,
 		MaxOutput:        r.Cfg.MaxOutput,
 		ContextReserve:   r.Cfg.ContextReserve,
-		CapReasoning: true,
+		CapReasoning:     true,
 		// Process default CapImages=true so peer computer_screenshot / chat images
 		// reach the model. (Previously false: UI showed chips but model never saw
 		// pixels — agents claimed they "could not see" lock screens.) Override with
@@ -349,4 +352,3 @@ func (r *Runner) CatalogRowPublic(row *db.ModelCatalogRow) map[string]interface{
 	m["read_only"] = false
 	return m
 }
-

@@ -7,19 +7,21 @@ import (
 
 // SessionRow is a sessions table row.
 type SessionRow struct {
-	ID           string
-	Title        string
-	Status       string
-	CreatedAt    string
-	UpdatedAt    string
-	ClosedAt     sql.NullString
-	MessageCount int
-	Dirty        bool
-	Workspace    string
-	Model        string // last effective provider model string (ADR-0018 KD12)
-	ModelID      string // catalog slug or "" (ADR-0018)
-	ComputerID   string // bound peer computer slug (ADR-0020)
-	MDPath       string
+	ID                string
+	Title             string
+	Status            string
+	CreatedAt         string
+	UpdatedAt         string
+	ClosedAt          sql.NullString
+	MessageCount      int
+	Dirty             bool
+	Workspace         string
+	Model             string // last effective provider model string (ADR-0018 KD12)
+	ModelID           string // catalog slug or "" (ADR-0018)
+	ComputerID        string // bound peer computer slug (ADR-0020)
+	AgentPresetID     string // subprocess session lock (ADR-0030); exclusive with ModelID
+	SubprocessContext string // JSON {context,max_chars}; empty = inherit (ADR-0031)
+	MDPath            string
 }
 
 // UpsertSession inserts or updates a session index row.
@@ -38,10 +40,9 @@ func (d *DB) UpsertSession(s SessionRow) error {
 	if s.ClosedAt.Valid {
 		closed = s.ClosedAt.String
 	}
-	// Prefer full row including computer_id when column exists (schema v5+).
 	_, err := d.SQL.Exec(`
-		INSERT INTO sessions (id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, computer_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, computer_id, agent_preset_id, subprocess_context)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title,
 			status=excluded.status,
@@ -53,8 +54,10 @@ func (d *DB) UpsertSession(s SessionRow) error {
 			model=excluded.model,
 			model_id=excluded.model_id,
 			md_path=excluded.md_path,
-			computer_id=excluded.computer_id
-	`, s.ID, s.Title, s.Status, s.CreatedAt, s.UpdatedAt, closed, s.MessageCount, dirty, s.Workspace, s.Model, s.ModelID, s.MDPath, s.ComputerID)
+			computer_id=excluded.computer_id,
+			agent_preset_id=excluded.agent_preset_id,
+			subprocess_context=excluded.subprocess_context
+	`, s.ID, s.Title, s.Status, s.CreatedAt, s.UpdatedAt, closed, s.MessageCount, dirty, s.Workspace, s.Model, s.ModelID, s.MDPath, s.ComputerID, s.AgentPresetID, s.SubprocessContext)
 	return err
 }
 
@@ -64,7 +67,7 @@ func (d *DB) ListSessions(includeClosed bool) ([]SessionRow, error) {
 	if !d.Writable() {
 		return nil, nil
 	}
-	q := `SELECT id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, COALESCE(computer_id,'')
+	q := `SELECT id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, COALESCE(computer_id,''), COALESCE(agent_preset_id,''), COALESCE(subprocess_context,'')
 		FROM sessions`
 	if !includeClosed {
 		q += ` WHERE status != 'closed'`
@@ -80,7 +83,7 @@ func (d *DB) ListSessions(includeClosed bool) ([]SessionRow, error) {
 		var s SessionRow
 		var dirty int
 		if err := rows.Scan(&s.ID, &s.Title, &s.Status, &s.CreatedAt, &s.UpdatedAt, &s.ClosedAt,
-			&s.MessageCount, &dirty, &s.Workspace, &s.Model, &s.ModelID, &s.MDPath, &s.ComputerID); err != nil {
+			&s.MessageCount, &dirty, &s.Workspace, &s.Model, &s.ModelID, &s.MDPath, &s.ComputerID, &s.AgentPresetID, &s.SubprocessContext); err != nil {
 			return nil, err
 		}
 		s.Dirty = dirty != 0

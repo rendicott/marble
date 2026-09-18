@@ -1,0 +1,104 @@
+{
+  "schema": "marble-adr-answers/v1",
+  "adr": "0032",
+  "title": "Selectable UI themes — light + tan, cookie-remembered",
+  "updated_at": "2026-09-18T16:15:22.306Z",
+  "answers": {
+    "Q1": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Settings ⚙ → UI pane (existing). Theme swatches at the top, above closed-sessions / dotfiles.",
+      "notes": "",
+      "question": "Where does the picker live?",
+      "rec": "Settings ⚙ → UI pane (existing). Theme swatches at the top, above closed-sessions / dotfiles."
+    },
+    "Q2": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "dark (current look, default) + light + tan. Three ids in v1. No system / custom / high-contrast yet.",
+      "notes": "",
+      "question": "v1 catalog?",
+      "rec": "dark (current look, default) + light + tan. Three ids in v1. No system / custom / high-contrast yet."
+    },
+    "Q3": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Cookie marble_theme. Not localStorage, not SQLite, not mixed into marble.ui.prefs.",
+      "notes": "",
+      "question": "Persistence?",
+      "rec": "Cookie marble_theme. Not localStorage, not SQLite, not mixed into marble.ui.prefs."
+    },
+    "Q4": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Path=/; Max-Age=31536000 (1 year); SameSite=Lax; Secure only when location.protocol is https; not HttpOnly; host-only (no Domain).",
+      "notes": "",
+      "question": "Cookie attributes?",
+      "rec": "Path=/; Max-Age=31536000 (1 year); SameSite=Lax; Secure only when location.protocol is https; not HttpOnly; host-only (no Domain)."
+    },
+    "Q5": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Live apply + write cookie immediately on swatch click. Settings Save is not required for theme.",
+      "notes": "",
+      "question": "Apply timing?",
+      "rec": "Live apply + write cookie immediately on swatch click. Settings Save is not required for theme."
+    },
+    "Q6": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Inline boot script in index.html <head> before the stylesheet. Sets html[data-theme] and color-scheme from the cookie.",
+      "notes": "",
+      "question": "How do we avoid a flash of the wrong theme?",
+      "rec": "Inline boot script in index.html <head> before the stylesheet. Sets html[data-theme] and color-scheme from the cookie."
+    },
+    "Q7": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "html[data-theme='dark|light|tan'] CSS variables. :root stays dark. Retokenize hardcoded chrome hex in style.css — leftover hex is a bug.",
+      "notes": "",
+      "question": "Token architecture?",
+      "rec": "html[data-theme='dark|light|tan'] CSS variables. :root stays dark. Retokenize hardcoded chrome hex in style.css — leftover hex is a bug."
+    },
+    "Q8": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "No in v1. Explicit pick only. Default dark. A later system id can follow prefers-color-scheme.",
+      "notes": "",
+      "question": "Follow OS prefers-color-scheme?",
+      "rec": "No in v1. Explicit pick only. Default dark. A later system id can follow prefers-color-scheme."
+    },
+    "Q9": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Three swatch cards (mini bg/panel/accent strip + id). Not a <select>.",
+      "notes": "",
+      "question": "Selector widget?",
+      "rec": "Three swatch cards (mini bg/panel/accent strip + id). Not a <select>."
+    },
+    "Q10": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Embedded web SPA only (index.html + style.css + settings.js). Not ADR pages, mpub, Wonderstand, or desktop peer.",
+      "notes": "",
+      "question": "Which surfaces?",
+      "rec": "Embedded web SPA only (index.html + style.css + settings.js). Not ADR pages, mpub, Wonderstand, or desktop peer."
+    },
+    "Q11": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "UI-section Reset does not change theme. Picking dark is how you go back. Theme is not a marble.ui.prefs draft field.",
+      "notes": "",
+      "question": "Settings Reset vs theme?",
+      "rec": "UI-section Reset does not change theme. Picking dark is how you go back. Theme is not a marble.ui.prefs draft field."
+    },
+    "Q12": {
+      "status": "locked",
+      "choice": "rec",
+      "decision": "Lock token names + proposed hex tables in the ADR. Contrast tweaks at implement are allowed. No fourth theme id without a follow-on ADR.",
+      "notes": "",
+      "question": "How locked are the palettes?",
+      "rec": "Lock token names + proposed hex tables in the ADR. Contrast tweaks at implement are allowed. No fourth theme id without a follow-on ADR."
+    }
+  }
+}

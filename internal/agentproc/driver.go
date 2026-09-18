@@ -9,7 +9,7 @@ import (
 
 // Request is a normalized call from the Marble tool.
 type Request struct {
-	Format       string   // grok | claude
+	Format       string // grok | claude
 	Prompt       string
 	CWD          string // absolute path already jailed
 	OutputFormat string // plain | json
@@ -17,6 +17,13 @@ type Request struct {
 	Model        string
 	ExtraArgs    []string
 	Background   bool
+	// Preset overlays (ADR-0030): optional command/args from a named preset.
+	CommandOverride     string
+	ArgsOverride        []string
+	IgnoreDriverEnabled bool
+	// ContextBlock is prepended to Prompt in prepare (ADR-0031). Empty = no inject.
+	ContextBlock  string
+	ContextMarker string
 }
 
 // Result is returned to the Marble model (and stored on BG completion).
@@ -41,21 +48,43 @@ type Driver interface {
 	Parse(stdout, stderr string, exitCode int) Result
 }
 
-func driverFor(format string) (Driver, error) {
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "grok":
-		return grokDriver{}, nil
-	case "claude":
-		return claudeDriver{}, nil
-	default:
-		return nil, fmt.Errorf("unknown format %q (supported: grok, claude)", format)
+var driverRegistry = map[string]func() Driver{
+	"grok":     func() Driver { return grokDriver{} },
+	"claude":   func() Driver { return claudeDriver{} },
+	"opencode": func() Driver { return opencodeDriver{} },
+}
+
+// RegisterDriver adds or replaces a driver factory (tests / future adapters).
+func RegisterDriver(name string, fn func() Driver) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || fn == nil {
+		return
 	}
+	driverRegistry[name] = fn
+}
+
+// KnownDrivers returns registered driver names.
+func KnownDrivers() []string {
+	out := make([]string, 0, len(driverRegistry))
+	for k := range driverRegistry {
+		out = append(out, k)
+	}
+	return out
+}
+
+func driverFor(format string) (Driver, error) {
+	key := strings.ToLower(strings.TrimSpace(format))
+	fn, ok := driverRegistry[key]
+	if !ok || fn == nil {
+		return nil, fmt.Errorf("unknown format %q (supported: grok, claude, opencode)", format)
+	}
+	return fn(), nil
 }
 
 type grokDriver struct{}
 
-func (grokDriver) Name() string         { return "grok" }
-func (grokDriver) SupportsJSON() bool   { return true }
+func (grokDriver) Name() string       { return "grok" }
+func (grokDriver) SupportsJSON() bool { return true }
 
 func (grokDriver) BuildArgv(req Request, cfg DriverConfig) ([]string, error) {
 	cmd := cfg.Command
@@ -286,7 +315,8 @@ func dedupeFlagsLastWins(argv []string) []string {
 				"--max-turns", "--effort", "--reasoning-effort",
 				"--worktree", "--worktree-ref", "--ref", "--rules",
 				"--tools", "--sandbox", "--permission-mode", "--debug-file",
-				"--allowedTools", "--disallowedTools", "--append-system-prompt":
+				"--allowedTools", "--disallowedTools", "--append-system-prompt",
+				"--format", "--dir", "--agent", "--title":
 				hasV = true
 				val = argv[i+1]
 				i++

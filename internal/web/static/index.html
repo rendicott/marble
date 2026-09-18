@@ -4,6 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Marble</title>
+  <script>
+    (function () {
+      try {
+        var m = document.cookie.match(/(?:^|; )marble_theme=([^;]*)/);
+        var t = m ? decodeURIComponent(m[1]) : "dark";
+        if (t !== "dark" && t !== "light" && t !== "tan") t = "dark";
+        document.documentElement.setAttribute("data-theme", t);
+        document.documentElement.style.colorScheme = t === "dark" ? "dark" : "light";
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -172,6 +183,7 @@
         <nav class="settings-nav" id="settings-nav">
           <button type="button" data-sec="runtime" class="sel">Runtime</button>
           <button type="button" data-sec="models">Models</button>
+          <button type="button" data-sec="agents">Agents</button>
           <button type="button" data-sec="computers">Computers</button>
           <button type="button" data-sec="secrets">Secrets</button>
           <button type="button" data-sec="tts">TTS</button>
@@ -260,9 +272,9 @@
       <header id="main-head">
         <div id="session-title">Select or create a session</div>
         <div class="main-head-right">
-          <label class="model-picker-wrap" title="Session model (ADR-0018)">
-            <span class="muted model-picker-label">model</span>
-            <select id="session-model" class="model-picker" disabled aria-label="Session model">
+          <label class="model-picker-wrap" title="Route this session: catalog model or subprocess preset (ADR-0018 / ADR-0030)">
+            <span class="muted model-picker-label">route</span>
+            <select id="session-model" class="model-picker" disabled aria-label="Session route">
               <option value="">Process default</option>
             </select>
           </label>
@@ -327,7 +339,14 @@
               <input type="file" id="attach-input" hidden multiple
                 accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,text/plain,text/markdown,text/csv,application/json,text/html,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,.svg,.html,.log" />
             </label>
-            <button id="btn-send" type="submit" disabled>Send</button>
+            <div class="send-wrap">
+              <button id="btn-send" type="submit" disabled title="Send · right-click / long-press to route this turn to a subprocess">Send</button>
+              <div id="route-popover" class="route-popover" hidden role="dialog" aria-label="Route this turn">
+                <div class="route-pop-title">Route this turn</div>
+                <div id="route-pop-list" class="route-pop-list"></div>
+                <p class="hint route-pop-hint">This send only. Session lock lives in the route picker.</p>
+              </div>
+            </div>
           </div>
         </div>
       </form>

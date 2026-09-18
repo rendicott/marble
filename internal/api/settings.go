@@ -35,6 +35,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.handleTTSSettings(w, r)
 	case path == "sinks" || strings.HasPrefix(path, "sinks/"):
 		s.handleSinksSettings(w, r)
+	case path == "agents" || strings.HasPrefix(path, "agents/"):
+		s.handleAgentsSettings(w, r)
 	default:
 		http.NotFound(w, r)
 	}

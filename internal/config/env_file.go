@@ -16,8 +16,9 @@ import (
 var ValidEnvKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Default operator env file location (never store secrets in SQLite).
-// Process env (systemd EnvironmentFile / shell export) wins over the file overlay.
-// $MEMORY/env is re-read so new catalog api_key_env names work without restart.
+// $MEMORY/env is authoritative for names it contains (Settings → Secrets);
+// process env (systemd EnvironmentFile / shell export) is fallback only.
+// The file is re-read so catalog api_key_env names and secret edits apply without restart.
 const (
 	// RelMemoryEnv is under --memory (gitignored operator dir). Settings → Secrets writes here.
 	RelMemoryEnv = "env"
@@ -41,7 +42,7 @@ func SetMemoryDirForEnv(memory string) {
 	envOverlayMu.Unlock()
 }
 
-// EnvFilePaths returns overlay file paths checked after process env (for Settings help).
+// EnvFilePaths returns managed overlay file paths (checked before process env; for Settings help).
 func EnvFilePaths() []string {
 	if MemoryDirForEnv == "" {
 		return nil
@@ -51,7 +52,13 @@ func EnvFilePaths() []string {
 
 // ResolveAPIKeyEnv resolves a comma-separated list of env var names to a secret.
 // Never logs the secret. First non-empty value wins.
-// Order: process environment (os.Getenv), then $MEMORY/env overlay.
+//
+// Order: the managed $MEMORY/env overlay first, then the live process environment.
+// The managed file is the Settings → Secrets write target and is authoritative, so
+// edits apply live (~2s) without a restart. Process env may hold a stale snapshot
+// (e.g. systemd EnvironmentFile= loaded at boot) and is only a fallback for names
+// not present in the managed file.
+//
 // Empty list → no key.
 func ResolveAPIKeyEnv(apiKeyEnv string) (key, used string, configured bool) {
 	raw := strings.TrimSpace(apiKeyEnv)
@@ -62,17 +69,17 @@ func ResolveAPIKeyEnv(apiKeyEnv string) (key, used string, configured bool) {
 	if len(names) == 0 {
 		return "", "", false
 	}
-	// 1) Live process environment
-	for _, name := range names {
-		val := strings.TrimSpace(os.Getenv(name))
-		if val != "" {
-			return val, name, true
-		}
-	}
-	// 2) File overlay (re-read so operators can add keys without restart)
+	// 1) Managed file overlay (canonical; re-read so Settings edits apply live)
 	fileMap := loadEnvOverlay()
 	for _, name := range names {
 		if val := strings.TrimSpace(fileMap[name]); val != "" {
+			return val, name, true
+		}
+	}
+	// 2) Live process environment (fallback for names not in the managed file)
+	for _, name := range names {
+		val := strings.TrimSpace(os.Getenv(name))
+		if val != "" {
 			return val, name, true
 		}
 	}
@@ -185,18 +192,18 @@ func unquoteEnvValue(val string) string {
 	return val
 }
 
-// LookupEnvName reports whether a single env var name is set (process or overlay).
-// Never returns the secret.
+// LookupEnvName reports whether a single env var name is set and where the value
+// will resolve from (managed file first, then process env). Never returns the secret.
 func LookupEnvName(name string) (configured bool, source string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return false, ""
 	}
-	if strings.TrimSpace(os.Getenv(name)) != "" {
-		return true, "process"
-	}
 	if v := strings.TrimSpace(loadEnvOverlay()[name]); v != "" {
 		return true, "file"
+	}
+	if strings.TrimSpace(os.Getenv(name)) != "" {
+		return true, "process"
 	}
 	return false, ""
 }
@@ -213,10 +220,11 @@ func ManagedEnvPath() string {
 
 // EnvEntry is one KEY from the managed env file (and optional process note).
 type EnvEntry struct {
-	Name          string `json:"name"`
-	Value         string `json:"value"`
-	InManagedFile bool   `json:"in_managed_file"`
-	InProcess     bool   `json:"in_process"`
+	Name           string `json:"name"`
+	Value          string `json:"value"`
+	InManagedFile  bool   `json:"in_managed_file"`
+	InProcess      bool   `json:"in_process"`
+	ProcessDiffers bool   `json:"process_differs"`
 }
 
 // ValidateEnvKey returns an error if name is not a valid env identifier.
@@ -245,17 +253,15 @@ func ListManagedEnv() (path string, readPaths []string, entries []EnvEntry, err 
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		e := EnvEntry{
-			Name:          k,
-			Value:         fileMap[k],
-			InManagedFile: true,
-		}
-		if pv := strings.TrimSpace(os.Getenv(k)); pv != "" {
-			e.InProcess = true
-			// Prefer displaying process value when set (matches resolve order)
-			e.Value = pv
-		}
-		entries = append(entries, e)
+		fileVal := fileMap[k]
+		procVal := strings.TrimSpace(os.Getenv(k))
+		entries = append(entries, EnvEntry{
+			Name:           k,
+			Value:          fileVal, // authoritative (managed file wins over process env)
+			InManagedFile:  true,
+			InProcess:      procVal != "",
+			ProcessDiffers: procVal != "" && procVal != fileVal,
+		})
 	}
 	return path, readPaths, entries, nil
 }

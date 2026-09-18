@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0030</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0030</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0030-agent-process-presets.md">Markdown</a>
+      <a href="0030-review.html">Review</a>
+      <a href="0030-answers.json">Answers</a>
+      <a href="0029-doc.html">← 0029</a>
+      <a href="0031-doc.html">0031 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0030-agent-process-presets-turn-send-routing">ADR-0030: Agent-process presets &amp; turn send-routing</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (2026-09-15) — implemented (schema v8)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-09-14</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tools, subprocess, agents, presets, settings, session, turn-routing, claude-code, grok-build, opencode, cost</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0014 (<code>call_agent_process</code>), ADR-0007 (Settings UI), ADR-0018 (Selectable Models / <code>TurnOpts</code>), ADR-0005 (tool/loop), ADR-0010 (turn cancel), ADR-0022 (long-turn efficiency)</td>
+</tr>
+<tr>
+<td><strong>Answers</strong></td>
+<td><a href="0030-answers.json">0030-answers.json</a> (<code>2026-09-15T00:00:00.000Z</code>) — Q1–Q13 locked (rec)</td>
+</tr>
+<tr>
+<td><strong>Review UI</strong></td>
+<td><a href="0030-review.html">0030-review.html</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p><code>call_agent_process</code> (ADR-0014) works, but it is <strong>awkward to drive</strong>: the only way to use it is to <em>prompt the Marble model</em> to emit the tool call with a hand-written prompt, which is too free-form, easy to miss, and impossible to trigger deterministically from the UI.</p>
+<p>This ADR proposes turning the <strong>ad-hoc tool</strong> into a <strong>first-class, explicit routing surface</strong>:</p>
+<ol>
+<li><strong>Presets</strong> — named, editable agent-process configurations (grok, opencode, claude, …) managed in the Settings ⚙ modal, each with a driver, command, model, default args, and a <strong>host-detected</strong> status badge.  </li>
+<li><strong>Explicit send-routing</strong> — route a <strong>turn&rsquo;s prompt</strong> to a preset subprocess and <strong>reliably monitor/collect</strong> the result back into the transcript (reusing ADR-0014 background-task + progress machinery).  </li>
+<li><strong>Two triggers</strong>: a <strong>per-turn</strong> override (long-press / right-click the send button) and a <strong>session lock</strong> (&ldquo;subprocess-only&rdquo;) via the <strong>existing model selector</strong> (models + detected presets, mutually exclusive).</li>
+</ol>
+<p>This is the agent-process analogue of ADR-0018 (Selectable Models): a catalog of presets, an effective-resolution order, turn-scoped options, and a per-session preference — but the &ldquo;model&rdquo; being selected is a <strong>local harness CLI</strong>, not a cloud model endpoint.</p>
+<h2 id="context-pain">Context &amp; pain</h2>
+<h3 id="current-state-verified">Current state (verified)</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Config</td>
+<td><code>$MEMORY/agent_process.json</code> → <code>agentproc.Config{Drivers map[string]DriverConfig}</code>; <code>grok</code> + <code>claude</code> only (<code>internal/agentproc/config.go</code>)</td>
+</tr>
+<tr>
+<td>Drivers</td>
+<td>Hardcoded <code>driverFor("grok"\|"claude")</code> switch in <code>internal/agentproc/driver.go</code>; argv built per driver, no extensibility</td>
+</tr>
+<tr>
+<td>Tool</td>
+<td><code>call_agent_process</code> (ADR-0014): <code>format</code> enum <code>grok\|claude</code>, <code>prompt</code>/<code>cwd</code>/<code>workdir</code>/<code>extra_args</code>/<code>background</code>/<code>task_id</code>/<code>kill</code> (<code>internal/tools/agentproc.go</code>)</td>
+</tr>
+<tr>
+<td>Trigger</td>
+<td>The <strong>model must emit</strong> the tool call with a hand-written prompt; no UI affordance to route a turn</td>
+</tr>
+<tr>
+<td>Settings</td>
+<td>ADR-0007 modal edits DB <code>settings</code> + <code>mcp.json</code>; <code>agent_process.json</code> is hand-edited only</td>
+</tr>
+<tr>
+<td>Turn options</td>
+<td>ADR-0018 introduced <code>TurnOpts</code> (cron model pin) resolved once at <code>runTurn</code> start — no agent-process field</td>
+</tr>
+<tr>
+<td>Detection</td>
+<td>None — driver <code>BuildArgv</code> calls <code>exec.LookPath</code> and fails at fire time if the binary is missing</td>
+</tr>
+<tr>
+<td>Session</td>
+<td><code>sessions.model_id</code> (ADR-0018) exists; no agent preset / routing columns</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-is-awkward-today">What is awkward today</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Failure mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&ldquo;Use a subprocess to keep costs down this turn&rdquo;</td>
+<td>Model must be <em>told</em> to call the tool; it may ignore, paraphrase, or use the wrong flags</td>
+</tr>
+<tr>
+<td>&ldquo;Run this session only on Grok&rdquo;</td>
+<td>No session-level way to force it; every turn is a fresh prompt gamble</td>
+</tr>
+<tr>
+<td>&ldquo;Is Claude even installed?&rdquo;</td>
+<td>Unknown until a run fails at fire time (<code>binary not found on PATH</code>)</td>
+</tr>
+<tr>
+<td>&ldquo;Which harnesses do I have?&rdquo;</td>
+<td><code>agent_process.json</code> has drivers, but no host detection, no UI, no version</td>
+</tr>
+<tr>
+<td>Add a new harness (opencode, codex, aider)</td>
+<td>Requires a Go driver edit + rebuild; not operator-configurable</td>
+</tr>
+</tbody>
+</table>
+<p>The core friction: <strong>the tool is model-mediated and prompt-mediated</strong> when it should also be <strong>operator-mediated and deterministic</strong>.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Presets are first-class config</strong>: a named catalog of agent-process presets editable in Settings ⚙ (extending ADR-0007), not a hand-edited JSON map.  </li>
+<li><strong>Host detection</strong>: each preset reports whether its command resolves and what version runs, surfaced as a badge in Settings.  </li>
+<li><strong>Explicit turn routing</strong>: an operator can <strong>send a turn&rsquo;s prompt</strong> to a preset and get the result collected back reliably (reuse ADR-0014 BG task + poll + progress + stuck detection).  </li>
+<li><strong>Per-turn override</strong>: long-press (touch) / right-click (desktop) the send button opens a preset chooser for <strong>that turn only</strong>.  </li>
+<li><strong>Session lock</strong>: a session can be configured to route <strong>every</strong> user turn to a preset (subprocess-only), with a visible indicator.  </li>
+<li><strong>Extensible drivers</strong>: add <code>opencode</code> (and make the driver set extendable) so &ldquo;grok, opencode, claude, …&rdquo; is data, not a recompile.  </li>
+<li><strong>Safe &amp; bounded</strong>: reuse ADR-0014 concurrency caps, timeouts, output limits, stuck detection, and process-group kill on turn Stop.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Streaming child stdout/tool-use into live turn steps</td>
+<td>ADR-0014 already waits for exit; keep that</td>
+</tr>
+<tr>
+<td>Resume/continue external agent sessions</td>
+<td>ADR-0014 Q10 deferred; unchanged</td>
+</tr>
+<tr>
+<td>Automatic model-vs-agent routing (harness decides per task)</td>
+<td>Operator/explicit selection only (same stance as ADR-0018)</td>
+</tr>
+<tr>
+<td>A full &ldquo;agent marketplace&rdquo; / remote agents</td>
+<td>Local CLI harnesses only</td>
+</tr>
+<tr>
+<td>Arbitrary shell presets</td>
+<td>Still only known agent drivers; <code>shellExecute</code> remains the escape hatch</td>
+</tr>
+<tr>
+<td>Per-turn cost metering of subprocess runs</td>
+<td>Future spend ADR; out of scope</td>
+</tr>
+<tr>
+<td>Changing <code>call_agent_process</code> tool semantics for model-initiated calls</td>
+<td>Tool stays as-is; this ADR adds a routing path on top</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decision-drivers">Decision drivers</h2>
+<ol>
+<li><strong>Determinism over free-form</strong> — an explicit send affordance beats &ldquo;please call the tool&rdquo;.  </li>
+<li><strong>Symmetry with ADR-0018</strong> — presets : models :: <code>agent_presets</code> : <code>model_catalog</code>; reuse resolver + <code>TurnOpts</code> + session-preference patterns rather than invent new ones.  </li>
+<li><strong>Operator-owned config</strong> — presets are edited in Settings; the agent may <em>select</em> but not <em>define</em> them (symmetric with ADR-0018 KD8).  </li>
+<li><strong>Cost is the motive</strong> — routing keeps the expensive Marble model out of the loop for the routed turn; so the result should be emitted <strong>verbatim</strong>, not re-summarized by the Marble model.  </li>
+<li><strong>Reuse, don&rsquo;t rebuild</strong> — collection/monitoring already exists (<code>agentproc.Manager</code>); route turns through it.</li>
+</ol>
+<h2 id="proposed-design">Proposed design</h2>
+<h3 id="a-presets-generalize-drivers-presets">A. Presets (generalize <code>drivers</code> → <code>presets</code>)</h3>
+<p>A <strong>preset</strong> is a named, operator-editable bundle that fully describes one headless harness invocation:</p>
+<pre><code class="language-jsonc">{
+  &quot;id&quot;: &quot;grok-fast&quot;,              // slug, unique
+  &quot;driver&quot;: &quot;grok&quot;,               // grok | claude | opencode | …
+  &quot;display_name&quot;: &quot;Grok (fast)&quot;,
+  &quot;command&quot;: &quot;grok&quot;,              // resolved on PATH or absolute
+  &quot;model&quot;: &quot;&quot;,                    // optional -m/--model passthrough
+  &quot;default_args&quot;: [&quot;--no-plan&quot;, &quot;--effort&quot;, &quot;medium&quot;, &quot;--max-turns&quot;, &quot;40&quot;],
+  &quot;timeout_sec&quot;: 900,             // optional per-preset override (clamped to global max)
+  &quot;enabled&quot;: true,
+  &quot;notes&quot;: &quot;&quot;
+}
+</code></pre>
+<p><strong>Key point:</strong> presets are <strong>richer than today&rsquo;s <code>DriverConfig</code></strong> — multiple presets can share one driver but differ in <code>command</code>, <code>model</code>, <code>default_args</code>, or <code>timeout_sec</code>. The driver (<code>grok</code>/<code>claude</code>/<code>opencode</code>) supplies <em>argv-building + output-parsing</em>; the preset supplies <em>the concrete invocation</em>.</p>
+<p>The existing <code>agent_process.json</code> <code>drivers</code> map is a degenerate case (one preset per driver, keyed by format). This ADR <strong>generalizes</strong> it, keeping backward-compatible defaults.</p>
+<h3 id="b-storage-settings-ui">B. Storage &amp; Settings UI</h3>
+<p>Presets move to a durable store and get a Settings section, mirroring ADR-0018&rsquo;s <code>model_catalog</code>.</p>
+<ul>
+<li><strong>SQLite table <code>agent_presets</code></strong> (schema <strong>v8</strong>; ADR draft said v4 while the binary was already at v7), columns: <code>id</code>, <code>driver</code>, <code>display_name</code>, <code>command</code>, <code>model</code>, <code>default_args</code> (JSON array), <code>timeout_sec</code>, <code>enabled</code>, <code>detected</code>, <code>detected_version</code>, <code>detected_path</code>, <code>detected_at</code>, <code>sort_order</code>, <code>notes</code>, timestamps.  </li>
+<li><strong><code>agent_process.json</code></strong> remains the source of <strong>process-level defaults + global caps</strong> (<code>default_timeout_sec</code>, <code>max_timeout_sec</code>, <code>max_per_session</code>, <code>max_output_bytes</code>, <code>system_agents_enabled</code>, <code>stuck_after_sec</code>, <code>stuck_kill</code>) and is the <strong>seed</strong> source on first migrate (its <code>drivers</code> become initial preset rows).  </li>
+<li><strong>Settings ⚙ section &ldquo;Agents / Subprocesses&rdquo;</strong>: list presets with enabled toggle + detection badge; add/edit/delete; live <code>detect</code> button. Unknown fields rejected; no secrets (env-only, ADR-0016 pattern).</li>
+</ul>
+<h3 id="c-host-detection">C. Host detection</h3>
+<ul>
+<li>On startup (warm) and on demand (Settings &ldquo;detect&rdquo; / <code>GET …/health</code>): for each enabled preset, resolve <code>command</code> via <code>exec.LookPath</code> (or absolute path), run a cheap probe (<code>&lt;command&gt; --version</code>, short timeout ~3s), and store <code>detected</code>, <code>detected_version</code>, <code>detected_path</code>, <code>detected_at</code>.  </li>
+<li>Detection is <strong>advisory</strong>: a not-detected preset may still be selected, but fire fails fast (or falls through) if the binary is absent at fire time (see E).  </li>
+<li>Settings renders: 🟢 <code>detected · v1.2.3</code> / ⚪ <code>not found on PATH</code>.</li>
+</ul>
+<h3 id="d-turn-routing-semantics-send-the-rounds-prompt">D. Turn routing semantics (&ldquo;send the round&rsquo;s prompt&rdquo;)</h3>
+<p>When a turn is <strong>routed</strong> to preset <code>P</code>:</p>
+<ol>
+<li>At <code>runTurn</code> start, instead of building the normal Marble agent prompt, the harness captures the <strong>user&rsquo;s message</strong> (the &ldquo;round&rsquo;s prompt&rdquo;).  </li>
+<li>It wraps it minimally: a short harness preamble (workspace path, <code>workdir</code> = workspace or a dedicated subdir, &ldquo;you are operating in Marble session <code>&lt;id&gt;</code>; reply with your result&rdquo;) + the user message verbatim.  </li>
+<li>It hands the wrapped prompt to <code>agentproc.Manager</code> using preset <code>P</code> (reusing <code>prepare</code>/<code>BuildArgv</code>/<code>StartBackground</code>), with <code>cwd</code> = workspace root (or <code>workdir</code>).  </li>
+<li>The turn <strong>awaits completion</strong>, polling <code>task_id</code> (progress → <code>cwd_mtime_changed</code> / <code>stuck_hint</code> as today), and <strong>emits the collected <code>Result</code></strong> as the turn&rsquo;s assistant message.  </li>
+<li>Turn <strong>Stop</strong> kills the process group (ADR-0014 Q8); the turn&rsquo;s busy flag holds for the duration.</li>
+</ol>
+<p><strong>Result shape folded into the transcript:</strong></p>
+<pre><code class="language-text">[subprocess: grok-fast · ok · 214s · cwd=…]
+&lt;summary / raw output&gt;
+</code></pre>
+<p>No Marble model call occurs on a routed turn (see Q8).</p>
+<h3 id="e-effective-resolution-order">E. Effective resolution order</h3>
+<table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>Source</th>
+<th>When applied</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>TurnOpts.AgentPresetID</code></td>
+<td>Long-press / right-click send (that turn only)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>session.agent_preset_id</code> (set via the unified routing selector)</td>
+<td>Session is locked to subprocess-only (mutually exclusive with <code>model_id</code>)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Normal Marble model turn</td>
+<td>Default (today&rsquo;s behavior)</td>
+</tr>
+</tbody>
+</table>
+<p>If the selected preset is <strong>missing, disabled, or not detected</strong> at fire time: emit a harness advisory and <strong>fall through</strong> to the next priority (ultimately a normal Marble turn) — matching ADR-0018&rsquo;s resolver; never hard-crash.</p>
+<h3 id="f-per-turn-override-long-press-right-click-send">F. Per-turn override (long-press / right-click send)</h3>
+<ul>
+<li>Long-press (touch) / right-click (desktop) on the send button opens a <strong>preset chooser</strong> (detected presets first, disabled/not-found greyed).  </li>
+<li>Selecting a preset sets a <strong>turn-scoped</strong> <code>TurnOpts.AgentPresetID</code> for the next send only (exactly like ADR-0018 <code>CronModelID</code>); a normal click clears it.  </li>
+<li>The UI shows a transient &ldquo;routing → grok-fast&rdquo; indicator on the composer.</li>
+</ul>
+<h3 id="g-session-lock-subprocess-only-reuses-the-model-selector">G. Session lock (subprocess-only) — reuses the model selector</h3>
+<p>The session lock does <strong>not</strong> add a second picker. A session can run either a <strong>model</strong> or a <strong>subprocess</strong> on a turn, never both — so the existing ADR-0018 <strong>session model selector</strong> becomes a single unified <strong>routing selector</strong>.</p>
+<ul>
+<li><strong>Entries:</strong> &ldquo;Process default (CLI)&rdquo; + catalog models (ADR-0018) + a <strong>&ldquo;Subprocess&rdquo;</strong> group populated from <strong>detected</strong> presets only. Non-detected presets are omitted from the selector (they remain visible/editable in Settings, where detection runs).  </li>
+<li><strong>Semantics:</strong> choosing a model entry = normal Marble model turns (ADR-0018 unchanged). Choosing a subprocess preset = <strong>session lock</strong> — every user turn routes to that preset (subprocess-only). Selecting one <strong>clears</strong> the other (<strong>mutual exclusion</strong>).  </li>
+<li><strong>Storage:</strong> keep <code>sessions.model_id</code> (ADR-0018) and add <code>sessions.agent_preset_id</code> (preset slug or <code>""</code>). Mutually exclusive — <code>PATCH /api/sessions/{id}</code> with <code>{ "agent_preset_id": "grok-fast" }</code> clears <code>model_id</code>, and vice versa. <code>route_agents</code> is <strong>dropped</strong>: selecting a preset <em>is</em> the lock.  </li>
+<li><strong>Agent tools</strong> mirror the unified selector (<code>session_set_model</code> ↔ <code>session_set_agent_preset</code>).  </li>
+<li><strong>Session badge:</strong> &ldquo;↳ grok-fast&rdquo; when a preset is locked; the normal model badge (ADR-0018) when a model is selected.</li>
+</ul>
+<h3 id="h-new-drivers-extensibility">H. New drivers &amp; extensibility</h3>
+<ul>
+<li>Add an <strong><code>opencode</code></strong> driver (<code>opencode run "&lt;prompt&gt;"</code> headless; <code>--format json</code> — <strong>verify flags at implement</strong>, same caveat as ADR-0014 for claude).  </li>
+<li>Refactor <code>driverFor()</code> into an <strong>extensible driver registry</strong> keyed by <code>driver</code> string, so adding a harness is data + a small adapter, not a core edit.  </li>
+<li><code>grok</code> + <code>claude</code> drivers are unchanged in behavior.</li>
+</ul>
+<h3 id="i-security-concurrency-reuse">I. Security &amp; concurrency (reuse)</h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Concurrency cap</td>
+<td><code>max_per_session</code> (ADR-0014 Q7)</td>
+</tr>
+<tr>
+<td>Timeouts</td>
+<td><code>default_timeout_sec</code> / <code>max_timeout_sec</code> (clamped), per-preset optional override</td>
+</tr>
+<tr>
+<td>Output cap</td>
+<td><code>max_output_bytes</code></td>
+</tr>
+<tr>
+<td>Stuck detection</td>
+<td><code>stuck_after_sec</code> → <code>stuck_hint</code>; optional <code>stuck_kill</code></td>
+</tr>
+<tr>
+<td>Kill</td>
+<td>Turn Stop → process-group SIGTERM/SIGKILL (ADR-0014 Q8)</td>
+</tr>
+<tr>
+<td>Auto-approve</td>
+<td>Per-driver <code>auto_approve</code> (non-interactive flags) — unchanged</td>
+</tr>
+<tr>
+<td>Workspace jail</td>
+<td><code>cwd</code>/<code>workdir</code> resolve under workspace (ADR-0014 Q9)</td>
+</tr>
+<tr>
+<td>System agents</td>
+<td><code>system_agents_enabled</code> gate (default off)</td>
+</tr>
+</tbody>
+</table>
+<p>No new sandbox or privilege model in v1.</p>
+<h2 id="open-questions-q1q13">Open questions (Q1–Q13)</h2>
+<p>Decisions to lock via <code>0030-review.html</code> → <code>0030-answers.json</code>. Recommendations below.</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Question</th>
+<th>Rec</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q1</td>
+<td>Preset shape: generalize <code>drivers</code> → named <code>presets</code> (driver + command + model + args + timeout)?</td>
+<td>Yes — <code>presets</code>, one preset per driver by default</td>
+</tr>
+<tr>
+<td>Q2</td>
+<td>Storage: SQLite <code>agent_presets</code> (schema v4) vs keep <code>agent_process.json</code>?</td>
+<td>SQLite table; <code>agent_process.json</code> = global caps + seed</td>
+</tr>
+<tr>
+<td>Q3</td>
+<td>Detection: resolve <code>command</code> + <code>--version</code> probe, cached in row?</td>
+<td>Yes — startup warm + on-demand, cached</td>
+</tr>
+<tr>
+<td>Q4</td>
+<td>Prompt wrap: verbatim user message vs harness preamble + cwd + user message?</td>
+<td>Wrapped (preamble + cwd + verbatim message)</td>
+</tr>
+<tr>
+<td>Q5</td>
+<td>Collection: reuse BG task + poll + progress/stuck; result folded as assistant message?</td>
+<td>Yes — reuse <code>agentproc.Manager</code></td>
+</tr>
+<tr>
+<td>Q6</td>
+<td>Per-turn override UX: long-press/right-click send → preset chooser?</td>
+<td>Yes — sets <code>TurnOpts.AgentPresetID</code></td>
+</tr>
+<tr>
+<td>Q7</td>
+<td>Session lock: reuse the model selector as a single routing selector (models + detected presets, mutually exclusive)?</td>
+<td>Yes — one selector, <code>agent_preset_id</code> ↔ <code>model_id</code>, detected-only</td>
+</tr>
+<tr>
+<td>Q8</td>
+<td>Marble model role on routed turn: verbatim emit vs model re-summarizes?</td>
+<td>Verbatim (no model call — keep cost savings real)</td>
+</tr>
+<tr>
+<td>Q9</td>
+<td>Caps: reuse <code>max_per_session</code> / timeouts / stuck / kill?</td>
+<td>Yes — reuse, no new caps</td>
+</tr>
+<tr>
+<td>Q10</td>
+<td>Add <code>opencode</code> driver + make driver registry extensible?</td>
+<td>Yes — verify flags at implement</td>
+</tr>
+<tr>
+<td>Q11</td>
+<td>Fallback when preset missing/disabled/not-detected: fall through + advisory?</td>
+<td>Yes — fall through to normal turn</td>
+</tr>
+<tr>
+<td>Q12</td>
+<td>System agents: user sessions yes, system default off?</td>
+<td>Yes — same as ADR-0014 Q12</td>
+</tr>
+<tr>
+<td>Q13</td>
+<td>Agent tools: list/select preset + set session lock; create/edit operator-only?</td>
+<td>Yes — mirror ADR-0018 KD8</td>
+</tr>
+</tbody>
+</table>
+<h2 id="implementation-sketch-non-normative">Implementation sketch (non-normative)</h2>
+<pre><code>internal/agentproc/
+  preset.go      — Preset struct, load/save, detection probe
+  registry.go    — driver registry (grok|claude|opencode) keyed by driver
+  config.go      — split global caps (agent_process.json) vs presets (DB)
+
+internal/db/
+  agent_presets.go — schema v4 table + CRUD
+  sessions.go      — add agent_preset_id (mutually exclusive with model_id)
+
+internal/session/
+  turn.go / loop.go — TurnOpts.AgentPresetID; resolveEffectiveAgent(s, opts)
+                      → if routed: capture user msg → wrap → agentproc.StartBackground
+                      → poll (progress/stuck) → emit Result verbatim → endTurn
+
+internal/tools/
+  agentproc.go    — unchanged tool (model-initiated)
+  agentpresets.go — agent_preset_list / agent_preset_get / agent_preset_set (mirror model tools)
+
+internal/api/
+  settings.go     — agents section (list/detect/save)
+  sessions.go     — PATCH agent_preset_id (clears model_id; unified routing selector)
+
+internal/web/static/
+  settings.js     — Agents/Subprocesses section + detect
+  app.js          — composer: long-press/right-click preset chooser + routing chip
+</code></pre>
+<p><strong>Tests:</strong> preset CRUD; detection (found + not-found); resolver fall-through (turn override → session lock → normal); routed turn emits verbatim result; missing/disabled preset → advisory + normal turn; session lock routes every turn; Stop kills process group.</p>
+<h2 id="consequences">Consequences</h2>
+<h3 id="positive">Positive</h3>
+<ul>
+<li>Turns <code>call_agent_process</code> from &ldquo;ask the model nicely&rdquo; into a deterministic, one-gesture operation.  </li>
+<li>Operators can lock cheap/fast sessions to a local harness without prompt gymnastics.  </li>
+<li>Host detection removes the &ldquo;is it even installed?&rdquo; guesswork.  </li>
+<li>Extensible drivers make &ldquo;grok, opencode, claude, …&rdquo; operator data, not a recompile.  </li>
+<li>Strong symmetry with ADR-0018 keeps the mental model small (presets ≈ models, local CLI ≈ cloud endpoint).</li>
+</ul>
+<h3 id="negative-risks">Negative / risks</h3>
+<ul>
+<li>Two config surfaces for agents (<code>agent_process.json</code> global caps vs DB presets) — needs clear precedence and docs.  </li>
+<li>Turn-routing holds the session busy for the subprocess duration (long runs block the session, same as a normal long turn).  </li>
+<li>Verbatim emit means no Marble-model sanitization of subprocess output — scope <code>cwd</code>/<code>workdir</code> and prompts carefully.  </li>
+<li>CLI flag drift for <code>opencode</code>/future drivers (same risk as ADR-0014; drivers need upkeep).  </li>
+<li>Detection can go stale (binary moved/removed after startup) — mitigated by fire-time <code>LookPath</code> + fall-through.</li>
+</ul>
+<h3 id="neutral">Neutral</h3>
+<ul>
+<li><code>call_agent_process</code> tool semantics unchanged for model-initiated calls.  </li>
+<li>No new sandbox/privilege model.</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li>ADR-0014 <code>call_agent_process</code> (drivers, caps, auto-approve, BG, kill)  </li>
+<li>ADR-0018 Selectable Models (catalog, <code>TurnOpts</code>, resolver, session preference, agent-tool symmetry)  </li>
+<li>ADR-0007 Settings UI (modal, sections, editable durable config)  </li>
+<li>ADR-0005 tools/loop, ADR-0010 turn cancel, ADR-0022 long-turn efficiency  </li>
+<li>Code: <code>internal/agentproc/{config,driver,manager}.go</code>, <code>internal/tools/agentproc.go</code>, <code>internal/session/{session,turn,loop}.go</code></li>
+</ul>
+<h2 id="changelog">Changelog</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-09-14</td>
+<td>Proposed — presets + detection + turn send-routing (per-turn override + session lock)</td>
+</tr>
+<tr>
+<td>2026-09-14</td>
+<td>Refined — session lock reuses the ADR-0018 model selector as a single unified routing selector (models + detected presets, mutually exclusive); drop <code>route_agents</code></td>
+</tr>
+<tr>
+<td>2026-09-15</td>
+<td><strong>Accepted</strong> — locked Q1–Q13 to rec; schema <strong>v8</strong> (not v4)</td>
+</tr>
+<tr>
+<td>2026-09-15</td>
+<td><strong>Implemented</strong> — presets + detect + opencode driver registry + session lock + per-turn send routing + Settings → Agents + <code>agent_preset_*</code> tools</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0030-agent-process-presets.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

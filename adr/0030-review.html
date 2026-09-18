@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0030 Agent-process presets & turn send-routing</title>
+  <link rel="stylesheet" href="review-kit.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1e2330; --border: #2a3142;
+      --text: #e8ecf4; --muted: #9aa3b5; --accent: #7c9cff; --accent-2: #5eead4;
+      --warn: #fbbf24; --ok: #4ade80; --chip: #252b3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--sans); color: var(--text); line-height: 1.55;
+      background:
+        radial-gradient(900px 480px at 0% -10%, #1e3a5f 0%, transparent 50%),
+        radial-gradient(700px 400px at 100% 0%, #134e4a 0%, transparent 45%),
+        var(--bg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header.top {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(15,17,21,0.92); border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .brand { font-weight: 700; display: flex; gap: 0.6rem; align-items: center; }
+    .brand .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #5eead4, #7c9cff);
+    }
+    .status {
+      font-size: 0.78rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #3a2e10; color: var(--warn); border: 1px solid #6b5420;
+      font-family: var(--mono);
+    }
+    nav.toc { display: flex; gap: 0.65rem; flex-wrap: wrap; font-size: 0.85rem; }
+    nav.toc a { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.25rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+    h3 { font-size: 0.92rem; margin: 1rem 0 0.4rem; color: var(--accent-2); }
+    .muted { color: var(--muted); }
+    .lede { color: var(--muted); max-width: 82ch; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    code { font-family: var(--mono); font-size: 0.86em; background: var(--chip);
+      padding: 0.12rem 0.35rem; border-radius: 5px; border: 1px solid var(--border); }
+    pre.mock {
+      font-family: var(--mono); font-size: 0.72rem;
+      background: #0c0e13; border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.85rem 1rem; overflow-x: auto; white-space: pre; color: #c8d0e0;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+    .chip {
+      font-size: 0.74rem; font-family: var(--mono);
+      background: var(--chip); border: 1px solid var(--border); color: var(--muted);
+      padding: 0.2rem 0.5rem; border-radius: 999px;
+    }
+    .chip strong { color: var(--text); }
+    .callout {
+      border-left: 3px solid var(--accent); background: var(--panel-2);
+      padding: 0.75rem 1rem; border-radius: 0 10px 10px 0; margin: 0.75rem 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+    .meta {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.82rem;
+    }
+    .meta b { color: var(--muted); font-weight: 500; display: block; font-size: 0.7rem; text-transform: uppercase; }
+    .qcard {
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 1rem 1.1rem; margin: 0.75rem 0; background: #141824;
+    }
+    .qcard header { display: flex; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; align-items: baseline; }
+    .qid { font-family: var(--mono); color: var(--warn); font-weight: 700; font-size: 0.85rem; }
+    .qtitle { font-weight: 600; }
+    .rec {
+      margin-top: 0.5rem; padding: 0.5rem 0.65rem; border-radius: 8px;
+      background: #0f1f18; border: 1px solid #2d6a4f; color: #a7f3d0; font-size: 0.88rem;
+    }
+    .opts { margin-top: 0.65rem; display: flex; flex-direction: column; gap: 0.35rem; }
+    .opts label {
+      display: flex; gap: 0.5rem; align-items: flex-start; font-size: 0.88rem;
+      padding: 0.35rem 0.45rem; border-radius: 8px; cursor: pointer;
+    }
+    .opts label:hover { background: var(--panel-2); }
+    textarea.custom {
+      width: 100%; min-height: 56px; margin-top: 0.4rem;
+      background: #0c0e13; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.5rem; font-family: var(--sans); font-size: 0.88rem;
+    }
+    .actions {
+      display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem;
+      position: sticky; bottom: 0; background: rgba(15,17,21,0.94);
+      padding: 0.75rem 0; border-top: 1px solid var(--border);
+    }
+    button {
+      font: inherit; cursor: pointer; border-radius: 8px; padding: 0.45rem 0.85rem;
+      border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+    }
+    button.primary {
+      background: linear-gradient(135deg, #5b7cfa, #2dd4bf); border: none; color: #0b1020; font-weight: 600;
+    }
+    footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 0 2rem; }
+    .pain { color: #fca5a5; font-size: 0.88rem; }
+  </style>
+</head>
+<body data-adr="0030" data-adr-title="Agent-process presets & turn send-routing" data-status="proposed">
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0030</span>
+      <span class="status">PROPOSED · review</span>
+    </div>
+    <nav class="toc">
+      <a href="0030-doc.html">Read</a>
+      <a href="0030-agent-process-presets.md">ADR md</a>
+      <a href="#pain">Pain</a>
+      <a href="#shape">Shape</a>
+      <a href="#questions">Questions</a>
+      <a href="0030-answers.json">answers</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h1>Agent-process presets &amp; turn send-routing</h1>
+      <p class="lede">
+        Make <code>call_agent_process</code> (ADR-0014) <strong>explicit</strong> instead of prompt-mediated:
+        named, host-detected <strong>presets</strong> (grok, opencode, claude, …) in Settings ⚙, plus
+        a way to <strong>route a turn's prompt</strong> to a subprocess — via long-press/right-click send
+        (one turn) or a session lock (subprocess-only).
+      </p>
+      <div class="meta-row">
+        <div class="meta"><b>Status</b> Proposed</div>
+        <div class="meta"><b>Date</b> 2026-09-14</div>
+        <div class="meta"><b>Extends</b> 0014 · 0007 · 0018 · 0005</div>
+        <div class="meta"><b>Answers</b> 0030-answers.json</div>
+      </div>
+      <div class="chips">
+        <span class="chip"><strong>presets</strong> agent_presets (SQLite)</span>
+        <span class="chip"><strong>detect</strong> command + --version</span>
+        <span class="chip"><strong>route</strong> turn → subprocess</span>
+        <span class="chip"><strong>override</strong> long-press / right-click</span>
+        <span class="chip"><strong>lock</strong> session subprocess-only</span>
+        <span class="chip"><strong>driver</strong> grok · claude · opencode</span>
+      </div>
+    </section>
+
+    <section id="pain">
+      <h2>Pain</h2>
+      <p class="pain">The only way to use an external harness is to persuade the model to emit a tool call — free-form, skippable, and blind to what's installed.</p>
+      <table>
+        <thead><tr><th>Today</th><th>Gap</th></tr></thead>
+        <tbody>
+          <tr><td>Model must emit <code>call_agent_process</code> with a hand-written prompt</td><td>No deterministic, operator-controlled trigger</td></tr>
+          <tr><td><code>agent_process.json</code> drivers (grok/claude), hand-edited</td><td>No Settings UI, no presets, no new drivers without rebuild</td></tr>
+          <tr><td>Driver fails at fire time if binary missing</td><td>No host detection / version badge</td></tr>
+          <tr><td>"Run this session on Grok to save cost"</td><td>No per-turn override, no session lock</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="shape">
+      <h2>Shape (proposed)</h2>
+      <pre class="mock">composer send
+   ├─ normal click ───────────► normal Marble turn
+   ├─ long-press / right-click ► preset chooser ─► TurnOpts.AgentPresetID (this turn only)
+   └─ session locked ─────────► routes EVERY turn (unified selector: model OR detected preset)
+
+routed turn:
+   user message ─ wrap (preamble + cwd + msg)
+     │
+     ▼
+agentproc.Manager  (preset P: driver · command · args · model)
+     │  BG task · poll progress · stuck_hint
+     ▼
+Result ─ emitted VERBATIM as assistant message (no Marble model call)</pre>
+      <div class="callout">
+        <strong>Resolution order:</strong> turn override → session lock → normal Marble turn.
+        Missing/disabled/not-detected preset ⇒ advisory + fall through.
+      </div>
+      <div class="callout warn">
+        <strong>Not in this ADR:</strong> streaming child stdout, resume/continue, auto model-vs-agent routing,
+        remote agents, arbitrary shell presets, per-run cost metering.
+      </div>
+    </section>
+
+    <section id="questions">
+      <h2>Open questions</h2>
+      <p class="muted">Use rec / pick an option / write custom. Export saves <code>0030-answers.json</code>.</p>
+
+      <div class="qcard" data-qid="Q1" data-rec="presets">
+        <header><span class="qid">Q1</span><span class="qtitle">Preset shape — generalize drivers → named presets?</span></header>
+        <div class="rec"><strong>Rec:</strong> <code>presets</code>: named bundles (driver + command + model + default_args + timeout). One preset per driver by default for back-compat.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q1" value="presets" checked /> Named <code>presets</code> (rec)</label>
+          <label><input type="radio" name="Q1" value="keep_drivers" /> Keep flat <code>drivers</code> map, add detection only</label>
+          <label><input type="radio" name="Q1" value="custom" /> Custom <textarea class="custom" data-for="Q1"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q2" data-rec="sqlite">
+        <header><span class="qid">Q2</span><span class="qtitle">Preset storage</span></header>
+        <div class="rec"><strong>Rec:</strong> SQLite <code>agent_presets</code> (schema v4), like <code>model_catalog</code>; <code>agent_process.json</code> stays as global caps + first-run seed.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q2" value="sqlite" checked /> SQLite table (rec)</label>
+          <label><input type="radio" name="Q2" value="json_file" /> Keep in <code>agent_process.json</code></label>
+          <label><input type="radio" name="Q2" value="custom" /> Custom <textarea class="custom" data-for="Q2"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q3" data-rec="detect">
+        <header><span class="qid">Q3</span><span class="qtitle">Host detection</span></header>
+        <div class="rec"><strong>Rec:</strong> Resolve <code>command</code> + run <code>--version</code> probe; cache <code>detected</code>/<code>version</code>/<code>path</code> in the row. Startup warm + on-demand.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q3" value="detect" checked /> Resolve + version probe, cached (rec)</label>
+          <label><input type="radio" name="Q3" value="path_only" /> PATH resolve only, no probe</label>
+          <label><input type="radio" name="Q3" value="fire_time" /> Check only at fire time</label>
+          <label><input type="radio" name="Q3" value="custom" /> Custom <textarea class="custom" data-for="Q3"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q4" data-rec="wrapped">
+        <header><span class="qid">Q4</span><span class="qtitle">Prompt wrapping for a routed turn</span></header>
+        <div class="rec"><strong>Rec:</strong> Wrap: short harness preamble + <code>cwd</code> + the user message verbatim.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q4" value="wrapped" checked /> Wrapped preamble + cwd + message (rec)</label>
+          <label><input type="radio" name="Q4" value="verbatim" /> User message verbatim only</label>
+          <label><input type="radio" name="Q4" value="full_history" /> Include recent history summary too</label>
+          <label><input type="radio" name="Q4" value="custom" /> Custom <textarea class="custom" data-for="Q4"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q5" data-rec="reuse">
+        <header><span class="qid">Q5</span><span class="qtitle">Result collection</span></header>
+        <div class="rec"><strong>Rec:</strong> Reuse <code>agentproc.Manager</code> BG task + poll + progress/stuck; fold <code>Result</code> as the turn's assistant message.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q5" value="reuse" checked /> Reuse existing machinery (rec)</label>
+          <label><input type="radio" name="Q5" value="new_path" /> New collection path</label>
+          <label><input type="radio" name="Q5" value="custom" /> Custom <textarea class="custom" data-for="Q5"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q6" data-rec="gesture">
+        <header><span class="qid">Q6</span><span class="qtitle">Per-turn override trigger</span></header>
+        <div class="rec"><strong>Rec:</strong> Long-press (touch) / right-click (desktop) send → preset chooser → sets <code>TurnOpts.AgentPresetID</code> for that turn only.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q6" value="gesture" checked /> Long-press / right-click chooser (rec)</label>
+          <label><input type="radio" name="Q6" value="modifier" /> Modifier key + send (e.g. Shift-Enter)</label>
+          <label><input type="radio" name="Q6" value="toggle" /> Persistent composer toggle (not per-turn)</label>
+          <label><input type="radio" name="Q6" value="custom" /> Custom <textarea class="custom" data-for="Q6"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q7" data-rec="unified_selector">
+        <header><span class="qid">Q7</span><span class="qtitle">Session lock (subprocess-only)</span></header>
+        <div class="rec"><strong>Rec:</strong> Reuse the ADR-0018 model selector as a single <strong>routing selector</strong>: models + <em>detected-only</em> subprocess presets, mutually exclusive. Selecting a preset = lock (<code>agent_preset_id</code> ↔ clears <code>model_id</code>); drop <code>route_agents</code>.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q7" value="unified_selector" checked /> Unified selector, detected-only, mutually exclusive (rec)</label>
+          <label><input type="radio" name="Q7" value="session_lock_fields" /> Separate <code>agent_preset_id</code> + <code>route_agents</code> fields</label>
+          <label><input type="radio" name="Q7" value="override_only" /> Per-turn override only, no lock</label>
+          <label><input type="radio" name="Q7" value="custom" /> Custom <textarea class="custom" data-for="Q7"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q8" data-rec="verbatim">
+        <header><span class="qid">Q8</span><span class="qtitle">Marble model role on a routed turn</span></header>
+        <div class="rec"><strong>Rec:</strong> Emit subprocess result <strong>verbatim</strong>; no Marble model call (keeps cost savings real).</div>
+        <div class="opts">
+          <label><input type="radio" name="Q8" value="verbatim" checked /> Verbatim, no model call (rec)</label>
+          <label><input type="radio" name="Q8" value="summarize" /> Marble model summarizes the result</label>
+          <label><input type="radio" name="Q8" value="custom" /> Custom <textarea class="custom" data-for="Q8"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q9" data-rec="reuse_caps">
+        <header><span class="qid">Q9</span><span class="qtitle">Caps &amp; concurrency</span></header>
+        <div class="rec"><strong>Rec:</strong> Reuse <code>max_per_session</code>, timeouts, <code>max_output_bytes</code>, stuck detection, process-group kill. No new caps.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q9" value="reuse_caps" checked /> Reuse ADR-0014 caps (rec)</label>
+          <label><input type="radio" name="Q9" value="new_caps" /> Separate routing-specific caps</label>
+          <label><input type="radio" name="Q9" value="custom" /> Custom <textarea class="custom" data-for="Q9"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q10" data-rec="opencode">
+        <header><span class="qid">Q10</span><span class="qtitle">opencode + extensible driver registry</span></header>
+        <div class="rec"><strong>Rec:</strong> Add <code>opencode</code> driver (<code>opencode run "…"</code>, verify flags at implement) + refactor <code>driverFor()</code> into a registry.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q10" value="opencode" checked /> opencode + registry (rec)</label>
+          <label><input type="radio" name="Q10" value="registry_only" /> Registry only, no opencode yet</label>
+          <label><input type="radio" name="Q10" value="keep_two" /> Keep grok+claude hardcoded</label>
+          <label><input type="radio" name="Q10" value="custom" /> Custom <textarea class="custom" data-for="Q10"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q11" data-rec="fall_through">
+        <header><span class="qid">Q11</span><span class="qtitle">Fallback when preset missing / disabled / not detected</span></header>
+        <div class="rec"><strong>Rec:</strong> Harness advisory + fall through to next priority (ultimately normal Marble turn). Never hard-crash.</div>
+        <div class="opts">
+          <label><input type="radio" name="Q11" value="fall_through" checked /> Advisory + fall through (rec)</label>
+          <label><input type="radio" name="Q11" value="block" /> Block the turn with an error</label>
+          <label><input type="radio" name="Q11" value="custom" /> Custom <textarea class="custom" data-for="Q11"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q12" data-rec="system_off">
+        <header><span class="qid">Q12</span><span class="qtitle">System agents</span></header>
+        <div class="rec"><strong>Rec:</strong> User sessions yes; system agents default off (same as ADR-0014 Q12).</div>
+        <div class="opts">
+          <label><input type="radio" name="Q12" value="system_off" checked /> User yes / system default off (rec)</label>
+          <label><input type="radio" name="Q12" value="system_on" /> Allow system agents too</label>
+          <label><input type="radio" name="Q12" value="custom" /> Custom <textarea class="custom" data-for="Q12"></textarea></label>
+        </div>
+      </div>
+
+      <div class="qcard" data-qid="Q13" data-rec="agent_tools">
+        <header><span class="qid">Q13</span><span class="qtitle">Agent tools for presets / routing</span></header>
+        <div class="rec"><strong>Rec:</strong> Agent may list/get presets + set session lock (mirror <code>model_list</code>/<code>session_set_model</code>); create/edit preset definitions are operator-only (Settings).</div>
+        <div class="opts">
+          <label><input type="radio" name="Q13" value="agent_tools" checked /> List/get + set lock; edit operator-only (rec)</label>
+          <label><input type="radio" name="Q13" value="operator_only" /> Operator-only, no agent tools</label>
+          <label><input type="radio" name="Q13" value="full_agent" /> Agent may create/edit presets too</label>
+          <label><input type="radio" name="Q13" value="custom" /> Custom <textarea class="custom" data-for="Q13"></textarea></label>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="primary" id="btn-use-recs">Use all recs</button>
+        <button type="button" id="btn-export">Download answers JSON</button>
+        <button type="button" id="btn-copy">Copy answers JSON</button>
+        <span class="muted" id="save-hint">Saves as <code>0030-answers.json</code> for agent collect step</span>
+      </div>
+    </section>
+  </main>
+
+  <footer>Marble ADR-0030 · presets + detection + turn send-routing · proposed</footer>
+
+  <script src="review-kit.js"></script>
+  <script>
+    (function () {
+      const adr = "0030";
+      const title = "Agent-process presets & turn send-routing";
+      function collect() {
+        const answers = {};
+        document.querySelectorAll(".qcard").forEach((card) => {
+          const id = card.getAttribute("data-qid");
+          const rec = card.getAttribute("data-rec") || "";
+          const picked = card.querySelector('input[type=radio]:checked');
+          const val = picked ? picked.value : "";
+          const ta = card.querySelector("textarea.custom");
+          const customText = ta && ta.value.trim() ? ta.value.trim() : "";
+          let choice = val;
+          let decision = val;
+          if (val === "custom") {
+            decision = customText || "(custom empty)";
+            choice = "custom";
+          } else if (val === rec) {
+            choice = "rec";
+            decision = val;
+          }
+          answers[id] = {
+            status: "answered",
+            choice: choice,
+            decision: decision,
+            notes: customText && val !== "custom" ? customText : "",
+            question: (card.querySelector(".qtitle") || {}).textContent || id,
+            rec: rec,
+          };
+        });
+        return {
+          schema: "marble-adr-answers/v1",
+          adr: adr,
+          title: title,
+          updated_at: new Date().toISOString(),
+          answers: answers,
+        };
+      }
+      function download() {
+        const obj = collect();
+        const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = adr + "-answers.json";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
+      async function copy() {
+        const obj = collect();
+        const text = JSON.stringify(obj, null, 2);
+        try {
+          await navigator.clipboard.writeText(text);
+          document.getElementById("save-hint").textContent = "Copied to clipboard";
+        } catch (e) {
+          document.getElementById("save-hint").textContent = "Copy failed — use Download";
+        }
+      }
+      function useRecs() {
+        document.querySelectorAll(".qcard").forEach((card) => {
+          const rec = card.getAttribute("data-rec");
+          const input = card.querySelector('input[type=radio][value="' + rec + '"]');
+          if (input) input.checked = true;
+        });
+      }
+      document.getElementById("btn-export").addEventListener("click", download);
+      document.getElementById("btn-copy").addEventListener("click", copy);
+      document.getElementById("btn-use-recs").addEventListener("click", useRecs);
+    })();
+  </script>
+</body>
+</html>

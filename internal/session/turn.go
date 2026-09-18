@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	maxTurnSteps     = 100
-	argsPreviewMax   = 200
-	resultTailMax    = 120
+	maxTurnSteps   = 100
+	argsPreviewMax = 200
+	resultTailMax  = 120
 )
 
 // ToolProg is current/last tool info for the progress card.
@@ -279,8 +279,8 @@ func (s *Session) finalizeTurnProgress(phase, message string) {
 	s.turn.prog.CurrentTool = nil
 	s.turn.cancel = nil
 	s.appendStepLocked(TurnStep{
-		At:     now.UTC().Format(time.RFC3339),
-		Kind:   "done",
+		At:   now.UTC().Format(time.RFC3339),
+		Kind: "done",
 		Detail: phase + (func() string {
 			if message != "" {
 				return ": " + message

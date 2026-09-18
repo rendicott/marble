@@ -20,7 +20,9 @@ import (
 // v5: computers + pairings + sessions.computer_id (ADR-0020)
 // v6: clerk_session_state (ADR-0023 Clerk dashboard)
 // v7: clerk_session_state.snoozed_until (Clerk snooze)
-const CurrentSchemaVersion = 7
+// v8: agent_presets + sessions.agent_preset_id (ADR-0030)
+// v9: subprocess context on sessions + agent_presets (ADR-0031)
+const CurrentSchemaVersion = 9
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -154,6 +156,14 @@ func (d *DB) upgradeSchema(fromVer int) error {
 			}
 		case 6:
 			if err := d.migrateV6toV7(); err != nil {
+				return err
+			}
+		case 7:
+			if err := d.migrateV7toV8(); err != nil {
+				return err
+			}
+		case 8:
+			if err := d.migrateV8toV9(); err != nil {
 				return err
 			}
 		default:
@@ -336,19 +346,19 @@ func seedSettingsTx(e execer, now string) error {
 		"closed_session_max_age_days": "4",
 		"db_inline_max_bytes":         "32768",
 		// ADR-0005 shell policy
-		"shell_enabled":              "true",
-		"shell_mode":                 "deny_list",
-		"shell_allow_sudo":           "false",
-		"shell_default_timeout_sec":  "60",
-		"shell_max_timeout_sec":      "300",
-		"shell_max_output_bytes":     "524288",
-		"shell_cwd_strict":           "true",
-		"shell_block_memory_paths":   "true",
-		"shell_allow_patterns":       "[]",
+		"shell_enabled":             "true",
+		"shell_mode":                "deny_list",
+		"shell_allow_sudo":          "false",
+		"shell_default_timeout_sec": "60",
+		"shell_max_timeout_sec":     "300",
+		"shell_max_output_bytes":    "524288",
+		"shell_cwd_strict":          "true",
+		"shell_block_memory_paths":  "true",
+		"shell_allow_patterns":      "[]",
 		// shell_deny_patterns seeded lazily via DefaultSettings when empty
 		// tool loop soft defaults (informational / future UI)
-		"tool_round_soft":            "65",
-		"tool_round_hard":            "80",
+		"tool_round_soft": "65",
+		"tool_round_hard": "80",
 	}
 	for k, v := range defaults {
 		_, err := e.Exec(

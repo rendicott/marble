@@ -55,11 +55,11 @@ func normalizeOutboundChatMessages(msgs []model.Message) []model.Message {
 }
 
 // sanitizeToolCallHistory repairs tool rounds for strict providers (Gemini OpenAI-compat):
-// - Fills missing tool message name from the matching assistant tool_call
-// - Demotes orphan tool results (no prior tool_call_id in history) to user notes
-// - Collapses incomplete tool rounds (assistant tool_calls without results, or
-//   tool_calls that lost provider extra_content after reload) into plain text so
-//   Gemini does not 400 on empty function_response.name / missing thought_signature
+//   - Fills missing tool message name from the matching assistant tool_call
+//   - Demotes orphan tool results (no prior tool_call_id in history) to user notes
+//   - Collapses incomplete tool rounds (assistant tool_calls without results, or
+//     tool_calls that lost provider extra_content after reload) into plain text so
+//     Gemini does not 400 on empty function_response.name / missing thought_signature
 func sanitizeToolCallHistory(msgs []model.Message) []model.Message {
 	if len(msgs) == 0 {
 		return msgs

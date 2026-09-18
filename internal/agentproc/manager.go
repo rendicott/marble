@@ -27,19 +27,21 @@ const (
 
 // Task tracks one external agent invocation.
 type Task struct {
-	ID        string     `json:"id"`
-	SessionID string     `json:"session_id"`
-	Format    string     `json:"format"`
-	Prompt    string     `json:"prompt"`
-	CWD       string     `json:"cwd"`
-	Status    Status     `json:"status"`
-	PID       int        `json:"pid,omitempty"`
-	ExitCode  *int       `json:"exit_code,omitempty"`
-	StartedAt time.Time  `json:"started_at"`
-	EndedAt   *time.Time `json:"ended_at,omitempty"`
-	Result    *Result    `json:"result,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	Command   []string   `json:"command,omitempty"`
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	Format    string `json:"format"`
+	Prompt    string `json:"prompt"`
+	// ContextMarker is a short "full+memory · 14k chars" label (ADR-0031); Prompt is the user task only.
+	ContextMarker string     `json:"context_marker,omitempty"`
+	CWD           string     `json:"cwd"`
+	Status        Status     `json:"status"`
+	PID           int        `json:"pid,omitempty"`
+	ExitCode      *int       `json:"exit_code,omitempty"`
+	StartedAt     time.Time  `json:"started_at"`
+	EndedAt       *time.Time `json:"ended_at,omitempty"`
+	Result        *Result    `json:"result,omitempty"`
+	Error         string     `json:"error,omitempty"`
+	Command       []string   `json:"command,omitempty"`
 	// Progress is filled on Get/List while running (or at finish).
 	Progress *Progress `json:"progress,omitempty"`
 
@@ -51,13 +53,13 @@ type Task struct {
 
 // Manager runs and tracks call_agent_process invocations (ADR-0014).
 type Manager struct {
-	mu       sync.Mutex
-	cfg      Config
-	tasks    map[string]*Task
-	bySess   map[string]map[string]struct{}
-	active   map[string]int // sessionID → running count (sync + bg)
-	wsRoot   string
-	memRoot  string
+	mu      sync.Mutex
+	cfg     Config
+	tasks   map[string]*Task
+	bySess  map[string]map[string]struct{}
+	active  map[string]int // sessionID → running count (sync + bg)
+	wsRoot  string
+	memRoot string
 }
 
 // New loads config from memory root and binds workspace jail.
@@ -86,6 +88,25 @@ func (m *Manager) Config() Config {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cfg
+}
+
+// SetContext updates the live global context default and persists agent_process.json (ADR-0031).
+func (m *Manager) SetContext(c ContextConfig) error {
+	if m == nil {
+		return fmt.Errorf("agents unavailable")
+	}
+	if c.MaxChars <= 0 {
+		c.MaxChars = DefaultContextMaxChars
+	}
+	if c.Default == nil {
+		c.Default = []string{}
+	}
+	m.mu.Lock()
+	m.cfg.Context = c
+	cfg := m.cfg
+	path := ConfigPath(m.memRoot)
+	m.mu.Unlock()
+	return Save(path, cfg)
 }
 
 // SystemAgentsEnabled reports whether system sessions may call agents.
@@ -125,6 +146,7 @@ func (m *Manager) ResolveCWD(cwdRel, workdir string) (string, error) {
 
 // RunSync executes the agent and waits (honors ctx cancel / turn Stop).
 func (m *Manager) RunSync(ctx context.Context, sessionID string, req Request) (Result, error) {
+	req = applyContextInject(req)
 	argv, cwd, dcfg, err := m.prepare(req)
 	if err != nil {
 		return Result{}, err
@@ -202,6 +224,9 @@ func (m *Manager) RunSync(ctx context.Context, sessionID string, req Request) (R
 
 // StartBackground launches without waiting; returns task id for polling.
 func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) {
+	userPrompt := req.Prompt
+	marker := req.ContextMarker
+	req = applyContextInject(req)
 	argv, cwd, dcfg, err := m.prepare(req)
 	if err != nil {
 		return nil, err
@@ -224,18 +249,19 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 
 	id := memory.NewSessionID()
 	t := &Task{
-		ID:         id,
-		SessionID:  sessionID,
-		Format:     req.Format,
-		Prompt:     req.Prompt,
-		CWD:        cwd,
-		Status:     StatusRunning,
-		StartedAt:  time.Now(),
-		Command:    argv,
-		cmd:        cmd,
-		cancel:     cancel,
-		stdoutSnap: &stdout,
-		stderrSnap: &stderr,
+		ID:            id,
+		SessionID:     sessionID,
+		Format:        req.Format,
+		Prompt:        userPrompt,
+		ContextMarker: marker,
+		CWD:           cwd,
+		Status:        StatusRunning,
+		StartedAt:     time.Now(),
+		Command:       argv,
+		cmd:           cmd,
+		cancel:        cancel,
+		stdoutSnap:    &stdout,
+		stderrSnap:    &stderr,
 	}
 
 	m.mu.Lock()
@@ -459,7 +485,7 @@ func (m *Manager) KillAllRunning() int {
 func (m *Manager) prepare(req Request) (argv []string, cwd string, dcfg DriverConfig, err error) {
 	format := strings.ToLower(strings.TrimSpace(req.Format))
 	if format == "" {
-		return nil, "", dcfg, fmt.Errorf("format is required (grok|claude)")
+		return nil, "", dcfg, fmt.Errorf("format is required (grok|claude|opencode)")
 	}
 	if strings.TrimSpace(req.Prompt) == "" {
 		return nil, "", dcfg, fmt.Errorf("prompt is required")
@@ -470,10 +496,20 @@ func (m *Manager) prepare(req Request) (argv []string, cwd string, dcfg DriverCo
 
 	dcfg, ok := cfg.Drivers[format]
 	if !ok {
-		return nil, "", dcfg, fmt.Errorf("driver %q not configured", format)
+		def := DefaultConfig()
+		dcfg, ok = def.Drivers[format]
+		if !ok {
+			return nil, "", dcfg, fmt.Errorf("driver %q not configured", format)
+		}
 	}
-	if !dcfg.Enabled {
+	if !dcfg.Enabled && !req.IgnoreDriverEnabled {
 		return nil, "", dcfg, fmt.Errorf("driver %q is disabled in agent_process.json", format)
+	}
+	if c := strings.TrimSpace(req.CommandOverride); c != "" {
+		dcfg.Command = c
+	}
+	if req.ArgsOverride != nil {
+		dcfg.DefaultArgs = req.ArgsOverride
 	}
 
 	drv, err := driverFor(format)

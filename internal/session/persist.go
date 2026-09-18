@@ -20,18 +20,20 @@ func (r *Registry) syncSessionRow(s *Session) {
 		model = r.model
 	}
 	row := db.SessionRow{
-		ID:           s.ID,
-		Title:        s.Title,
-		Status:       s.Status,
-		CreatedAt:    s.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:    s.UpdatedAt.UTC().Format(time.RFC3339),
-		MessageCount: len(s.ui),
-		Dirty:        s.dirty,
-		Workspace:    r.workspace,
-		Model:        model,
-		ModelID:      s.ModelID,
-		ComputerID:   s.ComputerID,
-		MDPath:       filepath.Join("session", s.ID+".md"),
+		ID:                s.ID,
+		Title:             s.Title,
+		Status:            s.Status,
+		CreatedAt:         s.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:         s.UpdatedAt.UTC().Format(time.RFC3339),
+		MessageCount:      len(s.ui),
+		Dirty:             s.dirty,
+		Workspace:         r.workspace,
+		Model:             model,
+		ModelID:           s.ModelID,
+		ComputerID:        s.ComputerID,
+		AgentPresetID:     s.AgentPresetID,
+		SubprocessContext: encodeSubprocessContext(s.subprocessContext),
+		MDPath:            filepath.Join("session", s.ID+".md"),
 	}
 	if s.ClosedAt != nil {
 		row.ClosedAt = sql.NullString{String: s.ClosedAt.UTC().Format(time.RFC3339), Valid: true}
@@ -88,11 +90,11 @@ func (r *Registry) logModelCall(s *Session, em EffectiveModel, role, content str
 		seq = int(time.Now().UnixNano() % 1000000)
 	}
 	meta, _ := json.Marshal(map[string]interface{}{
-		"catalog_id":     em.CatalogID,
-		"source":         em.Source,
-		"display_name":   em.DisplayName,
-		"context_limit":  em.ContextLimit,
-		"budget":         em.Budget(),
+		"catalog_id":    em.CatalogID,
+		"source":        em.Source,
+		"display_name":  em.DisplayName,
+		"context_limit": em.ContextLimit,
+		"budget":        em.Budget(),
 	})
 	ev := db.Event{
 		SessionID:    s.ID,

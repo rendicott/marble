@@ -19,6 +19,7 @@
       <a href="0031-review.html">Review</a>
       <a href="0031-answers.json">Answers</a>
       <a href="0030-doc.html">← 0030</a>
+      <a href="0032-doc.html">0032 →</a>
     </nav>
   </header>
   <main>
@@ -34,7 +35,7 @@
 <tbody>
 <tr>
 <td><strong>Status</strong></td>
-<td><strong>Accepted</strong> (2026-09-17) — Q1–Q11 rec, Q12 custom (default <code>full+memory</code>)</td>
+<td><strong>Accepted</strong> (2026-09-17) — implemented (schema v9)</td>
 </tr>
 <tr>
 <td><strong>Date</strong></td>
@@ -300,11 +301,16 @@
 <tr>
 <td>Global default</td>
 <td><code>agent_process.json</code> <code>context</code> block (global caps file)</td>
-<td>Hand-edited; seed for presets on migrate (ADR-0030 pattern)</td>
+<td>Settings ⚙ → Agents → <strong>Default subprocess context</strong> (<code>PUT /api/settings/agents/context</code>); still hand-editable on disk</td>
 </tr>
 </tbody>
 </table>
 <p>Secrets: <strong>none</strong>. Context sources are transcript/memory/paths — already sanitized by existing paths; the block is plain text, never contains raw keys, and is never logged verbatim (only the size marker).</p>
+<h3 id="h-settings-ui-follow-up">H. Settings UI (follow-up)</h3>
+<p>The Agents pane is the operator surface for Q9 + the global default (not a freeform-only field). Two follow-ups after M1:</p>
+<p><strong>1. Multi-select source chips.</strong> Source tokens (<code>full</code>, <code>compact</code>, <code>memory</code>, <code>read_paths</code>) are <strong>toggles</strong>. Each click adds or removes that token and the text field is rewritten as a comma-separated list in canonical order. Shortcuts (<strong>Default</strong> = <code>full,memory</code>, <strong>Isolated</strong> = <code>none</code>, <strong>Auto</strong> = <code>auto</code>, <strong>Inherit</strong> on a preset = empty/inherit global) <strong>replace</strong> the whole set in one click. Full and Compact stay exclusive in the UI (Full already includes a digest of older turns). The text field remains editable; typing syncs chip selection.</p>
+<p><strong>2. Hover tooltips.</strong> Labels use the Settings floating <code>?</code> (<code>data-tip</code>, same portal as Runtime/Models — native <code>title</code> is unreliable in the overflow pane). Each chip carries the same help: what the source injects, size cap, and when to use it (Full vs Compact, Memory seeding, Files = this-turn paths, Isolated vs Auto vs Inherit).</p>
+<p>Both the <strong>global default</strong> block and each <strong>preset editor</strong> share this control. Per-session / per-call overrides stay on the tools (<code>session_set_subprocess_context</code>, <code>call_agent_process.context</code>).</p>
 <h3 id="f-tools">F. Tools</h3>
 <ul>
 <li><code>session_set_subprocess_context { "context": ["full","memory"], "max_chars": 24000 }</code> → sets the session override; responds with the <strong>effective</strong> config (per-call not applicable, so it echoes session → default). Passing <code>"context": []</code> or <code>"clear": true</code> reverts to default.</li>
@@ -430,7 +436,10 @@ internal/session/
   loop.go        — build TurnContext.ContextSources / pass session.subprocess_context into routed-turn TurnOpts
 
 internal/api/
-  settings.go    — Agents preset editor gains context fields
+  agents.go      — Agents preset editor + PUT /api/settings/agents/context (global default)
+
+internal/web/static/
+  settings.js    — multi-select source chips (compose the comma list) + floating tooltips
 </code></pre>
 <p><strong>Tests:</strong> <code>Assemble</code> is a pure function (given fixture session + spec → deterministic block; truncation/drop order; shorthand resolution; <code>none</code> = empty; default <code>full+memory</code> when nothing set); resolution order (call → session → default); routed-turn and tool both inject; no secrets in block (grep for <code>orb_ak_</code>/key patterns); marker-only in prompt_preview.</p>
 <h2 id="consequences">Consequences</h2>
@@ -466,7 +475,7 @@ internal/api/
 <li>ADR-0030 Agent-process presets &amp; turn send-routing (presets, resolver, <code>TurnOpts</code>, session lock)</li>
 <li>ADR-0018 Selectable Models (<code>TurnOpts</code>, resolver, session-preference symmetry)</li>
 <li>ADR-0026 transcript density, ADR-0022 long-turn efficiency</li>
-<li>Code: <code>internal/tools/agentproc.go</code>, <code>internal/agentproc/{driver,manager}.go</code>, <code>internal/tools/registry.go</code> (TurnContext), <code>internal/session/loop.go</code></li>
+<li>Code: <code>internal/tools/agentproc.go</code>, <code>internal/agentproc/{driver,manager,context}.go</code>, <code>internal/tools/registry.go</code> (TurnContext), <code>internal/session/loop.go</code>, <code>internal/web/static/settings.js</code> (Agents context chips + tooltips)</li>
 </ul>
 <h2 id="changelog">Changelog</h2>
 <table>
@@ -484,6 +493,14 @@ internal/api/
 <tr>
 <td>2026-09-17</td>
 <td><strong>Accepted</strong> — locked Q1–Q11 rec; Q12 custom (default <code>full+memory</code>, not <code>none</code>)</td>
+</tr>
+<tr>
+<td>2026-09-17</td>
+<td><strong>Implemented</strong> — <code>Assemble</code> prepend, schema v9, <code>session_set_subprocess_context</code>, tool+routed-turn injection, Settings → Agents context fields</td>
+</tr>
+<tr>
+<td>2026-09-17</td>
+<td><strong>Settings UI</strong> — global default editor (<code>PUT /api/settings/agents/context</code>); multi-select source chips compose the comma-separated field; floating <code>?</code> / chip hover tooltips explain each source and shortcut</td>
 </tr>
 </tbody>
 </table>

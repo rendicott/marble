@@ -71,6 +71,10 @@ type TurnContext struct {
 	// OnPeerAction records a short summary for session info (last peer action).
 	OnPeerAction   func(summary string)
 	HistorySnippet func() string
+	// HistoryTurns is the session transcript for subprocess context (ADR-0031).
+	HistoryTurns func() []agentproc.TurnText
+	// SubprocessContext returns the session-level context override (unset Set=false).
+	SubprocessContext func() agentproc.ContextSpec
 }
 
 // Registry holds tool implementations and shared deps.
@@ -100,6 +104,11 @@ type Registry struct {
 	CreateModel     func(row db.ModelCatalogRow) (map[string]interface{}, error)
 	UpdateModel     func(row db.ModelCatalogRow) (map[string]interface{}, error)
 	SetSessionModel func(sessionID, modelID string) (map[string]interface{}, error)
+	// Agent presets (ADR-0030)
+	ListAgentPresets            func() ([]map[string]interface{}, error)
+	GetAgentPreset              func(id string) (map[string]interface{}, error)
+	SetSessionAgentPreset       func(sessionID, presetID string) (map[string]interface{}, error)
+	SetSessionSubprocessContext func(sessionID string, spec agentproc.ContextSpec, clear bool) (map[string]interface{}, error)
 	// ProcessContextReserve for ValidateModelCatalog when context_reserve=0.
 	ProcessContextReserve int
 
@@ -223,6 +232,14 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.modelUpdate(argsJSON)
 	case "session_set_model":
 		out, err = r.sessionSetModel(argsJSON, tc)
+	case "agent_preset_list":
+		out, err = r.agentPresetList(argsJSON)
+	case "agent_preset_get":
+		out, err = r.agentPresetGet(argsJSON)
+	case "session_set_agent_preset":
+		out, err = r.sessionSetAgentPreset(argsJSON, tc)
+	case "session_set_subprocess_context":
+		out, err = r.sessionSetSubprocessContext(argsJSON, tc)
 	case "get_context_usage":
 		out, err = r.getContextUsage(tc)
 	case "session_compact":

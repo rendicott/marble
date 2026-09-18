@@ -21,8 +21,8 @@ func (r *Registry) modelList(_ string) (string, error) {
 		list = []map[string]interface{}{}
 	}
 	return mustJSON(map[string]interface{}{
-		"models": list,
-		"note":   "Use model_add / model_update to create catalog entries (never put secrets in tools — only api_key_env names). Put KEY=… in $MEMORY/env (Settings → Secrets). session_set_model only selects an existing id.",
+		"models":         list,
+		"note":           "Use model_add / model_update to create catalog entries (never put secrets in tools — only api_key_env names). Put KEY=… in $MEMORY/env (Settings → Secrets). session_set_model only selects an existing id.",
 		"env_file_paths": config.EnvFilePaths(),
 	}), nil
 }
@@ -72,24 +72,24 @@ func (r *Registry) modelGet(argsJSON string) (string, error) {
 
 // modelCatalogArgs is the shared create/update payload (agent-facing).
 type modelCatalogArgs struct {
-	ID             string   `json:"id"`
-	DisplayName    string   `json:"display_name"`
-	Model          string   `json:"model"`
-	BaseURL        string   `json:"base_url"`
-	APIKeyEnv      string   `json:"api_key_env"`
-	ContextLimit   int      `json:"context_limit"`
-	MaxOutput      int      `json:"max_output"`
-	ContextReserve *int     `json:"context_reserve"`
-	CapTools       *bool    `json:"cap_tools"`
-	CapReasoning   *bool    `json:"cap_reasoning"`
-	CapImages      *bool    `json:"cap_images"`
-	CapVoice       *bool    `json:"cap_voice"`
-	Enabled        *bool    `json:"enabled"`
-	SortOrder      *int     `json:"sort_order"`
-	Notes          string   `json:"notes"`
-	CostInputPer1M *float64 `json:"cost_input_per_1m"`
+	ID              string   `json:"id"`
+	DisplayName     string   `json:"display_name"`
+	Model           string   `json:"model"`
+	BaseURL         string   `json:"base_url"`
+	APIKeyEnv       string   `json:"api_key_env"`
+	ContextLimit    int      `json:"context_limit"`
+	MaxOutput       int      `json:"max_output"`
+	ContextReserve  *int     `json:"context_reserve"`
+	CapTools        *bool    `json:"cap_tools"`
+	CapReasoning    *bool    `json:"cap_reasoning"`
+	CapImages       *bool    `json:"cap_images"`
+	CapVoice        *bool    `json:"cap_voice"`
+	Enabled         *bool    `json:"enabled"`
+	SortOrder       *int     `json:"sort_order"`
+	Notes           string   `json:"notes"`
+	CostInputPer1M  *float64 `json:"cost_input_per_1m"`
 	CostOutputPer1M *float64 `json:"cost_output_per_1m"`
-	CostNotes      string   `json:"cost_notes"`
+	CostNotes       string   `json:"cost_notes"`
 }
 
 func (r *Registry) modelAdd(argsJSON string) (string, error) {
