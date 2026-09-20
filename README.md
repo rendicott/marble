@@ -4,7 +4,18 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.5
+## What's new in v0.4.6
+
+Highlights since **[v0.4.5](https://github.com/rendicott/marble/releases/tag/v0.4.5)** (no schema change):
+
+### mpub images, verification, and working URLs
+- **`assets`** on `mpub_publish` — workspace images (png/jpg/gif/webp/avif/svg) served at `/mpub/{slug}/{file}` with the page's visibility; reference by bare file name in HTML or markdown (`![alt](shot.png)`). No more base64 inlining.
+- **`content_path`** publishes a workspace file as the body, sidestepping tool-call size limits.
+- Publish/get report **`bytes`, `sha256`, `assets`**; publish adds **`warnings`** for relative refs with no matching asset and leftover `__PLACEHOLDER__`s.
+- Returned **`url`** now uses `--public-url` / OAuth host / listen host instead of always loopback; `local_url` is added when it differs.
+- Details: [mpub images and assets](#mpub-images-and-assets).
+
+### Earlier — v0.4.5
 
 Highlights since **[v0.4.4](https://github.com/rendicott/marble/releases/tag/v0.4.4)** (schema **v8–v9**):
 
@@ -608,7 +619,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.5](https://github.com/rendicott/marble/releases/tag/v0.4.5)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.6](https://github.com/rendicott/marble/releases/tag/v0.4.6)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.0](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.0)**).
 
@@ -635,14 +646,14 @@ chmod +x marble-harness-linux-amd64
 **Publish a release** (maintainers — **GitHub Actions only**; do not upload locally built binaries):
 
 ```bash
-git tag v0.4.5
-git push origin v0.4.5
+git tag v0.4.6
+git push origin v0.4.6
 # Workflow "Release" builds on ubuntu-latest, tests, and attaches assets
 ```
 
 If a tag already exists but the workflow failed (e.g. GitHub outage), re-run from the Actions tab:
 
-**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.5`).
+**Actions → Release → Run workflow** → enter tag (e.g. `v0.4.6`).
 
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
