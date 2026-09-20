@@ -36,7 +36,7 @@ func testMpubServer(t *testing.T, google bool) (*Server, *auth.SessionStore, *mp
 
 func TestMpubOpenModeSeesPrivate(t *testing.T) {
 	s, _, store := testMpubServer(t, false)
-	if _, err := store.Publish("secret", "S", "body", "text/plain", "", nil, false, mpub.VisibilityPrivate); err != nil {
+	if _, err := store.Publish("secret", "S", "body", "text/plain", "", nil, false, mpub.VisibilityPrivate, nil); err != nil {
 		t.Fatal(err)
 	}
 	h := s.Handler()
@@ -50,10 +50,10 @@ func TestMpubOpenModeSeesPrivate(t *testing.T) {
 
 func TestMpubGooglePrivateUniform404(t *testing.T) {
 	s, sess, store := testMpubServer(t, true)
-	if _, err := store.Publish("secret", "S", "body-private", "text/plain", "", nil, false, mpub.VisibilityPrivate); err != nil {
+	if _, err := store.Publish("secret", "S", "body-private", "text/plain", "", nil, false, mpub.VisibilityPrivate, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Publish("open", "O", "body-public", "text/plain", "", nil, false, mpub.VisibilityPublic); err != nil {
+	if _, err := store.Publish("open", "O", "body-public", "text/plain", "", nil, false, mpub.VisibilityPublic, nil); err != nil {
 		t.Fatal(err)
 	}
 	h := s.Handler()
@@ -136,7 +136,7 @@ func TestMpubGooglePrivateUniform404(t *testing.T) {
 
 func TestMpubRawPrivateGated(t *testing.T) {
 	s, _, store := testMpubServer(t, true)
-	if _, err := store.Publish("rawpriv", "R", "raw-secret", "text/plain", "", nil, false, mpub.VisibilityPrivate); err != nil {
+	if _, err := store.Publish("rawpriv", "R", "raw-secret", "text/plain", "", nil, false, mpub.VisibilityPrivate, nil); err != nil {
 		t.Fatal(err)
 	}
 	h := s.Handler()
@@ -182,5 +182,49 @@ func TestHealthPublicMinimalGoogle(t *testing.T) {
 	}
 	if !strings.Contains(rr2.Body.String(), "model_ok") {
 		t.Fatalf("authed health should be full: %s", rr2.Body.String())
+	}
+}
+
+func TestMpubServesAssets(t *testing.T) {
+	s, sess, store := testMpubServer(t, true)
+	png := []byte("\x89PNG-fake")
+	for slug, vis := range map[string]string{"pubpg": mpub.VisibilityPublic, "privpg": mpub.VisibilityPrivate} {
+		if _, err := store.Publish(slug, "T", `<img src="a.png">`, "text/html", "", nil, false, vis,
+			[]mpub.Asset{{Name: "a.png", Data: png}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := s.Handler()
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/mpub/pubpg/a.png", nil))
+	if rr.Code != 200 || rr.Header().Get("Content-Type") != "image/png" || rr.Body.String() != string(png) {
+		t.Fatalf("public asset: %d %q", rr.Code, rr.Header().Get("Content-Type"))
+	}
+	if csp := rr.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "sandbox") {
+		t.Fatalf("asset CSP: %q", csp)
+	}
+
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/mpub/pubpg", nil))
+	if !strings.Contains(rr.Body.String(), `src="/mpub/pubpg/a.png"`) {
+		t.Fatalf("page not rewritten: %s", rr.Body.String())
+	}
+
+	// private page's assets are as hidden as the page
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/mpub/privpg/a.png", nil))
+	if rr.Code != 404 {
+		t.Fatalf("anon private asset want 404 got %d", rr.Code)
+	}
+	_ = sess
+
+	// unknown asset and traversal-ish names are 404
+	for _, p := range []string{"/mpub/pubpg/nope.png", "/mpub/pubpg/meta.json", "/mpub/pubpg/a.png/x"} {
+		rr = httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, p, nil))
+		if rr.Code != 404 {
+			t.Fatalf("%s want 404 got %d", p, rr.Code)
+		}
 	}
 }

@@ -249,6 +249,11 @@ Agents should leave new pages **private** unless the user **explicitly** asks to
 
 Anonymous requests for private or missing slugs both return **404** (no existence leak). All mpub responses send a strict **CSP** that disables scripts (mitigates same-origin XSS if public HTML is ever published).
 
+### mpub images and assets
+`mpub_publish` takes `assets` — workspace image paths (png/jpg/gif/webp/avif/svg, ≤10 MiB each, ≤50 per page, names `[A-Za-z0-9._-]`). They are stored in `$MEMORY/mpub/{slug}/assets/` and served at `/mpub/{slug}/{file}` with the same visibility as the page. Reference them by bare file name (`<img src="shot.png">` or `![alt](shot.png)`); relative refs that match an asset are rewritten at serve time. Assets add/replace by name and survive text-only republishes.
+
+`content_path` publishes a workspace file as the body (avoids tool-call size limits). The publish result reports `bytes`, `sha256`, stored `assets`, `warnings` (relative refs with no matching asset, leftover `__PLACEHOLDER__`s), and a `url` built from `--public-url` (falling back to the listen address) with `local_url` for loopback. `mpub_get` returns the same `sha256`/`assets` for verification.
+
 ## Launch
 
 ### 1. Prerequisites

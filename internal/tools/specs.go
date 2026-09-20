@@ -606,7 +606,7 @@ func allSpecs() []model.ToolSpec {
 				},
 			}),
 		// mpub (ADR-0009 + visibility) — human-facing pages under $MEMORY/mpub
-		spec("mpub_publish", "Publish content to Marble mpub ($MEMORY/mpub). Default visibility is private (allowlisted admins only when OAuth is on). Set visibility=public only when the user explicitly asks to share openly. HTML preferred; markdown ok.",
+		spec("mpub_publish", "Publish content to Marble mpub ($MEMORY/mpub). Default visibility is private (allowlisted admins only when OAuth is on). Set visibility=public only when the user explicitly asks to share openly. HTML preferred; markdown ok. For images, pass workspace file paths in assets and reference each by bare file name (<img src=\"shot.png\"> or ![alt](shot.png)) — do not inline base64. For a large body already on disk, pass content_path instead of content. The result reports bytes, sha256, stored assets and warnings (unresolved relative refs, leftover placeholders) — check warnings before telling the user it is done.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -615,7 +615,16 @@ func allSpecs() []model.ToolSpec {
 						"description": "Required URL segment [a-z0-9-], e.g. foo-research",
 					},
 					"title":   map[string]interface{}{"type": "string"},
-					"content": map[string]interface{}{"type": "string", "description": "Body (HTML preferred; markdown ok)"},
+					"content": map[string]interface{}{"type": "string", "description": "Body (HTML preferred; markdown ok). Give this or content_path."},
+					"content_path": map[string]interface{}{
+						"type":        "string",
+						"description": "Workspace file to publish as the body instead of inline content (max 2 MiB). content_type is inferred from .html/.md/.txt when omitted.",
+					},
+					"assets": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Workspace image paths (png/jpg/gif/webp/avif/svg, <=10 MiB each, names [A-Za-z0-9._-] without spaces) served at /mpub/{slug}/{file name}. Reference by bare file name in the body. Adds/replaces by name; assets from earlier publishes are kept.",
+					},
 					"content_type": map[string]interface{}{
 						"type":        "string",
 						"description": "text/html (default) | text/markdown | text/plain",
@@ -630,11 +639,11 @@ func allSpecs() []model.ToolSpec {
 					},
 					"tags": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 				},
-				"required": []string{"slug", "content"},
+				"required": []string{"slug"},
 			}),
 		spec("mpub_list", "List published mpub documents (slug, title, url, visibility).",
 			map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}),
-		spec("mpub_get", "Fetch an mpub document by slug (meta + content).",
+		spec("mpub_get", "Fetch an mpub document by slug (meta, content, bytes, sha256, assets).",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

@@ -206,6 +206,21 @@ func linkify(s string) string {
 		k += j + 2
 		label := s[i+1 : j]
 		url := s[j+2 : k]
+		if i > 0 && s[i-1] == '!' {
+			// ![alt](src) — relative names are rewritten to asset URLs at serve time.
+			out.WriteString(s[:i-1])
+			if safeImageSrc(url) {
+				out.WriteString(`<img src="`)
+				out.WriteString(url)
+				out.WriteString(`" alt="`)
+				out.WriteString(label)
+				out.WriteString(`">`)
+			} else {
+				out.WriteString(label)
+			}
+			s = s[k+1:]
+			continue
+		}
 		out.WriteString(s[:i])
 		out.WriteString(`<a href="`)
 		out.WriteString(url)
@@ -217,8 +232,28 @@ func linkify(s string) string {
 	return out.String()
 }
 
+// safeImageSrc allows http(s), data:image, root-relative and bare relative image URLs.
+func safeImageSrc(u string) bool {
+	l := strings.ToLower(strings.TrimSpace(u))
+	if l == "" {
+		return false
+	}
+	if schemeRE.MatchString(l) {
+		return strings.HasPrefix(l, "https:") || strings.HasPrefix(l, "http:") || strings.HasPrefix(l, "data:image/")
+	}
+	return true
+}
+
 // ServeBody returns Content-Type and bytes for HTTP response (document view).
 func ServeBody(doc *Doc) (contentType string, body []byte) {
+	contentType, body = serveBody(doc)
+	if len(doc.Assets) > 0 {
+		body = []byte(RewriteAssetRefs(string(body), doc.Meta.Slug, doc.Assets))
+	}
+	return contentType, body
+}
+
+func serveBody(doc *Doc) (contentType string, body []byte) {
 	vis := EffectiveVisibility(doc.Meta)
 	switch normalizeContentType(doc.Meta.ContentType) {
 	case "text/html":

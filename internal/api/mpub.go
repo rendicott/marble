@@ -11,9 +11,13 @@ import (
 // mpubCSP blocks scripts and most active content on published pages (same-origin XSS mitigation).
 // Inline styles allowed for the simple mpub shell; images from https/data only.
 const mpubCSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; " +
-	"img-src data: https: http:; style-src 'unsafe-inline'; font-src data:"
+	"img-src 'self' data: https: http:; style-src 'unsafe-inline'; font-src data:"
 
-// handleMpub serves GET /mpub and GET /mpub/{slug}[/raw] (ADR-0009 + visibility).
+// mpubAssetCSP is stricter still for directly served assets: an SVG opened as a
+// document must not run script or load anything.
+const mpubAssetCSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+
+// handleMpub serves GET /mpub, GET /mpub/{slug}[/raw] and GET /mpub/{slug}/{asset} (ADR-0009 + visibility).
 // Public pages are always reachable. Private pages require an allowlisted admin
 // when Google auth is on; in open mode everyone is treated as admin.
 // Anonymous viewers get a uniform 404 for missing and private slugs (no existence oracle).
@@ -56,7 +60,11 @@ func (s *Server) handleMpub(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(path, "/")
 	slug := parts[0]
 	raw := len(parts) > 1 && parts[1] == "raw"
-	if len(parts) > 2 || (len(parts) == 2 && !raw) {
+	assetName := ""
+	if len(parts) == 2 && !raw {
+		assetName = parts[1]
+	}
+	if len(parts) > 2 {
 		http.NotFound(w, r)
 		return
 	}
@@ -70,6 +78,21 @@ func (s *Server) handleMpub(w http.ResponseWriter, r *http.Request) {
 	if mpub.EffectiveVisibility(doc.Meta) == mpub.VisibilityPrivate && !admin {
 		// Same status as missing — do not leak private slug existence.
 		http.NotFound(w, r)
+		return
+	}
+
+	if assetName != "" {
+		data, ct, err := s.Mpub.ReadAsset(slug, assetName)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Security-Policy", mpubAssetCSP)
+		w.Header().Set("Content-Type", ct)
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write(data)
 		return
 	}
 

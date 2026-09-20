@@ -72,6 +72,7 @@ func ParseVisibility(v string, emptyOK bool) (string, error) {
 type Doc struct {
 	Meta    Meta
 	Content string
+	Assets  []AssetInfo
 }
 
 // Store is a jailed mpub filesystem under $MEMORY/mpub.
@@ -167,13 +168,18 @@ func normalizeContentType(ct string) string {
 // Publish writes or overwrites a document.
 // ifExistsFail: when true, fail if slug already exists (Q4).
 // visibility: "public" | "private" | "" (empty: new→private, overwrite→keep existing).
-func (s *Store) Publish(slug, title, content, contentType, sessionID string, tags []string, ifExistsFail bool, visibility string) (*Meta, error) {
+// assets are added to (or replace by name) the page's asset set; existing assets not
+// named in the call are kept, so text-only republishes do not drop images.
+func (s *Store) Publish(slug, title, content, contentType, sessionID string, tags []string, ifExistsFail bool, visibility string, assets []Asset) (*Meta, error) {
 	dir, err := s.slugDir(slug)
 	if err != nil {
 		return nil, err
 	}
 	if len(content) > MaxBodyBytes {
 		return nil, fmt.Errorf("content exceeds max size %d bytes", MaxBodyBytes)
+	}
+	if err := ValidateAssets(assets); err != nil {
+		return nil, err
 	}
 	ct := normalizeContentType(contentType)
 	if ct != "text/html" && ct != "text/markdown" && ct != "text/plain" {
@@ -220,6 +226,10 @@ func (s *Store) Publish(slug, title, content, contentType, sessionID string, tag
 		} else {
 			vis = VisibilityPrivate
 		}
+	}
+
+	if err := s.writeAssets(dir, assets); err != nil {
+		return nil, err
 	}
 
 	fn := contentFilename(ct)
@@ -324,7 +334,8 @@ func (s *Store) Get(slug string) (*Doc, error) {
 			return nil, err
 		}
 	}
-	return &Doc{Meta: *meta, Content: string(data)}, nil
+	assets, _ := s.ListAssets(slug)
+	return &Doc{Meta: *meta, Content: string(data), Assets: assets}, nil
 }
 
 // List returns all published metas, newest updated first.
