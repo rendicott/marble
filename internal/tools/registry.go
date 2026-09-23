@@ -282,6 +282,8 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.computerScreenshot(argsJSON, tc)
 	case "computer_desktop_act":
 		out, err = r.computerDesktopAct(argsJSON, tc)
+	case "computer_exec":
+		out, err = r.computerExec(argsJSON, tc)
 	case "computer_browser_ensure":
 		out, err = r.computerBrowserEnsure(argsJSON, tc)
 	case "computer_browser_tabs":

@@ -106,6 +106,29 @@ func TestShellExecuteKillsBackgroundGrandchild(t *testing.T) {
 	}
 }
 
+// TestShellExecuteWarnsOnWindowsPath covers field report peer-gui-loop-report
+// (2026-09-23): shell_execute always runs on this (non-Windows) harness host,
+// and a Windows-looking path in the command is almost always a sign the
+// caller meant computer_exec on a bound peer instead.
+func TestShellExecuteWarnsOnWindowsPath(t *testing.T) {
+	dir := t.TempDir()
+	pol := shellpolicy.New(dir, dir, false, 2*time.Second, 5*time.Second)
+	r := &Registry{Workspace: dir, MaxResultChars: 10000, Policy: pol}
+
+	out := r.Execute("shell_execute", `{"command":"echo C:\\Users\\Public\\Downloads"}`, nil)
+	if strings.HasPrefix(out, "error:") {
+		t.Fatalf("unexpected error: %s", out)
+	}
+	if !strings.Contains(out, "computer_exec") {
+		t.Fatalf("expected a computer_exec pointer for a Windows-looking path, got: %s", out)
+	}
+
+	out = r.Execute("shell_execute", `{"command":"echo hello"}`, nil)
+	if strings.Contains(out, "computer_exec") {
+		t.Fatalf("did not expect a Windows-path warning for a plain command: %s", out)
+	}
+}
+
 func TestApplyPatchRollback(t *testing.T) {
 	dir := t.TempDir()
 	r := &Registry{Workspace: dir, MaxResultChars: 10000}

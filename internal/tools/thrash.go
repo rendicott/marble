@@ -128,7 +128,7 @@ func normalizeArgsForFingerprint(name, argsJSON string) string {
 		if tid, ok := m["task_id"].(string); ok && strings.TrimSpace(tid) != "" {
 			return "poll|" + strings.TrimSpace(tid)
 		}
-	case "shell_execute", "start_background_task":
+	case "shell_execute", "start_background_task", "computer_exec":
 		if cmd, ok := m["command"].(string); ok {
 			m["command"] = collapseWS(cmd)
 		}
@@ -203,7 +203,10 @@ func isComputerTool(name string) bool {
 	return strings.HasPrefix(name, "computer_")
 }
 
-// isComputerClickClass is hard-blocked while EscalateLock (KD5).
+// isComputerClickClass is hard-blocked while EscalateLock (KD5). Covers both
+// click and type: field report peer-gui-loop-report (2026-09-23) found the
+// lock only ever gated click, so a stuck type loop (retyping into an
+// unfocused window) ran ~150 times with no intervention at all.
 func isComputerClickClass(name, argsJSON string) bool {
 	switch name {
 	case "computer_desktop_act":
@@ -211,7 +214,8 @@ func isComputerClickClass(name, argsJSON string) bool {
 			Action string `json:"action"`
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
-		return strings.EqualFold(strings.TrimSpace(a.Action), "click")
+		act := strings.ToLower(strings.TrimSpace(a.Action))
+		return act == "click" || act == "type"
 	case "computer_browser_act":
 		var a struct {
 			Action string `json:"action"`
@@ -261,9 +265,13 @@ func (r *Registry) preflightThrash(name, argsJSON string, tc *TurnContext) error
 		return nil
 	}
 
-	// Escalate lock: hard-block same-class computer clicks (KD5)
+	// Computed once, reused below for the near-dup type check, the ban list
+	// scan, and the anti-repeat counter.
+	fp := ToolFingerprint(name, argsJSON)
+
+	// Escalate lock: hard-block same-class computer clicks/types (KD5)
 	if st.EscalateLock && isComputerClickClass(name, argsJSON) {
-		return fmt.Errorf("escalate lock active (ADR-0022): desktop/browser click blocked after stuck computer use. NEXT: computer_confirm (one human step), computer_screenshot/snapshot to re-assess, shell/API path, or a different action class — not another identical click")
+		return fmt.Errorf("escalate lock active (ADR-0022): desktop/browser click or type blocked after stuck computer use. NEXT: computer_confirm (one human step), computer_screenshot/snapshot to re-assess, computer_exec/shell/API path, or a different action class — not another identical click or retype")
 	}
 
 	// Pending / stale computer_confirm cards must be Accept/Deny/Dismissed first.
@@ -313,10 +321,30 @@ func (r *Registry) preflightThrash(name, argsJSON string, tc *TurnContext) error
 		}
 	}
 
+	// Near-duplicate desktop TYPE (even when AntiRepeatN=0): the same text
+	// retyped 3x with no verified effect. This is the exact loop in field
+	// report peer-gui-loop-report (2026-09-23) — a command retyped ~150 times
+	// into a PowerShell window whose output could never be confirmed, because
+	// nothing before this hard-blocked repeated type the way near-dup click
+	// already blocked repeated click.
+	if name == "computer_desktop_act" {
+		var a struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if strings.EqualFold(strings.TrimSpace(a.Action), "type") {
+			n := consecutiveFP(st.Events, fp)
+			if n >= 2 {
+				st.EscalateLock = true
+				st.LastFailure = "near-dup desktop type"
+				return fmt.Errorf("near-duplicate desktop type (identical text) used %d+ times with no way to verify it landed. NEXT: computer_screenshot to check focus, computer_exec if this was meant to run a shell command (reads real stdout/stderr instead of a screenshot), or computer_confirm — not another identical retype", n+1)
+			}
+		}
+	}
+
 	// Successful computer_confirm clears escalate lock
 	// (handled in postflight)
 
-	fp := ToolFingerprint(name, argsJSON)
 	for _, ban := range st.BanList {
 		if ban == fp {
 			return fmt.Errorf("anti-repeat ban: this exact tool+args is forbidden for the rest of the turn. Change approach (different args, API/script, or computer_confirm)")

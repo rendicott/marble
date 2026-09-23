@@ -5,12 +5,23 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/rendicott/marble/internal/shellpolicy"
 )
+
+// winPathRE matches an obvious Windows-style path (drive letter + backslash,
+// e.g. C:\Users\...). shellExecute always runs on this harness host, which is
+// never Windows in production (Linux/macOS only) — a command containing one
+// of these almost always means the caller meant computer_exec on a bound
+// peer instead. See field report peer-gui-loop-report (2026-09-23): a
+// `curl -o "C:\Users\Public\..."` on this shell silently wrote a file
+// literally named `C:UsersPublic...` in the harness workspace.
+var winPathRE = regexp.MustCompile(`[A-Za-z]:\\`)
 
 type shellArgs struct {
 	Command    string `json:"command"`
@@ -99,6 +110,9 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 		exit, dur.Round(time.Millisecond), killed && !killedStop, killedStop)
 	if hint != "" {
 		fmt.Fprintf(&b, "note: %s\n", hint)
+	}
+	if runtime.GOOS != "windows" && winPathRE.MatchString(a.Command) {
+		fmt.Fprintf(&b, "note: this command looks like a Windows path (C:\\...) but shell_execute runs on THIS %s harness host, not any bound computer_* peer — the backslashes were likely consumed by the shell (e.g. C:\\Users\\... -> C:Users...). For a command on the peer machine, use computer_exec instead.\n", runtime.GOOS)
 	}
 	fmt.Fprintf(&b, "--- stdout ---\n%s\n", stdout.String())
 	if stderr.Len() > 0 {
