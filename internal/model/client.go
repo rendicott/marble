@@ -219,7 +219,7 @@ func (c *Client) chatOnce(ctx context.Context, messages []Message, tools []ToolS
 	}
 	t := 0.2
 	reqBody.Temperature = &t
-	applyReasoningOpts(&reqBody, effort, c.BaseURL)
+	applyReasoningOpts(&reqBody, effort, c.BaseURL, c.Model)
 
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
@@ -392,7 +392,7 @@ func NormalizeReasoningEffort(s string) string {
 	}
 }
 
-func applyReasoningOpts(req *ChatRequest, effort, baseURL string) {
+func applyReasoningOpts(req *ChatRequest, effort, baseURL, model string) {
 	if req == nil {
 		return
 	}
@@ -400,11 +400,12 @@ func applyReasoningOpts(req *ChatRequest, effort, baseURL string) {
 	if e == "" {
 		return
 	}
+	e = clampReasoningEffortForModel(model, e)
 	// OpenAI-style field (many cloud providers ignore unknown optional fields).
 	req.ReasoningEffort = e
 	// vLLM / Qwen chat template toggle — NOT part of OpenAI or Gemini OpenAI-compat.
 	// Google returns HTTP 400: Unknown name "chat_template_kwargs" (session 0wd3247f02).
-	if supportsChatTemplateKwargs(baseURL) {
+	if supportsChatTemplateKwargs(baseURL, model) {
 		req.ChatTemplateKwargs = map[string]interface{}{
 			"enable_thinking": e != "none",
 		}
@@ -414,7 +415,13 @@ func applyReasoningOpts(req *ChatRequest, effort, baseURL string) {
 // supportsChatTemplateKwargs reports whether baseURL is a self-hosted / vLLM-style
 // endpoint that understands chat_template_kwargs. Strict cloud OpenAI-compat APIs
 // (Gemini, OpenAI, Azure, Anthropic gateways) reject unknown top-level fields.
-func supportsChatTemplateKwargs(baseURL string) bool {
+func supportsChatTemplateKwargs(baseURL, model string) bool {
+	// chat_template_kwargs.enable_thinking is a Qwen-only toggle. Other local
+	// models (e.g. Mistral's Tekken tokenizer) reject chat_template_kwargs with
+	// HTTP 400 ("chat_template is not supported for Mistral tokenizers").
+	if !isQwenModel(model) {
+		return false
+	}
 	u := strings.ToLower(strings.TrimSpace(baseURL))
 	if u == "" {
 		return true // process-local default: allow (Qwen/vLLM)
@@ -437,6 +444,30 @@ func supportsChatTemplateKwargs(baseURL string) bool {
 		}
 	}
 	return true
+}
+
+// isQwenModel reports whether the served model is a Qwen-family model. Qwen's chat
+// template reads enable_thinking from chat_template_kwargs; no other local model does.
+func isQwenModel(model string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "qwen")
+}
+
+// isMistralModel reports whether the served model is a Mistral-family model.
+func isMistralModel(model string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "mistral")
+}
+
+// clampReasoningEffortForModel maps a normalized reasoning effort onto the values a
+// model actually accepts. Mistral's vLLM reasoning parser supports only none|high, so
+// any non-"none" effort (low/medium/high) collapses to "high" (reasoning is binary).
+func clampReasoningEffortForModel(model, effort string) string {
+	if effort == "" || !isMistralModel(model) {
+		return effort
+	}
+	if effort == "none" {
+		return "none"
+	}
+	return "high"
 }
 
 // ThoughtText returns provider reasoning and/or interim content suitable for UI
