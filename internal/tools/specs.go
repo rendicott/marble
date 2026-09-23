@@ -94,7 +94,7 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"edits"},
 			}),
-		spec("shell_execute", "Run a shell command in the workspace (policy-enforced). Default timeout 60s, max 300s.",
+		spec("shell_execute", "Run a shell command on THIS HARNESS HOST, in the workspace (policy-enforced). Does NOT run on any bound computer_* peer — a peer path like C:\\Users\\... means nothing here. For a command on the bound peer machine, use computer_exec. Default timeout 60s, max 300s.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -292,21 +292,21 @@ func allSpecs() []model.ToolSpec {
 		// Desktop peer (ADR-0020)
 		spec("computer_list", "List Marble Peer (aka Pier / desktop computer) agents and online status.",
 			map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}),
-		spec("computer_bind", "Bind this session to a computer_id for subsequent computer_* tools (empty clears). Marble Peer = remote desktop hands.",
+		spec("computer_bind", "Bind this session to a computer_id for subsequent computer_* tools (empty clears). Marble Peer = remote desktop hands. Returns the peer's os and caps (browser/desktop/confirm/exec) — check caps.exec before relying on computer_exec.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"computer_id": map[string]interface{}{"type": "string"},
 				},
 			}),
-		spec("computer_screenshot", "Capture peer primary display (JPEG, max edge 1280) as an image attachment. meta.w/h are IMAGE pixels (click space); meta.screen_w/h are full display; meta.scale = screen/image. After a desktop click, a post-click shot is already attached — do NOT immediately re-call this. USE when CDP fails, click_text/click_button miss, or for non-browser apps. Look at pixels; if ui_unchanged after clicks → computer_confirm.",
+		spec("computer_screenshot", "Capture peer primary display (JPEG, max edge 1280) as an image attachment. meta.w/h are IMAGE pixels (click space); meta.screen_w/h are full display; meta.scale = screen/image; meta.window_title/meta.focused_app are best-effort (may be absent). After a desktop click or type, a post-action shot is already attached — do NOT immediately re-call this. USE when CDP fails, click_text/click_button miss, or for non-browser apps. Look at pixels; if ui_unchanged after clicks/type → computer_confirm. To READ peer state (files, logs, config, installed software) prefer computer_exec over screenshotting a terminal — a >40-line-tall window truncates output you cannot scroll.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"computer_id": map[string]interface{}{"type": "string"},
 				},
 			}),
-		spec("computer_desktop_act", "OS-level click/type/key on Marble Peer. Click coords are IMAGE pixels from the latest screenshot (meta.w×meta.h), not necessarily full screen size. Workflow: screenshot → LOOK → click button=1. Post-click screenshot returns in the same result (attachment_id top-level); if ui_unchanged=true STOP repeating coords — use click_button or computer_confirm. Near-duplicate clicks escalate. Prefer click_button for labeled web buttons.",
+		spec("computer_desktop_act", "OS-level click/type/key on Marble Peer. Click coords are IMAGE pixels from the latest screenshot (meta.w×meta.h), not necessarily full screen size. Workflow: screenshot → LOOK → click button=1. click AND type both return a post-action screenshot in the same result (attachment_id top-level); if ui_unchanged=true STOP repeating — the click missed or the text did not land in a focused field; use click_button, computer_screenshot to find focus, or computer_confirm. Near-duplicate clicks and repeated identical typed text both escalate. Prefer click_button for labeled web buttons. To run a command and read its actual output (not a screenshot of a terminal), use computer_exec instead of type into a shell window.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -319,6 +319,17 @@ func allSpecs() []model.ToolSpec {
 					"button":      map[string]interface{}{"type": "string", "description": "1=left (default), 2=middle, 3=right. Never empty."},
 				},
 				"required": []string{"action"},
+			}),
+		spec("computer_exec", "Run a shell command ON THE BOUND PEER (powershell.exe on Windows, bash/sh on macOS/Linux) and return stdout/stderr/exit_code as text. PREFER THIS over computer_desktop_act type into a terminal window for reading peer state (config files, logs, installed software, env) or running install/verification commands — a screenshot of a terminal truncates at the visible window height and cannot be scrolled; this cannot. Output is capped (~64KB per stream; truncated=true if cut). Requires the peer to advertise caps.exec (check computer_bind/computer_list).",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"computer_id": map[string]interface{}{"type": "string"},
+					"command":     map[string]interface{}{"type": "string"},
+					"cwd":         map[string]interface{}{"type": "string", "description": "Working directory on the peer (optional)"},
+					"timeout_sec": map[string]interface{}{"type": "integer", "description": "Default 60s, max 300s"},
+				},
+				"required": []string{"command"},
 			}),
 		spec("computer_browser_ensure", "On the peer: sync operator Chrome logins into a CDP-capable mirror profile and start/attach that browser. Chrome blocks debugging on the daily profile path — mirror keeps cookies/logins. Call first before other browser tools. force=true re-syncs and restarts the mirror window (does not kill daily Chrome).",
 			map[string]interface{}{

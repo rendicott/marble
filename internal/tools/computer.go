@@ -76,10 +76,31 @@ func (r *Registry) computerBind(argsJSON string, tc *TurnContext) (string, error
 	if err := r.SetSessionComputerID(tc.SessionID, strings.TrimSpace(args.ComputerID)); err != nil {
 		return "", err
 	}
-	b, _ := json.Marshal(map[string]interface{}{
+	out := map[string]interface{}{
 		"computer_id": strings.TrimSpace(args.ComputerID),
 		"session_id":  tc.SessionID,
-	})
+	}
+	// Surface os/caps so the agent doesn't have to discover them empirically
+	// (field report peer-gui-loop-report, 2026-09-23, P2) — computer_list
+	// already has them per-computer; bind just didn't echo them back.
+	if id := strings.TrimSpace(args.ComputerID); id != "" && r.ListComputers != nil {
+		if list, err := r.ListComputers(); err == nil {
+			for _, c := range list {
+				if cid, _ := c["id"].(string); cid == id {
+					if os, ok := c["os"]; ok {
+						out["os"] = os
+					}
+					if live, ok := c["live"].(map[string]interface{}); ok {
+						if caps, ok := live["caps"]; ok {
+							out["caps"] = caps
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+	b, _ := json.Marshal(out)
 	return string(b), nil
 }
 
@@ -241,6 +262,53 @@ func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string,
 	return string(b), nil
 }
 
+// computerExec runs a shell command on the bound peer and returns
+// stdout/stderr/exit_code as text — the P0 fix for field report
+// peer-gui-loop-report (2026-09-23): reading peer state no longer requires
+// opening a terminal window and reading a screenshot of it.
+func (r *Registry) computerExec(argsJSON string, tc *TurnContext) (string, error) {
+	var args struct {
+		ComputerID string `json:"computer_id"`
+		Command    string `json:"command"`
+		CWD        string `json:"cwd"`
+		TimeoutSec int    `json:"timeout_sec"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(args.Command) == "" {
+		return "", fmt.Errorf("command is required")
+	}
+	deadline := 90 * time.Second
+	if args.TimeoutSec > 0 {
+		deadline = time.Duration(args.TimeoutSec+15) * time.Second // give the peer a margin over its own timeout
+	}
+	if deadline > 5*time.Minute {
+		deadline = 5 * time.Minute
+	}
+	res, err := r.peerCall(tc, args.ComputerID, "computer_exec", map[string]interface{}{
+		"command": args.Command, "cwd": args.CWD, "timeout_sec": args.TimeoutSec,
+	}, deadline)
+	if err != nil {
+		return "", err
+	}
+	out := map[string]interface{}{"ok": res.OK}
+	if res.Meta != nil {
+		for _, k := range []string{"stdout", "stderr", "exit_code", "shell", "truncated", "timed_out"} {
+			if v, ok := res.Meta[k]; ok {
+				out[k] = v
+			}
+		}
+	}
+	r.notePeerAction(tc, "computer_exec "+thrashTrunc(args.Command, 80))
+	if !res.OK && res.Error != "" {
+		b, _ := json.Marshal(out)
+		return "", fmt.Errorf("%s\n%s", res.Error, string(b))
+	}
+	b, _ := json.Marshal(out)
+	return string(b), nil
+}
+
 func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string, error) {
 	var args struct {
 		ComputerID string `json:"computer_id"`
@@ -296,65 +364,83 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 		return "", fmt.Errorf("%s", res.Error)
 	}
 
-	if action == "click" {
+	switch action {
+	case "click":
 		if tc != nil {
 			tc.LastClickX, tc.LastClickY, tc.LastClickSet = args.X, args.Y, true
 		}
 		r.notePeerAction(tc, fmt.Sprintf("desktop_click (%d,%d)", args.X, args.Y))
-
-		var raw []byte
-		if res.ScreenshotB64 != "" {
-			raw, _ = base64.StdEncoding.DecodeString(res.ScreenshotB64)
-		}
-		// Fallback nested shot if peer did not return one (older peers).
-		if len(raw) == 0 {
-			shotArgs, _ := json.Marshal(map[string]string{"computer_id": args.ComputerID})
-			// Temporarily clear PostClickShotAt so nested call is not skipped.
-			if tc != nil {
-				tc.PostClickShotAt = time.Time{}
-			}
-			if shot, shotErr := r.computerScreenshot(string(shotArgs), tc); shotErr == nil {
-				out["post_click_screenshot"] = json.RawMessage(shot)
-				out["hint"] = "post-click screenshot attached — look at the image before the next click (do not re-screenshot)"
-				if tc != nil {
-					tc.PostClickShotAt = time.Now()
-				}
-				if preHash != "" && tc != nil && tc.LastScreenshotHash == preHash {
-					out["ui_unchanged"] = true
-					out["ok"] = false
-					out["hint"] = "ui_unchanged: pixels identical after click — STOP repeating these coords. NEXT: computer_browser_act action=click_button text=\"…\", open a direct URL, or computer_confirm for a human click."
-				}
-				b, _ := json.Marshal(out)
-				return string(b), nil
-			} else {
-				out["post_click_screenshot_error"] = shotErr.Error()
-			}
-		} else if tc != nil {
-			id, mime, kindName, hash, stErr := r.stagePeerScreenshot(tc, raw, "post-click.jpg")
-			if stErr == nil {
-				tc.PostClickShotAt = time.Now()
-				out["attachment_id"] = id // top-level for multimodal extract
-				out["mime"] = mime
-				out["kind"] = kindName
-				out["sha256"] = hash
-				out["hint"] = "post-click screenshot attached — look at the image before the next click (do not call computer_screenshot again)"
-				out["post_click_screenshot"] = map[string]interface{}{
-					"attachment_id": id, "mime": mime, "kind": kindName, "meta": res.Meta,
-				}
-				if preHash != "" && hash == preHash {
-					out["ui_unchanged"] = true
-					out["ok"] = false
-					out["hint"] = "ui_unchanged: pixels identical after click — STOP repeating these coords. NEXT: computer_browser_act action=click_button text=\"…\", open a direct URL, or computer_confirm for a human click."
-				}
-			} else {
-				out["post_click_screenshot_error"] = stErr.Error()
-			}
-		}
-	} else {
+		r.attachPostActionScreenshot(tc, args.ComputerID, res, preHash, out,
+			"pixels identical after click — STOP repeating these coords. NEXT: computer_browser_act action=click_button text=\"…\", open a direct URL, or computer_confirm for a human click.")
+	case "type":
+		r.notePeerAction(tc, "desktop_type")
+		r.attachPostActionScreenshot(tc, args.ComputerID, res, preHash, out,
+			"pixels identical after typing — the text likely did not land in a focused, editable field. STOP retyping the same text. NEXT: computer_screenshot to see where focus is and click the target field first, or computer_exec if this was meant to run a shell command (reads real stdout/stderr instead of a screenshot).")
+	default:
 		r.notePeerAction(tc, "desktop_"+action)
 	}
 	b, _ := json.Marshal(out)
 	return string(b), nil
+}
+
+// attachPostActionScreenshot stages the peer's atomic post-action screenshot
+// (click and type both return one) and flags ui_unchanged when its hash
+// matches the screenshot taken before the action. Originally click-only;
+// generalized to type per field report peer-gui-loop-report (2026-09-23),
+// which found no "did my keystrokes land?" signal for type at all — an agent
+// retyped the same command into an unfocused window ~150 times with no
+// visible failure.
+func (r *Registry) attachPostActionScreenshot(tc *TurnContext, computerID string, res peerhub.Envelope, preHash string, out map[string]interface{}, unchangedHint string) {
+	var raw []byte
+	if res.ScreenshotB64 != "" {
+		raw, _ = base64.StdEncoding.DecodeString(res.ScreenshotB64)
+	}
+	// Fallback nested shot if peer did not return one (older peers, or type
+	// on a peer built before it started returning post-action screenshots).
+	if len(raw) == 0 {
+		shotArgs, _ := json.Marshal(map[string]string{"computer_id": computerID})
+		if tc != nil {
+			tc.PostClickShotAt = time.Time{} // don't let the nested call get skipped as "redundant"
+		}
+		shot, shotErr := r.computerScreenshot(string(shotArgs), tc)
+		if shotErr != nil {
+			out["post_click_screenshot_error"] = shotErr.Error()
+			return
+		}
+		out["post_click_screenshot"] = json.RawMessage(shot)
+		out["hint"] = "post-action screenshot attached — look at the image before repeating (do not re-screenshot)"
+		if tc != nil {
+			tc.PostClickShotAt = time.Now()
+		}
+		if preHash != "" && tc != nil && tc.LastScreenshotHash == preHash {
+			out["ui_unchanged"] = true
+			out["ok"] = false
+			out["hint"] = "ui_unchanged: " + unchangedHint
+		}
+		return
+	}
+	if tc == nil {
+		return
+	}
+	id, mime, kindName, hash, stErr := r.stagePeerScreenshot(tc, raw, "post-action.jpg")
+	if stErr != nil {
+		out["post_click_screenshot_error"] = stErr.Error()
+		return
+	}
+	tc.PostClickShotAt = time.Now()
+	out["attachment_id"] = id // top-level for multimodal extract
+	out["mime"] = mime
+	out["kind"] = kindName
+	out["sha256"] = hash
+	out["hint"] = "post-action screenshot attached — look at the image before repeating (do not call computer_screenshot again)"
+	out["post_click_screenshot"] = map[string]interface{}{
+		"attachment_id": id, "mime": mime, "kind": kindName, "meta": res.Meta,
+	}
+	if preHash != "" && hash == preHash {
+		out["ui_unchanged"] = true
+		out["ok"] = false
+		out["hint"] = "ui_unchanged: " + unchangedHint
+	}
 }
 
 func (r *Registry) computerBrowser(argsJSON string, tc *TurnContext, kind string) (string, error) {

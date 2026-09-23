@@ -70,6 +70,25 @@ func TestEscalateLockBlocksClick(t *testing.T) {
 	}
 }
 
+// TestEscalateLockBlocksType covers field report peer-gui-loop-report
+// (2026-09-23): the escalate lock only ever hard-blocked click, so a stuck
+// type loop ran unimpeded. isComputerClickClass must also gate type.
+func TestEscalateLockBlocksType(t *testing.T) {
+	r := &Registry{
+		Thrash:    DefaultThrashPolicy(),
+		ThrashSet: true,
+	}
+	tc := &TurnContext{ReadPaths: map[string]bool{}, Thrash: &ThrashState{EscalateLock: true}}
+	err := r.preflightThrash("computer_desktop_act", `{"action":"type","text":"dir"}`, tc)
+	if err == nil || !strings.Contains(err.Error(), "escalate lock") {
+		t.Fatalf("expected escalate lock to block type, got %v", err)
+	}
+	// key is unaffected — only click/type are the click-class
+	if err := r.preflightThrash("computer_desktop_act", `{"action":"key","key":"Return"}`, tc); err != nil {
+		t.Fatalf("key should not be blocked by escalate lock: %v", err)
+	}
+}
+
 func TestComputerFailStreakEscalate(t *testing.T) {
 	r := &Registry{
 		Thrash:    DefaultThrashPolicy(),
@@ -118,6 +137,33 @@ func TestNearDupDesktopClick(t *testing.T) {
 	err := r.preflightThrash("computer_desktop_act", `{"action":"click","x":685,"y":156,"button":"1"}`, tc)
 	if err == nil {
 		t.Fatal("expected near-dup block")
+	}
+	if !strings.Contains(err.Error(), "near-duplicate") {
+		t.Fatalf("got %v", err)
+	}
+	if !tc.Thrash.EscalateLock {
+		t.Fatal("expected escalate lock")
+	}
+}
+
+// TestNearDupDesktopType is the type analog of TestNearDupDesktopClick — the
+// exact loop from field report peer-gui-loop-report (2026-09-23): the same
+// text retyped repeatedly with no way to tell it landed.
+func TestNearDupDesktopType(t *testing.T) {
+	r := &Registry{Thrash: DefaultThrashPolicy(), ThrashSet: true}
+	fp := ToolFingerprint("computer_desktop_act", `{"action":"type","text":"Get-ChildItem C:\\Users"}`)
+	tc := &TurnContext{
+		ReadPaths: map[string]bool{},
+		Thrash: &ThrashState{
+			Events: []FingerprintEvent{
+				{FP: fp, Name: "computer_desktop_act", OK: true},
+				{FP: fp, Name: "computer_desktop_act", OK: true},
+			},
+		},
+	}
+	err := r.preflightThrash("computer_desktop_act", `{"action":"type","text":"Get-ChildItem C:\\Users"}`, tc)
+	if err == nil {
+		t.Fatal("expected near-dup type block")
 	}
 	if !strings.Contains(err.Error(), "near-duplicate") {
 		t.Fatalf("got %v", err)
