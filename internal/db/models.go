@@ -22,10 +22,12 @@ var reservedModelIDs = map[string]bool{
 var modelIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // ModelCatalogRow is one operator-defined model (ADR-0018).
+// Kind is "chat" (chat/completions) or "image" (Images API via generate_image).
 type ModelCatalogRow struct {
 	ID              string
 	DisplayName     string
 	Model           string
+	Kind            string
 	BaseURL         string
 	APIKeyEnv       string
 	CostInputPer1M  *float64
@@ -76,7 +78,8 @@ func (d *DB) migrateV2toV3() error {
 			sort_order INTEGER NOT NULL DEFAULT 0,
 			notes TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'chat'
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_model_catalog_sort
 			ON model_catalog(enabled, sort_order, display_name)`,
@@ -97,6 +100,52 @@ func (d *DB) migrateV2toV3() error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// migrateV9toV10 adds model_catalog.kind. Fresh databases already have the
+// column from migrateV2toV3, so a duplicate-column error is ignored.
+func (d *DB) migrateV9toV10() error {
+	if d.SQL == nil {
+		return fmt.Errorf("no database")
+	}
+	tx, err := d.SQL.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('model_catalog') WHERE name = 'kind'`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v10: %w", err)
+	}
+	if n == 0 {
+		if _, err := tx.Exec(`ALTER TABLE model_catalog ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'`); err != nil && !sqliteDuplicateColumn(err) {
+			return fmt.Errorf("migrate v10: %w", err)
+		}
+	}
+	now := UTCNow()
+	if _, err := tx.Exec(`UPDATE schema_meta SET schema_version = 10, updated_at = ? WHERE id = 1`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func sqliteDuplicateColumn(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column")
+}
+
+// NormalizeModelKind maps a catalog kind. Empty and "chat" become "chat";
+// "image" stays "image". Anything else is returned lowercased so validation
+// can reject it.
+func NormalizeModelKind(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" || s == "chat" {
+		return "chat"
+	}
+	return s
 }
 
 // ValidateModelCatalog validates a row for create/update (processReserve for budget check when reserve is 0).
@@ -161,6 +210,10 @@ func ValidateModelCatalog(r *ModelCatalogRow, processReserve int) error {
 	}
 	r.CostNotes = strings.TrimSpace(r.CostNotes)
 	r.Notes = strings.TrimSpace(r.Notes)
+	r.Kind = NormalizeModelKind(r.Kind)
+	if r.Kind != "chat" && r.Kind != "image" {
+		return fmt.Errorf("kind must be chat or image")
+	}
 	return nil
 }
 
@@ -174,7 +227,7 @@ SELECT id, display_name, model, base_url, api_key_env,
   cost_input_per_1m, cost_output_per_1m, cost_notes,
   cap_reasoning, cap_images, cap_voice, cap_tools,
   context_limit, max_output, context_reserve, enabled, sort_order, notes,
-  created_at, updated_at
+  created_at, updated_at, kind
 FROM model_catalog
 ORDER BY sort_order ASC, display_name ASC`)
 	if err != nil {
@@ -202,7 +255,7 @@ SELECT id, display_name, model, base_url, api_key_env,
   cost_input_per_1m, cost_output_per_1m, cost_notes,
   cap_reasoning, cap_images, cap_voice, cap_tools,
   context_limit, max_output, context_reserve, enabled, sort_order, notes,
-  created_at, updated_at
+  created_at, updated_at, kind
 FROM model_catalog WHERE id = ?`, strings.TrimSpace(id))
 	r, err := scanModelCatalog(row)
 	if err == sql.ErrNoRows {
@@ -244,13 +297,13 @@ INSERT INTO model_catalog (
   cost_input_per_1m, cost_output_per_1m, cost_notes,
   cap_reasoning, cap_images, cap_voice, cap_tools,
   context_limit, max_output, context_reserve, enabled, sort_order, notes,
-  created_at, updated_at
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  created_at, updated_at, kind
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.DisplayName, r.Model, r.BaseURL, r.APIKeyEnv,
 		r.CostInputPer1M, r.CostOutputPer1M, r.CostNotes,
 		boolInt(r.CapReasoning), boolInt(r.CapImages), boolInt(r.CapVoice), boolInt(r.CapTools),
 		r.ContextLimit, r.MaxOutput, r.ContextReserve, boolInt(r.Enabled), r.SortOrder, r.Notes,
-		r.CreatedAt, r.UpdatedAt,
+		r.CreatedAt, r.UpdatedAt, r.Kind,
 	)
 	return err
 }
@@ -269,13 +322,13 @@ UPDATE model_catalog SET
   cost_input_per_1m=?, cost_output_per_1m=?, cost_notes=?,
   cap_reasoning=?, cap_images=?, cap_voice=?, cap_tools=?,
   context_limit=?, max_output=?, context_reserve=?, enabled=?, sort_order=?, notes=?,
-  updated_at=?
+  kind=?, updated_at=?
 WHERE id=?`,
 		r.DisplayName, r.Model, r.BaseURL, r.APIKeyEnv,
 		r.CostInputPer1M, r.CostOutputPer1M, r.CostNotes,
 		boolInt(r.CapReasoning), boolInt(r.CapImages), boolInt(r.CapVoice), boolInt(r.CapTools),
 		r.ContextLimit, r.MaxOutput, r.ContextReserve, boolInt(r.Enabled), r.SortOrder, r.Notes,
-		r.UpdatedAt, r.ID,
+		r.Kind, r.UpdatedAt, r.ID,
 	)
 	if err != nil {
 		return err
@@ -323,7 +376,7 @@ func scanModelCatalog(row scannableModel) (*ModelCatalogRow, error) {
 		&cin, &cout, &r.CostNotes,
 		&capR, &capI, &capV, &capT,
 		&r.ContextLimit, &r.MaxOutput, &r.ContextReserve, &en, &r.SortOrder, &r.Notes,
-		&r.CreatedAt, &r.UpdatedAt,
+		&r.CreatedAt, &r.UpdatedAt, &r.Kind,
 	)
 	if err != nil {
 		return nil, err

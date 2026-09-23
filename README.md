@@ -60,6 +60,14 @@ Highlights since **[v0.4.3](https://github.com/rendicott/marble/releases/tag/v0.
 - **`POST /api/sessions/{id}/attachments/from_url`** for scripts/tests/non-agent clients
 - Chip tooltip shows source/credit when present. Attaching is **not** a license clearance.
 
+### Generate images and SVG (ADR-0033)
+- **`generate_image`** — text → image via an OpenAI-compatible **Images API** (`gpt-image-2.5-sunburst` / `flare`, `gpt-image-1-mini`)
+- Writes into the **workspace** (`path`, defaults to `generated/image-<ts>.png`) and stages durable **chat attachments** so the image shows up inline
+- Args: `prompt`, `path`, `model_id`, `size`, `quality` (`low`…`max`), `background` (**`transparent`** by default — logos), `output_format`, `n`, `vectorize`, `attach`
+- **`vectorize: true`** traces the raster to a **real SVG** via [`vtracer`](https://pypi.org/project/vtracer/) (`pip install vtracer`); degrades to a note if absent
+- Reports token `usage` and an estimated `est_cost_usd`; capped at **6 calls per turn**
+- Image models are catalog rows with **`kind=image`** — they are **never** session models (selecting one is rejected) and no longer 404 on `/chat/completions`
+
 ### Docs
 - ADR-0028 accepted + implemented; ADR-0029 accepted + implemented (M1)
 
@@ -199,13 +207,13 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
 - **Turn sinks (ADR-0028)** — mirror finished turns to Orb / Slack / ntfy / Discord / webhook / stdout (`$MEMORY/sinks.json`). Settings → Sinks plus `manage_sinks` (list/create/update/delete/test; per-session `set_override`). Secrets by env-var **name** only.
 - **Agent presets (ADR-0030 / ADR-0031)** — Settings → Agents catalog of grok/claude/opencode CLIs with host detection; session **route** picker locks a session to a subprocess; right-click/long-press Send routes one turn. Subprocess **context** defaults to `full+memory` (opt out with `context=none`). Tools: `agent_preset_list` / `agent_preset_get` / `session_set_agent_preset` / `session_set_subprocess_context`.
-- **Models (ADR-0018)** — `model_list` / `model_get` / **`model_add`** / **`model_update`** / `session_set_model` (catalog writes store env **names** only; agent can research base_url & limits via web tools)
+- **Models (ADR-0018 / ADR-0033)** — `model_list` / `model_get` / **`model_add`** / **`model_update`** / `session_set_model` (catalog writes store env **names** only; agent can research base_url & limits via web tools). Rows carry **`kind`**: `chat` (default) or **`image`** for Images-API models called through **`generate_image`**
 - **Computer use (ADR-0020)** — `computer_*` tools against a paired **[marble-peer](https://github.com/rendicott/marble-desktop-peer)** (browser CDP + desktop + confirm). Confirm cards in the session UI and a Tailscale-reachable `/confirm/{id}` page.
 - **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available; image URLs go through `attach_from_url`
 - **External agents (ADR-0014)** — `call_agent_process` (`format=grok|claude`) with optional `workdir`, high timeouts, `background` mode
 - **Memory & skills** — `memory_*` under `$MEMORY/knowledge/`, `skill_*` from skill roots; prompt nudges memory when unsure
 - **Context** — `get_context_usage`, `session_compact`
-- **Attachments** — `message_attach` (workspace path → durable chip); **`attach_from_url`** (HTTP image URL → chip + `meta_json` provenance, ADR-0029); `attach_file` (ephemeral workspace preview)
+- **Attachments** — `message_attach` (workspace path → durable chip); **`attach_from_url`** (HTTP image URL → chip + `meta_json` provenance, ADR-0029); **`generate_image`** (prompt → workspace PNG/JPEG/WebP + chip, optional SVG trace, ADR-0033); `attach_file` (ephemeral workspace preview)
 - **MCP** — optional stdio/HTTP servers from `$MEMORY/mcp.json` (e.g. Tavily web search)
 - **Server-side TTS (ADR-0027)** — optional `$MEMORY/tts.json` + `ELEVENLABS_API_KEY`; `GET /api/tts/status`, `POST /api/sessions/{id}/tts`; audio as session attachments (inline GET). Off by default.
 - **mpub** — publish HTML/markdown at `/mpub/{slug}`; tools: `mpub_publish` / `list` / `get` / `unpublish` / `mpub_set_visibility`
@@ -616,6 +624,7 @@ Notable ADRs:
 | 0030 | Agent-process presets & turn send-routing |
 | 0031 | Subprocess context injection (pick-and-choose) |
 | 0032 | Selectable UI themes (dark / light / tan, cookie) |
+| 0033 | Image-generation models (`kind=image`) + `generate_image` |
 
 ## Releases
 

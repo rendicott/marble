@@ -18,6 +18,7 @@ type EffectiveModel struct {
 	Source           string // process | catalog | fallthrough
 	CatalogID        string // "" for pure process; slug when catalog (even if fallthrough still sets attempted)
 	DisplayName      string
+	Kind             string // chat | image
 	Model            string // provider model id
 	BaseURL          string
 	APIKey           string // resolved secret; never log
@@ -46,10 +47,15 @@ func (e EffectiveModel) UsageRatio(est int) float64 {
 
 // Public maps to JSON for API (no secrets).
 func (e EffectiveModel) Public() map[string]interface{} {
+	kind := e.Kind
+	if kind == "" {
+		kind = "chat"
+	}
 	return map[string]interface{}{
 		"source":             e.Source,
 		"catalog_id":         e.CatalogID,
 		"display_name":       e.DisplayName,
+		"kind":               kind,
 		"model":              e.Model,
 		"base_url":           e.BaseURL,
 		"api_key_mode":       e.APIKeyMode,
@@ -160,6 +166,7 @@ func (r *Runner) processEffective() EffectiveModel {
 		ContextLimit:     r.Cfg.ContextLimit,
 		MaxOutput:        r.Cfg.MaxOutput,
 		ContextReserve:   r.Cfg.ContextReserve,
+		Kind:             "chat",
 		CapReasoning:     true,
 		// Process default CapImages=true so peer computer_screenshot / chat images
 		// reach the model. (Previously false: UI showed chips but model never saw
@@ -192,6 +199,9 @@ func (r *Runner) resolveCatalogID(id string, source string) (em EffectiveModel, 
 	if !row.Enabled {
 		return EffectiveModel{}, false, fmt.Sprintf("[harness] model_id %q is disabled; using process default", id)
 	}
+	if db.NormalizeModelKind(row.Kind) == "image" {
+		return EffectiveModel{}, false, fmt.Sprintf("[harness] model_id %q is an image-generation model (kind=image) and cannot be the session model; using process default. Use the generate_image tool.", id)
+	}
 	em = r.effectiveFromRow(row, source)
 	return em, true, ""
 }
@@ -208,10 +218,15 @@ func (r *Runner) effectiveFromRow(row *db.ModelCatalogRow, source string) Effect
 			reserve = 8192
 		}
 	}
+	kind := db.NormalizeModelKind(row.Kind)
+	if kind != "image" {
+		kind = "chat"
+	}
 	em := EffectiveModel{
 		Source:         source,
 		CatalogID:      row.ID,
 		DisplayName:    row.DisplayName,
+		Kind:           kind,
 		Model:          row.Model,
 		BaseURL:        base,
 		ContextLimit:   row.ContextLimit,
@@ -336,6 +351,14 @@ func (r *Runner) CatalogRowPublic(row *db.ModelCatalogRow) map[string]interface{
 	em := r.effectiveFromRow(row, "catalog")
 	m := em.Public()
 	m["id"] = row.ID
+	m["kind"] = em.Kind
+	if strings.TrimSpace(row.Kind) != "" {
+		k := db.NormalizeModelKind(row.Kind)
+		if k != "image" {
+			k = "chat"
+		}
+		m["kind"] = k
+	}
 	m["enabled"] = row.Enabled
 	m["sort_order"] = row.SortOrder
 	m["notes"] = row.Notes

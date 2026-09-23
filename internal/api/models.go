@@ -232,6 +232,7 @@ func decodeCatalogBody(r *http.Request) (*db.ModelCatalogRow, error) {
 		ID              string   `json:"id"`
 		DisplayName     string   `json:"display_name"`
 		Model           string   `json:"model"`
+		Kind            string   `json:"kind"`
 		BaseURL         string   `json:"base_url"`
 		APIKeyEnv       string   `json:"api_key_env"`
 		CostInputPer1M  *float64 `json:"cost_input_per_1m"`
@@ -255,6 +256,7 @@ func decodeCatalogBody(r *http.Request) (*db.ModelCatalogRow, error) {
 		ID:              body.ID,
 		DisplayName:     body.DisplayName,
 		Model:           body.Model,
+		Kind:            body.Kind,
 		BaseURL:         body.BaseURL,
 		APIKeyEnv:       body.APIKeyEnv,
 		CostInputPer1M:  body.CostInputPer1M,
@@ -282,6 +284,14 @@ func decodeCatalogBody(r *http.Request) (*db.ModelCatalogRow, error) {
 	}
 	if body.Enabled != nil {
 		row.Enabled = *body.Enabled
+	}
+	if db.NormalizeModelKind(body.Kind) == "image" {
+		if body.CapTools == nil {
+			row.CapTools = false
+		}
+		if body.CapReasoning == nil {
+			row.CapReasoning = false
+		}
 	}
 	return row, nil
 }

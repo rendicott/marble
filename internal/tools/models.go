@@ -22,7 +22,7 @@ func (r *Registry) modelList(_ string) (string, error) {
 	}
 	return mustJSON(map[string]interface{}{
 		"models":         list,
-		"note":           "Use model_add / model_update to create catalog entries (never put secrets in tools — only api_key_env names). Put KEY=… in $MEMORY/env (Settings → Secrets). session_set_model only selects an existing id.",
+		"note":           "Use model_add / model_update to create catalog entries (never put secrets in tools — only api_key_env names). Put KEY=… in $MEMORY/env (Settings → Secrets). session_set_model only selects an existing chat id. kind=image models (gpt-image-*) are not session models — call generate_image.",
 		"env_file_paths": config.EnvFilePaths(),
 	}), nil
 }
@@ -44,7 +44,7 @@ func (r *Registry) sessionSetModel(argsJSON string, tc *TurnContext) (string, er
 	}
 	if out != nil {
 		out["applies"] = "next_turn"
-		out["note"] = "Selects an existing enabled catalog id (or empty for process). Create missing entries with model_add after researching base_url / limits / caps."
+		out["note"] = "Selects an existing enabled chat catalog id (or empty for process). kind=image rows cannot be the session model — use generate_image. Create missing entries with model_add after researching base_url / limits / caps."
 	}
 	return mustJSON(out), nil
 }
@@ -75,6 +75,7 @@ type modelCatalogArgs struct {
 	ID              string   `json:"id"`
 	DisplayName     string   `json:"display_name"`
 	Model           string   `json:"model"`
+	Kind            string   `json:"kind"`
 	BaseURL         string   `json:"base_url"`
 	APIKeyEnv       string   `json:"api_key_env"`
 	ContextLimit    int      `json:"context_limit"`
@@ -129,6 +130,11 @@ func (r *Registry) modelUpdate(argsJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Omitted kind keeps the stored value (partial update). Empty string sent
+	// explicitly still normalises to chat inside catalogArgsToRow.
+	if raw == nil || raw["kind"] == nil {
+		row.Kind = ""
+	}
 	out, err := r.UpdateModel(row)
 	if err != nil {
 		return "", err
@@ -151,7 +157,11 @@ func enrichModelWriteResult(out map[string]interface{}, action string) map[strin
 			out["next_step"] = "Add KEY=secret to an env file listed in env_file_paths (no restart for catalog). Do not put the secret in model_add/model_update."
 		}
 	}
-	out["note"] = "Never store API secrets in the catalog — only api_key_env names. Prefer OpenAI-compatible base_url (e.g. Gemini: https://generativelanguage.googleapis.com/v1beta/openai)."
+	note := "Never store API secrets in the catalog — only api_key_env names. Prefer OpenAI-compatible base_url (e.g. Gemini: https://generativelanguage.googleapis.com/v1beta/openai)."
+	if k, _ := out["kind"].(string); k == "image" {
+		note += " This row is kind=image (Images API). It cannot be the session model — call generate_image."
+	}
+	out["note"] = note
 	return out
 }
 
@@ -204,6 +214,20 @@ func catalogArgsToRow(a modelCatalogArgs, isCreate bool) (db.ModelCatalogRow, er
 	if a.CapVoice != nil {
 		capVoice = *a.CapVoice
 	}
+	kind := db.NormalizeModelKind(a.Kind)
+	if kind != "chat" && kind != "image" {
+		return db.ModelCatalogRow{}, fmt.Errorf("kind must be chat or image")
+	}
+	// Image models are not chat agents. Defaults keep context_limit/max_output
+	// so catalog validation still passes.
+	if kind == "image" {
+		if a.CapTools == nil {
+			capTools = false
+		}
+		if a.CapReasoning == nil {
+			capReason = false
+		}
+	}
 	enabled := true
 	if a.Enabled != nil {
 		enabled = *a.Enabled
@@ -217,6 +241,7 @@ func catalogArgsToRow(a modelCatalogArgs, isCreate bool) (db.ModelCatalogRow, er
 		ID:              id,
 		DisplayName:     display,
 		Model:           model,
+		Kind:            kind,
 		BaseURL:         strings.TrimSpace(a.BaseURL),
 		APIKeyEnv:       env,
 		CostInputPer1M:  a.CostInputPer1M,

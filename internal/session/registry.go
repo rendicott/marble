@@ -527,6 +527,9 @@ func (r *Registry) setSessionModel(id, modelID string, allowBusy bool) (*Session
 		if !row.Enabled {
 			return nil, EffectiveModel{}, fmt.Errorf("model_id %q is disabled in the catalog", modelID)
 		}
+		if db.NormalizeModelKind(row.Kind) == "image" {
+			return nil, EffectiveModel{}, fmt.Errorf("model_id %q is an image-generation model; pick a chat model and use the generate_image tool", modelID)
+		}
 	}
 
 	s.mu.Lock()

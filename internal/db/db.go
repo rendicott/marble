@@ -22,7 +22,8 @@ import (
 // v7: clerk_session_state.snoozed_until (Clerk snooze)
 // v8: agent_presets + sessions.agent_preset_id (ADR-0030)
 // v9: subprocess context on sessions + agent_presets (ADR-0031)
-const CurrentSchemaVersion = 9
+// v10: model_catalog.kind (chat|image)
+const CurrentSchemaVersion = 10
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -164,6 +165,10 @@ func (d *DB) upgradeSchema(fromVer int) error {
 			}
 		case 8:
 			if err := d.migrateV8toV9(); err != nil {
+				return err
+			}
+		case 9:
+			if err := d.migrateV9toV10(); err != nil {
 				return err
 			}
 		default:

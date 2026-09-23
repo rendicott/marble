@@ -341,6 +341,9 @@ func main() {
 			// keep disabled unless explicitly re-enabled via true when existing false —
 			// can't distinguish; leave agent-provided Enabled
 		}
+		if strings.TrimSpace(row.Kind) == "" {
+			row.Kind = existing.Kind
+		}
 		if strings.TrimSpace(row.Notes) == "" {
 			row.Notes = existing.Notes
 		}
@@ -370,6 +373,46 @@ func main() {
 		runner.InvalidateClientCache()
 		config.InvalidateEnvOverlay()
 		return runner.CatalogRowPublic(&row), nil
+	}
+	toolReg.ImageTimeout = 300 * time.Second
+	toolReg.ImageModelDefault = func() (map[string]interface{}, error) {
+		if sqldb == nil || !sqldb.Writable() {
+			return nil, fmt.Errorf("image models not configured")
+		}
+		rows, err := sqldb.ListModelCatalog()
+		if err != nil {
+			return nil, err
+		}
+		for i := range rows {
+			if rows[i].Enabled && db.NormalizeModelKind(rows[i].Kind) == "image" {
+				return runner.CatalogRowPublic(&rows[i]), nil
+			}
+		}
+		return nil, nil
+	}
+	toolReg.ImageModelGet = func(id string) (map[string]interface{}, error) {
+		if sqldb == nil || !sqldb.Writable() {
+			return nil, fmt.Errorf("image models not configured")
+		}
+		row, err := sqldb.GetModelCatalog(id)
+		if err != nil {
+			return nil, err
+		}
+		return runner.CatalogRowPublic(row), nil
+	}
+	toolReg.ImageClientFor = func(id string) (*model.Client, string, error) {
+		if sqldb == nil || !sqldb.Writable() {
+			return nil, "", fmt.Errorf("image models not configured")
+		}
+		row, err := sqldb.GetModelCatalog(id)
+		if err != nil {
+			return nil, "", err
+		}
+		if db.NormalizeModelKind(row.Kind) != "image" {
+			return nil, "", fmt.Errorf("model_id %q is kind %q; kind must be image", id, row.Kind)
+		}
+		em := runner.EffectiveFromRow(row)
+		return runner.ClientFor(em), em.Model, nil
 	}
 	toolReg.SetSessionModel = func(sessionID, modelID string) (map[string]interface{}, error) {
 		_, em, err := reg.SetSessionModel(sessionID, modelID) // allows busy → next turn

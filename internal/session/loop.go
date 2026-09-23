@@ -477,11 +477,20 @@ func (r *Runner) runTurn(s *Session) {
 		s.mu.Lock()
 		effort = s.ReasoningEffort
 		s.mu.Unlock()
+		// A catalog edit mid-turn can flip a selected row to kind=image. Never
+		// send that to /chat/completions (it 404s on gpt-image-*).
+		if em.Kind == "image" {
+			r.forceEndAssistant(s, fmt.Sprintf("[harness] model_id %q is an image-generation model (kind=image) and cannot be the session model. Use the generate_image tool.", em.CatalogID))
+			return
+		}
 		result, err := client.ChatWithOpts(ctx, outbound, toolSpecs, model.ChatOpts{ReasoningEffort: effort})
 		if err != nil {
 			stopNote = stopMessage(err, s)
-			// Capability / provider errors surface as harness-visible errors
-			if !em.CapImages && strings.Contains(strings.ToLower(err.Error()), "image") {
+			lowErr := strings.ToLower(err.Error())
+			if strings.Contains(lowErr, "only supported in v1/responses") {
+				stopNote = fmt.Sprintf("model %q is only supported in v1/responses, not chat/completions. Register it as kind=image and call the generate_image tool (it cannot be the session model).", em.Model)
+			} else if !em.CapImages && strings.Contains(lowErr, "image") {
+				// Capability / provider errors surface as harness-visible errors
 				stopNote = "model rejected request (images unsupported): " + err.Error()
 			}
 			if r.shouldAutoContinueOnErr(err, s) {

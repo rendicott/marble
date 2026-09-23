@@ -65,6 +65,8 @@ type TurnContext struct {
 	OnHarnessNote    func(string) // optional
 	// AttachFromURLCalls counts attach_from_url invocations this turn (ADR-0029).
 	AttachFromURLCalls int
+	// ImageGenCalls counts generate_image invocations this turn (max 6).
+	ImageGenCalls int
 	// OnPeerConfirm notifies the session UI that a computer_confirm is waiting
 	// (Accept/Deny from Marble harness, not only the peer machine).
 	OnPeerConfirm func(confirm map[string]interface{})
@@ -111,6 +113,13 @@ type Registry struct {
 	SetSessionSubprocessContext func(sessionID string, spec agentproc.ContextSpec, clear bool) (map[string]interface{}, error)
 	// ProcessContextReserve for ValidateModelCatalog when context_reserve=0.
 	ProcessContextReserve int
+
+	// Image model support (kind=image catalog rows). Nil callbacks → generate_image
+	// returns "image models not configured".
+	ImageModelDefault func() (map[string]interface{}, error)          // first enabled kind=image row
+	ImageModelGet     func(id string) (map[string]interface{}, error) // catalog row by id
+	ImageClientFor    func(id string) (*model.Client, string, error)  // client, provider model id, err
+	ImageTimeout      time.Duration
 
 	// StageChatAttachment stores bytes and returns id,mime,kind (ADR-0019).
 	// metaJSON is optional provenance (ADR-0029); empty for path/screenshot attaches.
@@ -260,6 +269,8 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.messageAttach(argsJSON, tc)
 	case "attach_from_url":
 		out, err = r.attachFromURL(argsJSON, tc)
+	case "generate_image":
+		out, err = r.generateImage(argsJSON, tc)
 	case "web_fetch":
 		out, err = r.webFetch(argsJSON, tc)
 	case "call_agent_process":

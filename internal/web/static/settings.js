@@ -1498,6 +1498,7 @@
               <div class="model-row-title">
                 <span class="model-row-name">${escapeHtml(m.display_name || id)}</span>
                 <span class="settings-chip">${escapeHtml(badge)}</span>
+                ${m.kind === "image" ? `<span class="settings-chip">image</span>` : ""}
                 ${keyChip}
               </div>
               <div class="model-row-actions">
@@ -1567,6 +1568,7 @@
           cost_input_per_1m: src.cost_input_per_1m != null ? src.cost_input_per_1m : null,
           cost_output_per_1m: src.cost_output_per_1m != null ? src.cost_output_per_1m : null,
           cost_notes: src.cost_notes || "",
+          kind: src.kind === "image" ? "image" : "chat",
           _copiedFrom: src.id || "",
         };
       };
@@ -1584,6 +1586,7 @@
           cap_reasoning: false,
           cap_images: false,
           cap_voice: false,
+          kind: "chat",
           enabled: true,
           sort_order: 0,
           notes: "",
@@ -1600,6 +1603,7 @@
           images: !!row.cap_images,
           voice: !!row.cap_voice,
         };
+        const kindVal = row.kind === "image" ? "image" : "chat";
         const baseVal = row.base_url_configured != null ? row.base_url_configured : row.base_url || "";
         const resVal =
           row.context_reserve_configured != null
@@ -1631,6 +1635,14 @@
             <label for="me-model">Model string</label>
             <input type="text" id="me-model" class="mono" value="${escapeAttr(row.model || "")}" placeholder="Qwen/Qwen3.5-…" />
             <p class="field-help">Provider model id sent to the OpenAI-compatible API.</p>
+          </div>
+          <div class="settings-field">
+            <label for="me-kind">Model kind</label>
+            <select id="me-kind">
+              <option value="chat" ${kindVal === "chat" ? "selected" : ""}>chat</option>
+              <option value="image" ${kindVal === "image" ? "selected" : ""}>image</option>
+            </select>
+            <p class="field-help">chat calls <code class="mono">/chat/completions</code>. image is for gpt-image-* (Images API via the generate_image tool) and cannot be the session model.</p>
           </div>
 
           <h4>Endpoint &amp; auth</h4>
@@ -1701,6 +1713,25 @@
           </div>
           <p class="hint model-editor-err" id="me-err" hidden></p>
         `;
+        const applyModelKind = () => {
+          const kindEl = editor.querySelector("#me-kind");
+          const image = !!(kindEl && kindEl.value === "image");
+          const hide = (sel, asLabel) => {
+            const el = editor.querySelector(sel);
+            if (!el) return;
+            const box = asLabel ? el.closest("label") : el.closest(".settings-field");
+            if (box) box.hidden = image;
+          };
+          hide("#me-tools", true);
+          hide("#me-reason", true);
+          hide("#me-ctx", false);
+          hide("#me-out", false);
+        };
+        const kindEl = editor.querySelector("#me-kind");
+        if (kindEl) {
+          kindEl.onchange = applyModelKind;
+          applyModelKind();
+        }
         editor.scrollIntoView({ block: "nearest", behavior: "smooth" });
         if (isNew) {
           const idInput = editor.querySelector("#me-id");
@@ -1719,17 +1750,30 @@
             errEl.hidden = true;
             errEl.textContent = "";
           }
+          const kindPick = editor.querySelector("#me-kind");
+          const kind = kindPick && kindPick.value === "image" ? "image" : "chat";
+          const toolsEl = editor.querySelector("#me-tools");
+          const reasonEl = editor.querySelector("#me-reason");
+          const ctxEl = editor.querySelector("#me-ctx");
+          const outEl = editor.querySelector("#me-out");
+          let ctxLim = ctxEl ? parseInt(ctxEl.value, 10) || 0 : row.context_limit || 131072;
+          let maxOut = outEl ? parseInt(outEl.value, 10) || 0 : row.max_output || 8192;
+          if (kind === "image") {
+            if (ctxLim <= 0) ctxLim = 131072;
+            if (maxOut <= 0) maxOut = 8192;
+          }
           const body = {
             id: editor.querySelector("#me-id").value.trim(),
             display_name: editor.querySelector("#me-name").value.trim(),
             model: editor.querySelector("#me-model").value.trim(),
+            kind: kind,
             base_url: editor.querySelector("#me-base").value.trim(),
             api_key_env: editor.querySelector("#me-keyenv").value.trim(),
-            context_limit: parseInt(editor.querySelector("#me-ctx").value, 10) || 0,
-            max_output: parseInt(editor.querySelector("#me-out").value, 10) || 0,
+            context_limit: ctxLim,
+            max_output: maxOut,
             context_reserve: parseInt(editor.querySelector("#me-res").value, 10) || 0,
-            cap_tools: editor.querySelector("#me-tools").checked,
-            cap_reasoning: editor.querySelector("#me-reason").checked,
+            cap_tools: kind === "image" ? false : toolsEl ? toolsEl.checked : true,
+            cap_reasoning: kind === "image" ? false : !!(reasonEl && reasonEl.checked),
             cap_images: editor.querySelector("#me-img").checked,
             cap_voice: editor.querySelector("#me-voice").checked,
             enabled: editor.querySelector("#me-en").checked,

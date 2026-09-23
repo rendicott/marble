@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0033</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0033</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0033-image-generation-models.md">Markdown</a>
+      <a href="0032-doc.html">← 0032</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0033-image-generation-models-kindimage-catalog-rows-the-generate_image-tool">ADR-0033: Image-generation models — <code>kind=image</code> catalog rows + the <code>generate_image</code> tool</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (2026-09-22) — implemented (schema v10)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-09-22</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>Marble + project owner</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>models, images, gpt-image, openai, logo, svg, vectorize, vtracer, catalog, tools</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0018 (Selectable Models / <code>model_catalog</code>), ADR-0019 (multimodal attachments), ADR-0029 (reliable image attachments), ADR-0016 (API-key auth)</td>
+</tr>
+<tr>
+<td><strong>Supersedes</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary">Summary</h2>
+<p>ADR-0018 assumed every <code>model_catalog</code> row is a <strong>chat</strong> model served on
+<code>/chat/completions</code>. OpenAI&rsquo;s image models (<code>gpt-image-*</code>) are not: they only exist on
+<code>/v1/images/generations</code>, <code>/v1/images/edits</code>, or as an <code>image_generation</code> tool inside
+<code>/v1/responses</code>. Registering one as a catalog row therefore made Marble call
+<code>/chat/completions</code> and hard-fail:</p>
+<pre><code>model HTTP 404: {&quot;error&quot;:{&quot;message&quot;:
+  &quot;This model is only supported in v1/responses and not in v1/chat/completions.&quot;}}
+</code></pre>
+<p>This ADR adds a <strong><code>kind</code></strong> discriminator (<code>chat</code> | <code>image</code>) to the model catalog and a
+first-class <strong><code>generate_image</code></strong> tool. <code>kind=image</code> rows become <strong>tool backends</strong>, not
+session models: they are unselectable as the session model, and the agent calls them
+through <code>generate_image</code>, which writes into the workspace and (optionally) traces the
+raster result to a <strong>real SVG</strong> with <code>vtracer</code>.</p>
+<h2 id="context-pain">Context &amp; pain</h2>
+<h3 id="current-state-verified">Current state (verified)</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Catalog</td>
+<td><code>model_catalog</code> (schema v3) has no notion of model <em>kind</em>; every row is assumed chat-capable</td>
+</tr>
+<tr>
+<td>Client</td>
+<td><code>model.Client.ChatWithOpts</code> always POSTs <code>{base}/chat/completions</code> (<code>internal/model/client.go</code>)</td>
+</tr>
+<tr>
+<td>Resolution</td>
+<td><code>resolveEffective</code> → <code>resolveCatalogID</code> → <code>processEffective</code>; any enabled row is accepted as the session model (<code>internal/session/model_resolve.go</code>)</td>
+</tr>
+<tr>
+<td>Attachments</td>
+<td><code>StageChatAttachment</code> + <code>OnChatAttachment</code> already stage durable image chips (<code>internal/tools/attach_url.go</code>, ADR-0029)</td>
+</tr>
+<tr>
+<td>Secrets</td>
+<td><code>api_key_env</code> names resolve live from <code>$MEMORY/env</code> (<code>internal/config</code>), never stored in the catalog (ADR-0016)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-is-awkward-today">What is awkward today</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Failure mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Operator adds <code>gpt-image-1</code> as a model</td>
+<td>Every turn 404s with <code>only supported in v1/responses</code>; the session looks broken</td>
+</tr>
+<tr>
+<td>Agent wants a logo</td>
+<td>No tool exists; nothing in the catalog can be <em>called</em> for pixels</td>
+</tr>
+<tr>
+<td>Operator wants an SVG</td>
+<td>Image models emit <strong>raster only</strong> — no SVG path existed anywhere</td>
+</tr>
+<tr>
+<td>Cost control</td>
+<td>No accounting for image token spend</td>
+</tr>
+</tbody>
+</table>
+<p>The core gap: <strong>the catalog models one axis (chat), but some providers are a different axis
+(image generation)</strong>, and there was no tool bridging Marble to the Images API.</p>
+<h2 id="goals">Goals</h2>
+<ol>
+<li><strong>Make the failure impossible</strong> — a <code>kind=image</code> row can never be sent to <code>/chat/completions</code>.</li>
+<li><strong>Make image models callable</strong> — a <code>generate_image</code> tool that hits <code>{base}/images/generations</code>.</li>
+<li><strong>Artifacts land in the workspace</strong> — files under the workspace jail, not just base64 in a transcript.</li>
+<li><strong>Visible results</strong> — generated images become durable chat attachments, like peer screenshots.</li>
+<li><strong>Real SVG</strong> — an opt-in <code>vectorize</code> that traces the raster to genuine vector paths.</li>
+<li><strong>Cost visibility</strong> — report token usage and an estimated USD cost per call.</li>
+<li><strong>Backwards compatible</strong> — existing rows migrate to <code>kind='chat'</code>; nothing else changes.</li>
+</ol>
+<h2 id="non-goals-v1">Non-goals (v1)</h2>
+<table>
+<thead>
+<tr>
+<th>Non-goal</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Responses API (<code>/v1/responses</code>) as a transport</td>
+<td>The Images API covers generation/editing; Responses adds multi-turn image tool-use we don&rsquo;t need yet. The 404 hint now <em>explains</em> this instead of crashing</td>
+</tr>
+<tr>
+<td>Image <strong>editing</strong> / inpainting / masks</td>
+<td><code>images/edits</code> is a follow-up; generation is the ask (logos, SVG)</td>
+</tr>
+<tr>
+<td>Streaming / partial images</td>
+<td>Adds transport complexity for no agent-loop benefit</td>
+</tr>
+<tr>
+<td>Auto-vectorizing every image</td>
+<td>Tracing is lossy and slow; opt-in per call</td>
+</tr>
+<tr>
+<td>Using an image model <em>as</em> the agent brain</td>
+<td>It has no chat surface. It is a tool backend, full stop</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decision">Decision</h2>
+<h3 id="d1-kind-on-the-model-catalog-schema-v10">D1. <code>kind</code> on the model catalog (schema v10)</h3>
+<p><code>model_catalog.kind TEXT NOT NULL DEFAULT 'chat'</code>, normalised to <code>chat</code> | <code>image</code> by
+<code>db.NormalizeModelKind</code>; <code>ValidateModelCatalog</code> rejects anything else. Migration
+<code>migrateV9toV10</code> adds the column and tolerates fresh databases that already have it
+(guarded by <code>pragma_table_info</code>, so the <code>ALTER</code> is conditional).</p>
+<h3 id="d2-kindimage-rows-are-tool-backends-never-session-models">D2. <code>kind=image</code> rows are tool backends, never session models</h3>
+<p>Enforced at three layers so a stale selection can never 404 a session:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>setSessionModel</code></td>
+<td>Rejects with <code>… is an image-generation model; pick a chat model and use the generate_image tool</code></td>
+</tr>
+<tr>
+<td><code>resolveCatalogID</code></td>
+<td>Returns <code>ok=false</code> + advisory and falls back to the process default</td>
+</tr>
+<tr>
+<td><code>runTurn</code> (pre-flight)</td>
+<td>Belt-and-braces guard that ends the turn with the same explanation</td>
+</tr>
+</tbody>
+</table>
+<h3 id="d3-generate_image-tool">D3. <code>generate_image</code> tool</h3>
+<p><code>POST {base_url}/images/generations</code>, decoding <code>data[].b64_json</code> (GPT Image models <em>always</em>
+return base64, never URLs).</p>
+<table>
+<thead>
+<tr>
+<th>Arg</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td>—</td>
+<td>required</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td><code>generated/image-&lt;ts&gt;.png</code></td>
+<td>workspace-relative, jail-enforced; <code>-2</code>, <code>-3</code> suffixes for <code>n &gt; 1</code></td>
+</tr>
+<tr>
+<td><code>model_id</code></td>
+<td>first enabled <code>kind=image</code> row</td>
+<td>must be a <code>kind=image</code> row</td>
+</tr>
+<tr>
+<td><code>size</code></td>
+<td><code>1024x1024</code></td>
+<td><code>1024x1536</code>, <code>1536x1024</code>, up to 3840×2160</td>
+</tr>
+<tr>
+<td><code>quality</code></td>
+<td><code>medium</code></td>
+<td><code>low</code> · <code>medium</code> · <code>high</code> · <code>xhigh</code> · <code>max</code> · <code>auto</code></td>
+</tr>
+<tr>
+<td><code>background</code></td>
+<td><code>transparent</code></td>
+<td><code>opaque</code> · <code>auto</code> — transparency is why logos work</td>
+</tr>
+<tr>
+<td><code>output_format</code></td>
+<td><code>png</code></td>
+<td><code>jpeg</code> · <code>webp</code></td>
+</tr>
+<tr>
+<td><code>n</code></td>
+<td><code>1</code></td>
+<td>max 4</td>
+</tr>
+<tr>
+<td><code>vectorize</code></td>
+<td><code>false</code></td>
+<td>also write a sibling <code>.svg</code> via <code>vtracer</code></td>
+</tr>
+<tr>
+<td><code>attach</code></td>
+<td><code>true</code></td>
+<td>stage durable chat attachment(s)</td>
+</tr>
+</tbody>
+</table>
+<p>Returns <code>{ok, files:[{path,bytes,mime,vectorized_path}], attachment_ids, model, model_id,
+size, quality, background, vectorized, usage, est_cost_usd, latency_ms, notes}</code>.
+Turn-scoped cap: 6 calls per turn (mirrors the <code>attach_from_url</code> cap).</p>
+<h3 id="d4-svg-is-traced-not-generated">D4. SVG is traced, not generated</h3>
+<p>GPT Image models <strong>cannot emit SVG</strong> — they emit raster pixels. Two honest paths to vector
+output, and the tool takes the second:</p>
+<ol>
+<li><strong>Text model authors SVG markup directly</strong> — works today with any competent chat model for
+   hand-drawn logos/wordmarks (no new machinery).</li>
+<li><strong><code>vectorize: true</code></strong> — the generated PNG is traced to real <code>&lt;path&gt;</code> geometry by
+   <code>vtracer</code> (<code>colormode="color"</code>, <code>mode="spline"</code>, <code>filter_speckle=4</code>) via <code>python3</code>.
+   Missing <code>python3</code>/<code>vtracer</code> yields a <code>notes</code> hint, never a hard failure.</li>
+</ol>
+<h3 id="d5-cost-accounting">D5. Cost accounting</h3>
+<p>Per-call estimate from reported usage at GPT Image rates — text in $5/M, image in $8/M,
+image out $30/M — rounded to 4 dp. Best-effort: <code>quality</code> dominates cost (a 1024×1024 square
+ranges ~$0.006 low → ~$0.21 high), and <code>quality=auto</code> lets the model pick the tier, so the
+figure is an estimate by construction.</p>
+<h3 id="d6-auth-unchanged">D6. Auth unchanged</h3>
+<p><code>api_key_env</code> on the image row (e.g. <code>OPENAI_API_KEY</code>) resolves through the existing
+ADR-0016 path. <code>ImageClientFor</code> builds a normal <code>model.Client</code>, so inherited/forced/none
+modes and live env overlay reload all keep working.</p>
+<h2 id="consequences">Consequences</h2>
+<p><strong>Positive</strong></p>
+<ul>
+<li>The reported 404 is now structurally impossible, and the <em>error message itself</em> is
+  rewritten into an actionable hint (<code>Register it as kind=image and call generate_image</code>).</li>
+<li>Marble gains its first image <em>production</em> capability (logos, icons, illustrations) with
+  artifacts on disk and chips in chat.</li>
+<li>Real SVG output via tracing — no other path in the harness produced vector art before.</li>
+<li>Cost and token usage are visible per call.</li>
+</ul>
+<p><strong>Negative / accepted</strong></p>
+<ul>
+<li>One more catalog axis; the settings editor grows a <code>kind</code> select and an <code>image</code> badge.</li>
+<li><code>vtracer</code> is an optional host dependency (<code>pip install vtracer</code>); absent, <code>vectorize</code>
+  degrades to a note.</li>
+<li>Tracing a photographic image produces a large, ugly SVG. <code>vectorize</code> is intended for
+  flat/logo art, which is what the tool is for.</li>
+</ul>
+<p><strong>Neutral</strong></p>
+<ul>
+<li>Schema v10 is additive; older binaries refuse the DB (standard forward-compat guard).</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>v9 → v10 migration</td>
+<td><code>TestMigrateV9toV10AddsKind</code> (downgrades a real DB, reopens, asserts <code>kind='chat'</code> on legacy rows)</td>
+</tr>
+<tr>
+<td>Idempotent on fresh DB</td>
+<td><code>TestMigrateV9toV10Idempotent</code></td>
+</tr>
+<tr>
+<td>Kind validation</td>
+<td><code>TestValidateModelCatalogKind</code>, <code>TestNormalizeModelKind</code>, <code>TestModelCatalogKindRoundTrip</code></td>
+</tr>
+<tr>
+<td>Images API contract</td>
+<td><code>TestGenerateImageHappyPath</code> (path, auth, body, b64 decode, usage), <code>…HTTPError</code>, <code>…NoImageReturned</code>, <code>…RejectsBadBase64</code></td>
+</tr>
+<tr>
+<td>Tool behaviour</td>
+<td><code>TestGenerateImageWritesFileAndAttaches</code>, <code>…DefaultPathAndMultiple</code>, <code>…RejectsNonImageModel</code>, <code>…NoModelConfigured</code>, <code>…RequiresPromptAndJail</code>, <code>…TurnCallCap</code>, <code>…Vectorize</code>, <code>…Dispatch</code>, <code>…SpecRegistered</code></td>
+</tr>
+<tr>
+<td>Session guard</td>
+<td><code>TestImageModelCannotBeSessionModel</code></td>
+</tr>
+<tr>
+<td>Live endpoint</td>
+<td>Manual: <code>gpt-image-2.5-flare</code>, <code>1024x1024</code>, <code>quality=low</code>, <code>background=transparent</code> → RGBA PNG, 6.6 s, <code>usage.output_tokens=196</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>go build ./...</code>, <code>go vet ./...</code>, and <code>go test ./...</code> (17 packages) all pass.</p>
+<h2 id="open-questions">Open questions</h2>
+<ol>
+<li>Should <code>images/edits</code> (mask-based inpainting) get its own tool, or an <code>edit</code> mode on
+   <code>generate_image</code>? <em>(leaning: separate tool, different arg shape)</em></li>
+<li>Should the first <code>kind=image</code> row be explicitly pinned as &ldquo;the default image model&rdquo;
+   rather than relying on <code>sort_order</code>? <em>(leaning: pin it if operators run more than two)</em></li>
+<li>Should <code>vectorize</code> get quality knobs (<code>filter_speckle</code>, <code>mode</code>, colour precision)
+   surfaced as args? <em>(leaning: only if requesters hit the defaults&rsquo; limits)</em></li>
+</ol>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0033-image-generation-models.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>
