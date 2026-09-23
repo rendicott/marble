@@ -4,7 +4,17 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.8
+## What's new in v0.4.9
+
+Highlights since **[v0.4.8](https://github.com/rendicott/marble/releases/tag/v0.4.8)** (no schema change):
+
+### Jump between final replies
+- **▲ / ▼** at the left of the composer's action row (same row as attach + Send)
+- **▲** jumps to the top of the last turn's final reply; press again for the one before
+- **▼** walks forward, then to the bottom; grayed out when already at the bottom (▲ grays out at the first reply)
+- Position-based, so it picks up from wherever you've scrolled manually
+
+### Earlier — v0.4.8
 
 Highlights since **[v0.4.7](https://github.com/rendicott/marble/releases/tag/v0.4.7)** (schema **v10**: `model_catalog.kind`; migration is idempotent):
 

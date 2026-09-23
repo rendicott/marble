@@ -2363,6 +2363,18 @@ button.tip {
   width: 100%;
   min-width: 0;
 }
+/* Jump between final replies: left end of the actions row (attach + send stay right) */
+.turn-nav {
+  display: inline-flex;
+  gap: 0.35rem;
+  margin-right: auto;
+  flex-shrink: 0;
+}
+.turn-nav-btn {
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+}
 .attach-btn {
   flex-shrink: 0;
   cursor: pointer;

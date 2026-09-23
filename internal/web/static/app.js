@@ -42,6 +42,8 @@
     thinkingLive: document.getElementById("thinking-live"),
     attachStage: document.getElementById("attach-stage"),
     attachInput: document.getElementById("attach-input"),
+    turnUp: document.getElementById("btn-turn-up"),
+    turnDown: document.getElementById("btn-turn-down"),
     attachWarn: document.getElementById("attach-warn"),
     attModal: document.getElementById("att-modal"),
     attModalTitle: document.getElementById("att-modal-title"),
@@ -226,6 +228,83 @@
 
   if (els.transcript) {
     els.transcript.addEventListener("scroll", syncTranscriptPinFromScroll, { passive: true });
+  }
+
+  /**
+   * ▲/▼ under the composer: jump to the top of each turn's final reply (the last
+   * assistant bubble before the next user bubble). Position-based, so pressing
+   * ▲ again walks back one reply even after manual scrolling.
+   */
+  const TURN_NAV_SLOP_PX = 4;
+  const TURN_NAV_GAP_PX = 8;
+
+  function finalReplyBubbles() {
+    const out = [];
+    let lastAsst = null;
+    for (const el of els.transcript.children) {
+      if (!el.classList.contains("bubble")) continue;
+      if (el.classList.contains("user")) {
+        if (lastAsst) out.push(lastAsst);
+        lastAsst = null;
+      } else if (el.classList.contains("assistant")) {
+        lastAsst = el;
+      }
+    }
+    if (lastAsst) out.push(lastAsst);
+    return out;
+  }
+
+  /** scrollTop that puts el's top just below the transcript's top edge. */
+  function turnNavTop(el) {
+    const t = els.transcript;
+    const top =
+      t.scrollTop + el.getBoundingClientRect().top - t.getBoundingClientRect().top - TURN_NAV_GAP_PX;
+    return Math.max(0, Math.round(top));
+  }
+
+  function turnNavUpTarget() {
+    const cur = els.transcript.scrollTop;
+    const above = finalReplyBubbles().filter((el) => turnNavTop(el) < cur - TURN_NAV_SLOP_PX);
+    return above.length ? above[above.length - 1] : null;
+  }
+
+  function turnNavDown() {
+    const t = els.transcript;
+    const next = finalReplyBubbles().find((el) => turnNavTop(el) > t.scrollTop + TURN_NAV_SLOP_PX);
+    const maxTop = t.scrollHeight - t.clientHeight;
+    t.scrollTop = next ? Math.min(turnNavTop(next), maxTop) : maxTop;
+  }
+
+  function updateTurnNav() {
+    if (!els.turnUp || !els.turnDown || !els.transcript) return;
+    els.turnUp.disabled = !turnNavUpTarget();
+    els.turnDown.disabled = isTranscriptNearBottom(TURN_NAV_SLOP_PX);
+  }
+
+  let turnNavRaf = 0;
+  function scheduleTurnNavUpdate() {
+    if (turnNavRaf) return;
+    turnNavRaf = requestAnimationFrame(() => {
+      turnNavRaf = 0;
+      updateTurnNav();
+    });
+  }
+
+  if (els.transcript && els.turnUp && els.turnDown) {
+    els.turnUp.addEventListener("click", () => {
+      const el = turnNavUpTarget();
+      if (el) els.transcript.scrollTop = turnNavTop(el);
+    });
+    els.turnDown.addEventListener("click", turnNavDown);
+    els.transcript.addEventListener("scroll", scheduleTurnNavUpdate, { passive: true });
+    // Re-renders, streamed messages, and expand/collapse all move the targets.
+    new MutationObserver(scheduleTurnNavUpdate).observe(els.transcript, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "hidden"],
+    });
+    window.addEventListener("resize", scheduleTurnNavUpdate);
   }
 
   /**

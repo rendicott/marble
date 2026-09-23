@@ -334,6 +334,10 @@
         <div class="composer-row">
           <textarea id="input" rows="2" placeholder="Message Marble… (paste images)" disabled></textarea>
           <div class="composer-actions">
+            <div class="turn-nav" role="group" aria-label="Jump between final replies">
+              <button type="button" id="btn-turn-up" class="icon-btn turn-nav-btn" title="Jump to the top of the previous final reply" aria-label="Previous final reply" disabled>▲</button>
+              <button type="button" id="btn-turn-down" class="icon-btn turn-nav-btn" title="Jump to the next final reply" aria-label="Next final reply" disabled>▼</button>
+            </div>
             <label class="attach-btn icon-btn" title="Attach image or document">
               📎
               <input type="file" id="attach-input" hidden multiple
