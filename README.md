@@ -4,7 +4,27 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.6
+## What's new in v0.4.8
+
+Highlights since **[v0.4.7](https://github.com/rendicott/marble/releases/tag/v0.4.7)** (schema **v10**: `model_catalog.kind`; migration is idempotent):
+
+### Generate images and SVG (ADR-0033)
+- **`generate_image`** — text → image via an OpenAI-compatible **Images API** (`gpt-image-2.5-sunburst` / `flare`, `gpt-image-1-mini`)
+- Writes into the **workspace** (`path`, defaults to `generated/image-<ts>.png`) and stages durable **chat attachments** so the image shows up inline
+- Args: `prompt`, `path`, `model_id`, `size`, `quality` (`low`…`max`), `background` (**`transparent`** by default — logos), `output_format`, `n`, `vectorize`, `attach`
+- **`vectorize: true`** traces the raster to a **real SVG** via [`vtracer`](https://pypi.org/project/vtracer/) (`pip install vtracer`); degrades to a note if absent
+- Reports token `usage` and an estimated `est_cost_usd`; capped at **6 calls per turn**
+- Image models are catalog rows with **`kind=image`** — they are **never** session models (selecting one is rejected) and no longer 404 on `/chat/completions`
+
+### Local model reasoning
+- `chat_template_kwargs` (Qwen `enable_thinking`) is sent **only to Qwen** models; Mistral rejected it with HTTP 400
+- Mistral reasoning effort is binary: `low`/`medium` map to **`high`**
+
+### Earlier — v0.4.7
+
+- **`computer_exec`** tool, type-class escalate lock, clearer `shell_execute` host reporting
+
+### Earlier — v0.4.6
 
 Highlights since **[v0.4.5](https://github.com/rendicott/marble/releases/tag/v0.4.5)** (no schema change):
 
@@ -59,14 +79,6 @@ Highlights since **[v0.4.3](https://github.com/rendicott/marble/releases/tag/v0.
 - Provenance in attachment **`meta_json`** (`source_url`, credit, license, …)
 - **`POST /api/sessions/{id}/attachments/from_url`** for scripts/tests/non-agent clients
 - Chip tooltip shows source/credit when present. Attaching is **not** a license clearance.
-
-### Generate images and SVG (ADR-0033)
-- **`generate_image`** — text → image via an OpenAI-compatible **Images API** (`gpt-image-2.5-sunburst` / `flare`, `gpt-image-1-mini`)
-- Writes into the **workspace** (`path`, defaults to `generated/image-<ts>.png`) and stages durable **chat attachments** so the image shows up inline
-- Args: `prompt`, `path`, `model_id`, `size`, `quality` (`low`…`max`), `background` (**`transparent`** by default — logos), `output_format`, `n`, `vectorize`, `attach`
-- **`vectorize: true`** traces the raster to a **real SVG** via [`vtracer`](https://pypi.org/project/vtracer/) (`pip install vtracer`); degrades to a note if absent
-- Reports token `usage` and an estimated `est_cost_usd`; capped at **6 calls per turn**
-- Image models are catalog rows with **`kind=image`** — they are **never** session models (selecting one is rejected) and no longer 404 on `/chat/completions`
 
 ### Docs
 - ADR-0028 accepted + implemented; ADR-0029 accepted + implemented (M1)
