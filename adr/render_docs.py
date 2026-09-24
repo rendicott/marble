@@ -28,7 +28,7 @@ except ImportError:
 ADR_DIR = Path(__file__).resolve().parent
 ADR_MD_RE = re.compile(r"^(\d{4})-(.+)\.md$")
 STATUS_RE = re.compile(
-    r"\*\*Status\*\*\s*\|\s*\*?\*?([^*\n|]+)",
+    r"\*\*Status\*\*\s*\|\s*([^\n|]+)",
     re.IGNORECASE,
 )
 

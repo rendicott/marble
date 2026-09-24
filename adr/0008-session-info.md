@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Accepted (ready to implement) |
+| **Status** | Accepted / Implemented |
 | **Date** | 2026-07-18 |
 | **Deciders** | Project owner |
 | **Tags** | ui, sessions, diagnostics, observability |

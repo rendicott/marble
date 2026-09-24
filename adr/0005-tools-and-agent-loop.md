@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Accepted |
+| **Status** | Accepted / Implemented |
 | **Date** | 2026-07-17 |
 | **Deciders** | Project owner |
 | **Tags** | tools, agent-loop, shell, memory, skills, compaction, background-tasks, system-agents |

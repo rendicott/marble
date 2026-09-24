@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Accepted (ready to implement) |
+| **Status** | Accepted / Implemented (harness `internal/peerhub`) |
 | **Date** | 2026-07-26 |
 | **Author** | — |
 | **Deciders** | Project owner |

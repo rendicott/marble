@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Proposed |
+| **Status** | Accepted / Implemented (MVP, `8532c7a`) |
 | **Date** | 2026-07-16 |
 | **Deciders** | Project owner |
 | **Tags** | architecture, harness, llm, golang, web |

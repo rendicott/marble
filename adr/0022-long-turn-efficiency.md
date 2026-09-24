@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Accepted** (ready to implement) |
+| **Status** | **Accepted** — implemented (P0–P3; `internal/tools/thrash.go`) |
 | **Date** | 2026-08-01 |
 | **Accepted** | 2026-08-02 |
 | **Author** | — |

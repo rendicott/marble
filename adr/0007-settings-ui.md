@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Accepted (ready to implement) |
+| **Status** | Accepted / Implemented |
 | **Date** | 2026-07-17 |
 | **Deciders** | Project owner |
 | **Tags** | ui, settings, config, database, cli, mcp |

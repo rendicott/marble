@@ -647,12 +647,13 @@ Notable ADRs:
 | 0031 | Subprocess context injection (pick-and-choose) |
 | 0032 | Selectable UI themes (dark / light / tan, cookie) |
 | 0033 | Image-generation models (`kind=image`) + `generate_image` |
+| 0034 | `computer_exec`, peer state legibility, type-class thrash guard |
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.6](https://github.com/rendicott/marble/releases/tag/v0.4.6)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.9](https://github.com/rendicott/marble/releases/tag/v0.4.9)**.
 
-Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.0](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.0)**).
+Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.3](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.3)**).
 
 | Asset | Platform |
 |-------|----------|

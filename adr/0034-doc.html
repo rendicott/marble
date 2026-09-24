@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0034</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0034</span>
+      <span class="status accepted">Accepted (implemented)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0034-computer-exec-and-type-thrash.md">Markdown</a>
+      <a href="0033-doc.html">← 0033</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0034-computer_exec-peer-state-legibility-and-type-class-thrash-guard">ADR-0034: computer_exec, Peer State Legibility, and Type-Class Thrash Guard</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (implemented)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-09-23</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>computer-use, peer, anti-thrash, tools</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0020 / 0021 (peer computer-use), ADR-0022 (long-turn efficiency, anti-thrash / escalate lock)</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>Field report <code>peer-gui-loop-report</code> (Marble session <code>0wefnnqmpq</code>, peer <code>rwin</code>, marble-peer v0.1.2): ~150 tool iterations, 0 command outputs actually read, retyping the same PowerShell command into a window whose output could not be confirmed as landed or not</td>
+</tr>
+</tbody>
+</table>
+<h2 id="overview">Overview</h2>
+<p>An agent task (&ldquo;install the Orb Windows tray client on peer <code>rwin</code>, verify it, build a CQA gate&rdquo;)
+degenerated into a ~150-iteration loop of <code>computer_screenshot</code> → <code>computer_desktop_act
+action=type</code> → <code>computer_screenshot</code>, because the only way to read peer state (config, logs,
+installed software) was to open a PowerShell window and read a screenshot of it. A terminal window
+is ~40 lines tall; any command whose output exceeded that, or produced none, was indistinguishable
+from a command that never ran. Separately, <code>shell_execute</code>&rsquo;s tool description did not say it runs on
+the harness host — ~10 calls were spent discovering that a <code>curl -o "C:\Users\..."</code> against it wrote
+a file literally named <code>C:UsersPublic...</code> into the harness workspace instead of downloading anything
+on the peer. See the full report for the complete root-cause breakdown.</p>
+<p>This ADR records the fixes made in response, split across <code>marble</code> (this repo) and
+<code>marble-desktop-peer</code>.</p>
+<h2 id="decisions">Decisions</h2>
+<h3 id="marble-desktop-peer">marble-desktop-peer</h3>
+<ol>
+<li><strong>New <code>computer_exec</code> peer action kind (P0).</strong> Runs a command via <code>internal/shellexec</code>
+   (<code>powershell.exe</code> on Windows, <code>bash</code>/<code>sh</code> elsewhere) and returns <code>stdout</code>/<code>stderr</code>/<code>exit_code</code> as
+   text. This is the actual fix — the three diagnostic commands the report says should have run first
+   (<code>Get-Content config.json</code>, <code>Get-Content orb.log -Tail 40</code>, <code>Get-ChildItem</code>) become three
+   <code>computer_exec</code> calls instead of an unbounded pixel loop. Advertised via <code>caps.exec</code> (new field on
+   <code>protocol.Caps</code>, mirrored in <code>StatusJSON</code> and the pairing <code>caps</code> map).</li>
+<li><strong><code>screenshot</code> / <code>desktop_click</code> now include best-effort <code>window_title</code> / <code>focused_app</code> in <code>meta</code></strong>
+   (P2) — answers &ldquo;did my keystrokes land where I think?&rdquo; without a second call. Linux via <code>xdotool
+   getactivewindow</code>, macOS via System Events, Windows via <code>GetForegroundWindow</code> +
+   <code>QueryFullProcessImageNameW</code>.</li>
+<li><strong><code>desktop_type</code> now returns an atomic post-type screenshot</strong>, the same pattern <code>desktop_click</code>
+   already had (P2) — a stuck/unfocused field is visible immediately instead of retyping into it
+   silently.</li>
+</ol>
+<p>Deferred: <code>computer_read_text</code> (OCR / accessibility-tree text for a screen region) — the report&rsquo;s P1.
+<code>computer_exec</code> already closes the specific failure class this session hit; a general OCR primitive
+is a larger, separately-scoped effort (platform accessibility APIs differ enough per-OS that it
+deserves its own design pass, not a rider on this fix).</p>
+<h3 id="marble-this-repo">marble (this repo)</h3>
+<ol start="4">
+<li><strong><code>computer_exec</code> tool</strong> — spec, handler (<code>computerExec</code> in <code>internal/tools/computer.go</code>), registry
+   dispatch. Mirrors <code>shell_execute</code>&rsquo;s shape (<code>command</code>/<code>cwd</code>/<code>timeout_sec</code> → <code>stdout</code>/<code>stderr</code>/
+   <code>exit_code</code>) so the model can reuse what it already knows about that tool.</li>
+<li><strong><code>computer_bind</code> now returns <code>os</code>/<code>caps</code></strong> (P2) — previously only <code>computer_id</code>/<code>session_id</code>;
+   <code>computer_list</code> already had these per-computer, <code>bind</code> just didn&rsquo;t echo them back. Resolved via the
+   existing <code>ListComputers()</code> callback, no new peer round trip.</li>
+<li><strong><code>shell_execute</code>&rsquo;s tool description now states it runs on the harness host, not any bound peer</strong>
+   (P0 — the report calls this the single highest-ROI-per-effort fix: &ldquo;one sentence&hellip; would have
+   saved ~10 calls&rdquo;). <code>shell_execute</code> also now appends a warning line to its output when the command
+   contains an obvious Windows-style path (<code>C:\...</code>) while the harness host is not Windows — this is
+   exactly the failure mode from the report (backslashes silently consumed by the POSIX shell).</li>
+<li><strong>ADR-0022 escalate lock (<code>isComputerClickClass</code>) now covers <code>type</code>, not just <code>click</code>.</strong> The lock
+   existed and was engaging (via the generic <code>ComputerFailStreak</code> path) but its hard-block gate only
+   matched <code>action=="click"</code> for <code>computer_desktop_act</code> — so a locked turn still let <code>type</code> through
+   without limit. This was the actual mechanism of the 150-iteration loop: the guard existed, it just
+   didn&rsquo;t cover the action class that thrashed.</li>
+<li><strong>New near-duplicate-type detector</strong>, the <code>type</code> analog of the existing near-duplicate-click check:
+   the same typed text repeated (2+ prior identical fingerprints) trips <code>EscalateLock</code> immediately,
+   independent of <code>AntiRepeatN</code> (which defaults to off). Click already had this; type did not, which is
+   why repeated identical <code>type</code> calls with <code>OK:true</code> responses never tripped the generic fail-streak
+   path either (a &ldquo;successful&rdquo; keystroke that lands nowhere is not, by any local signal, a failure).</li>
+<li><strong><code>computerDesktopAct</code>&rsquo;s post-click screenshot/<code>ui_unchanged</code> handling is generalized</strong> into
+   <code>attachPostActionScreenshot</code>, shared by <code>click</code> and <code>type</code>, so <code>type</code> gets the same &ldquo;see the result
+   immediately, and <code>ui_unchanged</code> means it silently didn&rsquo;t land&rdquo; treatment <code>click</code> already had.</li>
+<li>System prompt and tool descriptions updated to steer the model at <code>computer_exec</code> for reading peer
+    state instead of typing into a terminal and screenshotting it.</li>
+</ol>
+<h2 id="deferred-explicitly-out-of-scope">Deferred / explicitly out of scope</h2>
+<ul>
+<li><strong><code>computer_read_text</code> (OCR/accessibility text)</strong> — see above; needs its own design pass.</li>
+<li><strong>Cross-tool loop detection generalized beyond computer_desktop_act</strong> (the report&rsquo;s harness P1: &ldquo;the
+  iteration cap caught this at 190, but only after ~150 wasted calls&rdquo;) — the type-class fixes above
+  (items 7–9) close the specific loop this session hit. A more general early-intervention mechanism
+  across arbitrary tool pairs is a bigger change to <code>internal/tools/thrash.go</code> and is left for a
+  follow-up ADR if repeated in another failure class.</li>
+<li><strong>The CQA release-verification gate</strong> (report §5: fetch <code>SHA256SUMS</code>, download clients, verify hash,
+  run <code>orb-mcp -version</code>, publish/read back a scratch topic) — this is <code>orb</code>-repo/product work, not a
+  <code>marble</code>/<code>marble-desktop-peer</code> harness or peer change, and is out of scope for this ADR.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<ul>
+<li><code>marble-desktop-peer</code>: <code>go build</code> (linux), <code>go vet</code> cross-compiled for <code>GOOS=windows</code> and
+  <code>GOOS=darwin</code>, <code>go test ./...</code> (all packages green, including new <code>internal/shellexec</code> tests:
+  echo/non-zero-exit/empty-command/timeout).</li>
+<li><code>marble</code>: <code>go build ./...</code>, <code>go vet ./...</code>, <code>go test ./...</code> (all packages green), plus new tests
+  <code>TestEscalateLockBlocksType</code>, <code>TestNearDupDesktopType</code>, <code>TestShellExecuteWarnsOnWindowsPath</code> in
+  <code>internal/tools</code>.</li>
+<li>Not yet done: an end-to-end run against a real bound peer (this dev box has neither a live peer nor
+  Windows/macOS to test against — see <code>marble-peer-windows-ci-verification</code> precedent: real
+  verification for peer-facing changes happens via a draft PR&rsquo;s <code>windows-latest</code> CI job, read
+  verbosely, not locally).</li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0034-computer-exec-and-type-thrash.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Accepted** (ready to implement) |
+| **Status** | **Accepted** — implemented |
 | **Date** | 2026-08-08 |
 | **Accepted** | 2026-08-13 |
 | **Author** | — |

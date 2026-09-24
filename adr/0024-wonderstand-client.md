@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Accepted** (canonical design in peer repo; Q1–Q12 locked 2026-08-07) |
+| **Status** | **Accepted** — implemented (Wonderstand client, APK 0.1.10) |
 | **Date** | 2026-08-07 |
 | **Tags** | wonderstand, android, client, pointer |
 | **Canonical design** | **`marble-wonderstand`** repo / folder: [`adr/0001-wonderstand-client.md`](../../marble-wonderstand/adr/0001-wonderstand-client.md) (path relative when trees are siblings under `projects/`) |

@@ -1,4 +1,4 @@
-# ADR-0033: computer_exec, Peer State Legibility, and Type-Class Thrash Guard
+# ADR-0034: computer_exec, Peer State Legibility, and Type-Class Thrash Guard
 
 | Field | Value |
 |-------|--------|
