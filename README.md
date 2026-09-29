@@ -4,7 +4,28 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.10
+## What's new in v0.4.11
+
+Highlights since **[v0.4.10](https://github.com/rendicott/marble/releases/tag/v0.4.10)** (no schema change):
+
+### Sessions survive restarts intact
+- **Fixed:** reloading a session after a harness restart glued each **thinking** message onto the message before it and moved its id there — transcripts showed `## … · thinking` inside user/harness bubbles, and every later restart made it worse
+- **Fixed:** after a reload, new messages could **reuse existing ids**, so the UI merged the wrong bubbles
+- **Fixed:** attachment and screenshot **chips were lost on reload** (plain "screenshot.jpg" text, not clickable). Chips are now saved in the session file and restored; screenshot tool results rebuild theirs from `attachment_id`
+- Reloaded sessions send **image references** to the model again (user uploads + screenshots), still capped by the per-request image limit
+- Message text that looks like a heading or an HTML comment can no longer split a message or overwrite its id
+
+### Repair existing sessions
+Sessions saved by earlier versions may already be damaged. After upgrading, stop the harness and run:
+
+```bash
+marble-harness repair-sessions            # dry run: lists what it would fix
+marble-harness repair-sessions -apply     # backs up $MEMORY/session, then rewrites
+```
+
+Use `-memory DIR` for a non-default data home. `-apply` refuses to run while a harness holds `marble.lock` (a running harness would overwrite the repair on its next save). It moves thinking ids back, renumbers duplicate ids, and restores chips from `session_attachments`; message text is unchanged. Safe to re-run.
+
+### Earlier — v0.4.10
 
 Highlights since **[v0.4.9](https://github.com/rendicott/marble/releases/tag/v0.4.9)** (schema **v11**: `model_catalog.max_images`; migration is idempotent):
 
@@ -669,7 +690,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.10](https://github.com/rendicott/marble/releases/tag/v0.4.10)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.11](https://github.com/rendicott/marble/releases/tag/v0.4.11)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.3](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.3)**).
 
