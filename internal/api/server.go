@@ -347,6 +347,7 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 				if em, err := s.Registry.EffectiveModelFor(id); err == nil {
 					me = em.Public()
 					sum.Model = em.Model
+					sum.ImageLimit = sess.ImageLimitFor(em)
 				}
 			}
 			out := map[string]interface{}{
@@ -477,13 +478,15 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 		Title           *string           `json:"title"`
 		ReasoningEffort *string           `json:"reasoning_effort"`
 		SinkOverrides   map[string]string `json:"sink_overrides"`
+		// ImageLimit is a number (1-100), "model", or "default".
+		ImageLimit json.RawMessage `json:"image_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if body.ModelID == nil && body.AgentPresetID == nil && body.Title == nil && body.ReasoningEffort == nil && body.SinkOverrides == nil {
-		http.Error(w, "model_id, agent_preset_id, title, reasoning_effort, or sink_overrides required", http.StatusBadRequest)
+	if body.ModelID == nil && body.AgentPresetID == nil && body.Title == nil && body.ReasoningEffort == nil && body.SinkOverrides == nil && len(body.ImageLimit) == 0 {
+		http.Error(w, "model_id, agent_preset_id, title, reasoning_effort, sink_overrides, or image_limit required", http.StatusBadRequest)
 		return
 	}
 
@@ -550,6 +553,23 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 		auth.LogAction("session_set_reasoning", "session="+id+" effort="+*body.ReasoningEffort, u)
 	}
 
+	if len(body.ImageLimit) > 0 {
+		raw := strings.Trim(strings.TrimSpace(string(body.ImageLimit)), `"`)
+		if raw == "null" {
+			raw = ""
+		}
+		sess, err = s.Registry.SetSessionImageLimit(id, raw)
+		if err != nil {
+			if strings.Contains(err.Error(), "image_limit") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		auth.LogAction("session_set_image_limit", "session="+id+" image_limit="+raw, u)
+	}
+
 	if body.SinkOverrides != nil {
 		sess, err = s.Registry.SetSessionSinkOverrides(id, body.SinkOverrides)
 		if err != nil {
@@ -572,11 +592,13 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 	out := map[string]interface{}{"session": sum}
 	if body.ModelID != nil {
 		sum.Model = em.Model
+		sum.ImageLimit = sess.ImageLimitFor(em)
 		out["session"] = sum
 		out["model_effective"] = em.Public()
 	} else if s.Registry != nil {
 		if eff, e2 := s.Registry.EffectiveModelFor(id); e2 == nil {
 			sum.Model = eff.Model
+			sum.ImageLimit = sess.ImageLimitFor(eff)
 			out["session"] = sum
 			out["model_effective"] = eff.Public()
 		}

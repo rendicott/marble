@@ -40,11 +40,14 @@ type ModelCatalogRow struct {
 	ContextLimit    int
 	MaxOutput       int
 	ContextReserve  int // 0 = inherit process
-	Enabled         bool
-	SortOrder       int
-	Notes           string
-	CreatedAt       string
-	UpdatedAt       string
+	// MaxImages caps image parts per request (0 = unlimited / unknown). The
+	// harness lowers it when a provider rejects a request for too many images.
+	MaxImages int
+	Enabled   bool
+	SortOrder int
+	Notes     string
+	CreatedAt string
+	UpdatedAt string
 }
 
 func (d *DB) migrateV2toV3() error {
@@ -79,7 +82,8 @@ func (d *DB) migrateV2toV3() error {
 			notes TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
-			kind TEXT NOT NULL DEFAULT 'chat'
+			kind TEXT NOT NULL DEFAULT 'chat',
+			max_images INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_model_catalog_sort
 			ON model_catalog(enabled, sort_order, display_name)`,
@@ -128,6 +132,52 @@ func (d *DB) migrateV9toV10() error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// migrateV10toV11 adds model_catalog.max_images (per-request image cap).
+func (d *DB) migrateV10toV11() error {
+	if d.SQL == nil {
+		return fmt.Errorf("no database")
+	}
+	tx, err := d.SQL.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('model_catalog') WHERE name = 'max_images'`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v11: %w", err)
+	}
+	if n == 0 {
+		if _, err := tx.Exec(`ALTER TABLE model_catalog ADD COLUMN max_images INTEGER NOT NULL DEFAULT 0`); err != nil && !sqliteDuplicateColumn(err) {
+			return fmt.Errorf("migrate v11: %w", err)
+		}
+	}
+	now := UTCNow()
+	if _, err := tx.Exec(`UPDATE schema_meta SET schema_version = 11, updated_at = ? WHERE id = 1`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetModelMaxImages updates only max_images (harness-learned provider limit).
+func (d *DB) SetModelMaxImages(id string, n int) error {
+	if !d.Writable() {
+		return fmt.Errorf("database not writable")
+	}
+	if n < 0 {
+		n = 0
+	}
+	res, err := d.SQL.Exec(`UPDATE model_catalog SET max_images=?, updated_at=? WHERE id=?`,
+		n, time.Now().UTC().Format(time.RFC3339), strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	if k, _ := res.RowsAffected(); k == 0 {
+		return fmt.Errorf("model not found")
+	}
+	return nil
 }
 
 func sqliteDuplicateColumn(err error) bool {
@@ -191,6 +241,9 @@ func ValidateModelCatalog(r *ModelCatalogRow, processReserve int) error {
 	if r.ContextReserve < 0 {
 		return fmt.Errorf("context_reserve must be >= 0 (0 = inherit process)")
 	}
+	if r.MaxImages < 0 {
+		return fmt.Errorf("max_images must be >= 0 (0 = unlimited)")
+	}
 	reserve := r.ContextReserve
 	if reserve == 0 {
 		reserve = processReserve
@@ -227,7 +280,7 @@ SELECT id, display_name, model, base_url, api_key_env,
   cost_input_per_1m, cost_output_per_1m, cost_notes,
   cap_reasoning, cap_images, cap_voice, cap_tools,
   context_limit, max_output, context_reserve, enabled, sort_order, notes,
-  created_at, updated_at, kind
+  created_at, updated_at, kind, max_images
 FROM model_catalog
 ORDER BY sort_order ASC, display_name ASC`)
 	if err != nil {
@@ -255,7 +308,7 @@ SELECT id, display_name, model, base_url, api_key_env,
   cost_input_per_1m, cost_output_per_1m, cost_notes,
   cap_reasoning, cap_images, cap_voice, cap_tools,
   context_limit, max_output, context_reserve, enabled, sort_order, notes,
-  created_at, updated_at, kind
+  created_at, updated_at, kind, max_images
 FROM model_catalog WHERE id = ?`, strings.TrimSpace(id))
 	r, err := scanModelCatalog(row)
 	if err == sql.ErrNoRows {
@@ -297,13 +350,13 @@ INSERT INTO model_catalog (
   cost_input_per_1m, cost_output_per_1m, cost_notes,
   cap_reasoning, cap_images, cap_voice, cap_tools,
   context_limit, max_output, context_reserve, enabled, sort_order, notes,
-  created_at, updated_at, kind
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  created_at, updated_at, kind, max_images
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.DisplayName, r.Model, r.BaseURL, r.APIKeyEnv,
 		r.CostInputPer1M, r.CostOutputPer1M, r.CostNotes,
 		boolInt(r.CapReasoning), boolInt(r.CapImages), boolInt(r.CapVoice), boolInt(r.CapTools),
 		r.ContextLimit, r.MaxOutput, r.ContextReserve, boolInt(r.Enabled), r.SortOrder, r.Notes,
-		r.CreatedAt, r.UpdatedAt, r.Kind,
+		r.CreatedAt, r.UpdatedAt, r.Kind, r.MaxImages,
 	)
 	return err
 }
@@ -322,13 +375,13 @@ UPDATE model_catalog SET
   cost_input_per_1m=?, cost_output_per_1m=?, cost_notes=?,
   cap_reasoning=?, cap_images=?, cap_voice=?, cap_tools=?,
   context_limit=?, max_output=?, context_reserve=?, enabled=?, sort_order=?, notes=?,
-  kind=?, updated_at=?
+  kind=?, max_images=?, updated_at=?
 WHERE id=?`,
 		r.DisplayName, r.Model, r.BaseURL, r.APIKeyEnv,
 		r.CostInputPer1M, r.CostOutputPer1M, r.CostNotes,
 		boolInt(r.CapReasoning), boolInt(r.CapImages), boolInt(r.CapVoice), boolInt(r.CapTools),
 		r.ContextLimit, r.MaxOutput, r.ContextReserve, boolInt(r.Enabled), r.SortOrder, r.Notes,
-		r.Kind, r.UpdatedAt, r.ID,
+		r.Kind, r.MaxImages, r.UpdatedAt, r.ID,
 	)
 	if err != nil {
 		return err
@@ -376,7 +429,7 @@ func scanModelCatalog(row scannableModel) (*ModelCatalogRow, error) {
 		&cin, &cout, &r.CostNotes,
 		&capR, &capI, &capV, &capT,
 		&r.ContextLimit, &r.MaxOutput, &r.ContextReserve, &en, &r.SortOrder, &r.Notes,
-		&r.CreatedAt, &r.UpdatedAt, &r.Kind,
+		&r.CreatedAt, &r.UpdatedAt, &r.Kind, &r.MaxImages,
 	)
 	if err != nil {
 		return nil, err

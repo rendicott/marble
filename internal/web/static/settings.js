@@ -1556,6 +1556,7 @@
           max_output: src.max_output || 8192,
           context_reserve: reserve,
           context_reserve_configured: reserve,
+          max_images: src.max_images || 0,
           capabilities: {
             tools: caps.tools !== false,
             reasoning: !!caps.reasoning,
@@ -1673,6 +1674,11 @@
               <p class="field-help">0 = inherit process --context-reserve.</p>
             </div>
             <div class="settings-field">
+              <label for="me-maximg">Max images / request</label>
+              <input type="number" id="me-maximg" value="${escapeAttr(String(row.max_images || 0))}" min="0" />
+              <p class="field-help">Provider cap (e.g. vLLM --limit-mm-per-prompt). 0 = unlimited/unknown. The harness lowers this automatically if the provider rejects too many images.</p>
+            </div>
+            <div class="settings-field">
               <label for="me-sort">Sort order</label>
               <input type="number" id="me-sort" value="${escapeAttr(String(row.sort_order || 0))}" />
             </div>
@@ -1772,6 +1778,7 @@
             context_limit: ctxLim,
             max_output: maxOut,
             context_reserve: parseInt(editor.querySelector("#me-res").value, 10) || 0,
+            max_images: Math.max(0, parseInt(editor.querySelector("#me-maximg").value, 10) || 0),
             cap_tools: kind === "image" ? false : toolsEl ? toolsEl.checked : true,
             cap_reasoning: kind === "image" ? false : !!(reasonEl && reasonEl.checked),
             cap_images: editor.querySelector("#me-img").checked,

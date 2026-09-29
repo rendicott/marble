@@ -236,3 +236,27 @@ func roles(msgs []TranscriptMessage) []string {
 	}
 	return out
 }
+
+func TestImageLimitRoundTrip(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	doc := &SessionDoc{
+		SessionMeta: SessionMeta{
+			ID: "imglim01ab", Title: "s", CreatedAt: now, UpdatedAt: now, Status: "active",
+			ImageLimit: "model", ImageLimitBy: "harness",
+		},
+		Messages: []TranscriptMessage{
+			{ID: "m1", Role: "user", Content: "hi", CreatedAt: now},
+			{ID: "h1", Role: "harness", Content: "⚠️ Image limit learned", CreatedAt: now},
+		},
+	}
+	got, err := DecodeSession(EncodeSession(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ImageLimit != "model" || got.ImageLimitBy != "harness" {
+		t.Fatalf("image limit %q by %q", got.ImageLimit, got.ImageLimitBy)
+	}
+	if len(got.Messages) != 2 || got.Messages[1].Role != "harness" {
+		t.Fatalf("harness note not round-tripped: %+v", got.Messages)
+	}
+}

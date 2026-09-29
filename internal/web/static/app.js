@@ -35,6 +35,11 @@
     tpDetail: document.getElementById("tp-detail"),
     sessionModel: document.getElementById("session-model"),
     toggleTools: document.getElementById("btn-toggle-tools"),
+    sessionSettingsPopover: document.getElementById("session-settings-popover"),
+    ssImgLimit: document.getElementById("ss-img-limit"),
+    ssImgModel: document.getElementById("ss-img-model"),
+    ssImgStatus: document.getElementById("ss-img-status"),
+    ssImgBy: document.getElementById("ss-img-by"),
     toggleThinking: document.getElementById("btn-toggle-thinking"),
     reasoningPopover: document.getElementById("reasoning-popover"),
     reasoningSlider: document.getElementById("reasoning-slider"),
@@ -70,6 +75,14 @@
   let reasoningLongPressTimer = null;
   let reasoningLongPressFired = false;
   let reasoningPopoverOpen = false;
+  /**
+   * Per-request image cap (server ImageLimitInfo):
+   * { mode: default|number|model, value, by, model_max, effective, default }
+   */
+  let sessionImageLimit = null;
+  let sessionSettingsOpen = false;
+  let toolsLongPressTimer = null;
+  let toolsLongPressFired = false;
   // Composer send history (shell-style ↑/↓ recall)
   let composeHistory = []; // oldest → newest
   let composeHistIdx = -1; // -1 = live draft; else index into composeHistory
@@ -1251,6 +1264,82 @@
     if (els.sinksPopover) els.sinksPopover.hidden = true;
   }
 
+  function hideSessionSettings() {
+    sessionSettingsOpen = false;
+    if (els.sessionSettingsPopover) els.sessionSettingsPopover.hidden = true;
+  }
+
+  /** Mirrors session.imageLimitInfo so a model switch repaints without a refetch. */
+  function recomputeImageLimit(info) {
+    if (!info) return info;
+    const max = info.model_max || 0;
+    if (info.mode === "model") {
+      info.effective = max;
+    } else {
+      const v = info.mode === "number" ? info.value : info.default || 2;
+      info.effective = max > 0 && max < v ? max : v;
+    }
+    return info;
+  }
+
+  function paintSessionSettings() {
+    const info = sessionImageLimit;
+    const wrap = els.toggleTools && els.toggleTools.parentElement;
+    const byHarness = !!(info && info.by === "harness");
+    if (wrap) wrap.classList.toggle("harness-set", byHarness);
+    if (!info || !els.ssImgLimit) return;
+    const modelMode = info.mode === "model";
+    const max = info.model_max || 0;
+    els.ssImgLimit.disabled = modelMode;
+    if (document.activeElement !== els.ssImgLimit) {
+      els.ssImgLimit.value = modelMode ? (max > 0 ? String(max) : "") : String(info.value || info.default || 2);
+    }
+    els.ssImgLimit.placeholder = modelMode ? "∞" : "";
+    if (els.ssImgModel) {
+      els.ssImgModel.classList.toggle("is-on", modelMode);
+      els.ssImgModel.setAttribute("aria-pressed", modelMode ? "true" : "false");
+    }
+    const eff = info.effective > 0 ? String(info.effective) : "unlimited";
+    const maxTxt = max > 0 ? String(max) : "no known cap";
+    let status = "Sending: " + eff + " · model max: " + maxTxt;
+    if (info.mode !== "model" && max > 0 && max < info.value) status += " (caps " + info.value + ")";
+    if (info.mode === "default") status += " · default";
+    if (els.ssImgStatus) els.ssImgStatus.textContent = status;
+    if (els.ssImgBy) {
+      els.ssImgBy.hidden = !byHarness;
+      els.ssImgBy.textContent = byHarness
+        ? "Set by the harness after the provider rejected a request with too many images. Change it to take over."
+        : "";
+    }
+  }
+
+  function showSessionSettings() {
+    if (!els.sessionSettingsPopover || !activeId) return;
+    hideReasoningPopover();
+    hideSinksPopover();
+    paintSessionSettings();
+    sessionSettingsOpen = true;
+    els.sessionSettingsPopover.hidden = false;
+  }
+
+  /** value: positive integer, "model", or "default". */
+  async function applyImageLimitSetting(value) {
+    if (!activeId) return;
+    const sid = activeId;
+    try {
+      const data = await api(`/api/sessions/${encodeURIComponent(sid)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ image_limit: value }),
+      });
+      if (sid === activeId && data && data.session && data.session.image_limit) {
+        sessionImageLimit = data.session.image_limit;
+      }
+    } catch (e) {
+      alert(e.message || String(e));
+    }
+    paintSessionSettings();
+  }
+
   function sinkEffective(sink) {
     const ov = (sessionSinkOverrides[sink.id] || "").toLowerCase();
     if (ov === "on") return true;
@@ -1316,6 +1405,7 @@
   }
 
   async function showSinksPopover() {
+    hideSessionSettings();
     if (!els.sinksPopover || !activeId) return;
     try {
       const [sess, settings] = await Promise.all([
@@ -1338,6 +1428,7 @@
   }
 
   function showReasoningPopover() {
+    hideSessionSettings();
     if (!els.reasoningPopover || !activeId) return;
     paintReasoningUI();
     reasoningPopoverOpen = true;
@@ -2177,6 +2268,15 @@
           activeCapImages = !!data.model_effective.capabilities.images;
           updateAttachWarn();
         }
+        // Image cap: harness-learned changes arrive here too — never hide them.
+        if (data.image_limit) {
+          sessionImageLimit = data.image_limit;
+          paintSessionSettings();
+        } else if (data.model_effective && sessionImageLimit) {
+          sessionImageLimit.model_max = data.model_effective.max_images || 0;
+          recomputeImageLimit(sessionImageLimit);
+          paintSessionSettings();
+        }
         // Title auto-update (last user message) or permanent rename
         if (data.title) {
           const i = sessions.findIndex((x) => x.id === id);
@@ -2254,6 +2354,7 @@
   async function selectSession(id, opts) {
     hideCtx();
     hideSinksPopover();
+    hideSessionSettings();
     // Flush any in-progress live thinking for the previous session (store only)
     if (liveThinkSeg && activeId && activeId !== id) {
       liveThinkSeg = null;
@@ -2279,6 +2380,8 @@
     // Reasoning effort: session field, else last local default
     sessionSinkOverrides = sum.sink_overrides && typeof sum.sink_overrides === "object" ? { ...sum.sink_overrides } : {};
     sessionSinks = Array.isArray(data.sinks) ? data.sinks : sessionSinks;
+    sessionImageLimit = sum.image_limit || null;
+    paintSessionSettings();
     sessionReasoningEffort = sum.reasoning_effort || "";
     if (!sessionReasoningEffort) {
       try {
@@ -2526,10 +2629,98 @@
 
   // ADR-0026: independent toggles for tool vs thinking expansion
   if (els.toggleTools) {
-    els.toggleTools.addEventListener("click", () => {
+    // Click: tool expansion. Right-click (desktop) / long-press (touch): session settings.
+    const clearLP = () => {
+      if (toolsLongPressTimer) {
+        clearTimeout(toolsLongPressTimer);
+        toolsLongPressTimer = null;
+      }
+    };
+    els.toggleTools.addEventListener("pointerdown", (ev) => {
+      // Reset first: a mouse right-click sets the flag but never fires a click.
+      toolsLongPressFired = false;
+      if (els.toggleTools.disabled || ev.pointerType === "mouse") return;
+      clearLP();
+      toolsLongPressTimer = setTimeout(() => {
+        toolsLongPressFired = true;
+        showSessionSettings();
+        if (navigator.vibrate) {
+          try {
+            navigator.vibrate(12);
+          } catch {
+            /* ignore */
+          }
+        }
+      }, 480);
+    });
+    ["pointerup", "pointerleave", "pointercancel"].forEach((t) =>
+      els.toggleTools.addEventListener(t, clearLP)
+    );
+    els.toggleTools.addEventListener("contextmenu", (ev) => {
+      if (els.toggleTools.disabled) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      toolsLongPressFired = true; // suppress following click if any
+      showSessionSettings();
+    });
+    els.toggleTools.addEventListener("click", (ev) => {
+      if (toolsLongPressFired) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toolsLongPressFired = false;
+        return;
+      }
+      if (sessionSettingsOpen) {
+        hideSessionSettings();
+        return;
+      }
       setCollapsiblesKind("tool", !toolsExpandedDefault());
     });
   }
+  if (els.ssImgLimit) {
+    const commit = () => {
+      const n = parseInt(els.ssImgLimit.value, 10);
+      if (!Number.isFinite(n) || n < 1 || n > 100) {
+        paintSessionSettings(); // revert invalid input
+        return;
+      }
+      const cur = sessionImageLimit;
+      if (cur && cur.mode !== "model" && cur.value === n && cur.by !== "harness") return;
+      applyImageLimitSetting(n);
+    };
+    els.ssImgLimit.addEventListener("change", commit);
+    els.ssImgLimit.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        els.ssImgLimit.blur();
+      } else if (ev.key === "Escape") {
+        hideSessionSettings();
+      }
+    });
+  }
+  if (els.ssImgModel) {
+    els.ssImgModel.addEventListener("click", () => {
+      const cur = sessionImageLimit;
+      if (cur && cur.mode === "model") {
+        // Toggle off → back to a number (the input's value, else default).
+        const n = parseInt(els.ssImgLimit && els.ssImgLimit.value, 10);
+        applyImageLimitSetting(Number.isFinite(n) && n >= 1 && n <= 100 ? n : "default");
+      } else {
+        applyImageLimitSetting("model");
+      }
+    });
+  }
+  document.addEventListener("pointerdown", (ev) => {
+    if (!sessionSettingsOpen) return;
+    const t = ev.target;
+    if (
+      els.sessionSettingsPopover &&
+      !els.sessionSettingsPopover.contains(t) &&
+      !(els.toggleTools && els.toggleTools.contains(t))
+    ) {
+      hideSessionSettings();
+    }
+  });
   if (els.toggleThinking) {
     // Mobile: long-press for reasoning slider. Desktop: right-click (contextmenu).
     const LONG_MS = 480;

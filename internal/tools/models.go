@@ -81,6 +81,7 @@ type modelCatalogArgs struct {
 	ContextLimit    int      `json:"context_limit"`
 	MaxOutput       int      `json:"max_output"`
 	ContextReserve  *int     `json:"context_reserve"`
+	MaxImages       *int     `json:"max_images"`
 	CapTools        *bool    `json:"cap_tools"`
 	CapReasoning    *bool    `json:"cap_reasoning"`
 	CapImages       *bool    `json:"cap_images"`
@@ -228,6 +229,14 @@ func catalogArgsToRow(a modelCatalogArgs, isCreate bool) (db.ModelCatalogRow, er
 			capReason = false
 		}
 	}
+	// max_images: omitted on update = -1 (keep existing, merged in main); create = 0 (unlimited).
+	maxImages := 0
+	if !isCreate {
+		maxImages = -1
+	}
+	if a.MaxImages != nil {
+		maxImages = *a.MaxImages
+	}
 	enabled := true
 	if a.Enabled != nil {
 		enabled = *a.Enabled
@@ -254,6 +263,7 @@ func catalogArgsToRow(a modelCatalogArgs, isCreate bool) (db.ModelCatalogRow, er
 		ContextLimit:    ctxLim,
 		MaxOutput:       maxOut,
 		ContextReserve:  reserve,
+		MaxImages:       maxImages,
 		Enabled:         enabled,
 		SortOrder:       sortOrder,
 		Notes:           strings.TrimSpace(a.Notes),

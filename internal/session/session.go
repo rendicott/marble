@@ -27,6 +27,7 @@ type Event struct {
 	ModelEff      map[string]interface{} `json:"model_effective,omitempty"`
 	Title         string                 `json:"title,omitempty"` // session_meta title refresh
 	TitleCustom   bool                   `json:"title_custom,omitempty"`
+	ImageLimit    *ImageLimitInfo        `json:"image_limit,omitempty"` // session_meta image cap refresh
 	At            time.Time              `json:"at"`
 }
 
@@ -111,6 +112,8 @@ type Summary struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// SinkOverrides is the per-session inherit/on/off map (ADR-0028).
 	SinkOverrides map[string]string `json:"sink_overrides,omitempty"`
+	// ImageLimit is the per-request image cap setting (see ImageLimitInfo).
+	ImageLimit ImageLimitInfo `json:"image_limit"`
 }
 
 // Per-session sink override (ADR-0028 Q13).
@@ -150,6 +153,12 @@ type Session struct {
 	// SinkOverrides is per-sink inherit/on/off for this session (ADR-0028 Q13).
 	// Absent key = inherit the sink's global enabled. Values: "" | "on" | "off".
 	SinkOverrides map[string]string
+	// ImageLimit caps image parts sent per model request: 0 = default
+	// (DefaultImageLimit), ImageLimitModel = the model's max, N>0 = N.
+	ImageLimit int
+	// ImageLimitBy is "harness" when the harness last changed ImageLimit
+	// (learned from a provider error); "" when the operator set it.
+	ImageLimitBy string
 
 	// Client sticky advertise (ADR-0025). In-memory for M1; createSession sets default,
 	// each postMessage may override (last post wins for enrichment).
@@ -289,6 +298,7 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 		ComputerID:        s.ComputerID,
 		SubprocessContext: specPtr(s.subprocessContext),
 		ReasoningEffort:   s.ReasoningEffort,
+		ImageLimit:        imageLimitInfo(s.ImageLimit, s.ImageLimitBy, 0),
 		LastPeerAction:    s.lastPeerAction,
 		SinkOverrides:     copySinkOverrides(s.SinkOverrides),
 	}
@@ -518,6 +528,8 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 			SubprocessContext: encodeSubprocessContext(s.subprocessContext),
 			ReasoningEffort:   s.ReasoningEffort,
 			SinkOverrides:     copySinkOverrides(s.SinkOverrides),
+			ImageLimit:        encodeImageLimit(s.ImageLimit),
+			ImageLimitBy:      s.ImageLimitBy,
 		},
 		Messages: msgs,
 	}
@@ -561,6 +573,8 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	s.subprocessContext = decodeSubprocessContext(doc.SubprocessContext)
 	s.ReasoningEffort = model.NormalizeReasoningEffort(doc.ReasoningEffort)
 	s.SinkOverrides = copySinkOverrides(doc.SinkOverrides)
+	s.ImageLimit = decodeImageLimit(doc.ImageLimit)
+	s.ImageLimitBy = doc.ImageLimitBy
 	s.ui = make([]Message, 0, len(doc.Messages))
 	s.history = []model.Message{{Role: "system", Content: model.ContentFromText(defaultSystemPrompt)}}
 	s.seq = 0

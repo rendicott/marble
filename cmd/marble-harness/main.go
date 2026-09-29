@@ -359,6 +359,9 @@ func main() {
 		if row.SortOrder == 0 && existing.SortOrder != 0 {
 			row.SortOrder = existing.SortOrder
 		}
+		if row.MaxImages < 0 {
+			row.MaxImages = existing.MaxImages
+		}
 		// context_reserve 0 inherits process — only keep prior non-zero if agent sent 0 and
 		// existing had non-zero and they didn't pass context_reserve in a full rewrite.
 		// Prefer agent 0 as inherit.

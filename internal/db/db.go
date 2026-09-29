@@ -23,7 +23,8 @@ import (
 // v8: agent_presets + sessions.agent_preset_id (ADR-0030)
 // v9: subprocess context on sessions + agent_presets (ADR-0031)
 // v10: model_catalog.kind (chat|image)
-const CurrentSchemaVersion = 10
+// v11: model_catalog.max_images (per-request image cap)
+const CurrentSchemaVersion = 11
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -169,6 +170,10 @@ func (d *DB) upgradeSchema(fromVer int) error {
 			}
 		case 9:
 			if err := d.migrateV9toV10(); err != nil {
+				return err
+			}
+		case 10:
+			if err := d.migrateV10toV11(); err != nil {
 				return err
 			}
 		default:

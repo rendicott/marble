@@ -104,6 +104,9 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if row.MaxImages < 0 {
+		row.MaxImages = 0
+	}
 	if err := db.ValidateModelCatalog(row, s.Cfg.ContextReserve); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -138,12 +141,19 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request, id string) 
 		return
 	}
 	row.ID = id
+	existing, _ := s.db().GetModelCatalog(id)
+	if row.MaxImages < 0 {
+		row.MaxImages = 0
+		if existing != nil {
+			row.MaxImages = existing.MaxImages
+		}
+	}
 	if err := db.ValidateModelCatalog(row, s.Cfg.ContextReserve); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	// preserve created_at
-	if existing, err := s.db().GetModelCatalog(id); err == nil && existing != nil {
+	if existing != nil {
 		row.CreatedAt = existing.CreatedAt
 	}
 	row.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -245,6 +255,7 @@ func decodeCatalogBody(r *http.Request) (*db.ModelCatalogRow, error) {
 		ContextLimit    int      `json:"context_limit"`
 		MaxOutput       int      `json:"max_output"`
 		ContextReserve  int      `json:"context_reserve"`
+		MaxImages       *int     `json:"max_images"`
 		Enabled         *bool    `json:"enabled"`
 		SortOrder       int      `json:"sort_order"`
 		Notes           string   `json:"notes"`
@@ -269,6 +280,11 @@ func decodeCatalogBody(r *http.Request) (*db.ModelCatalogRow, error) {
 		Notes:           body.Notes,
 		CapTools:        true,
 		Enabled:         true,
+	}
+	// Omitted max_images = -1 so updateModel keeps the stored (possibly learned) value.
+	row.MaxImages = -1
+	if body.MaxImages != nil {
+		row.MaxImages = *body.MaxImages
 	}
 	if body.CapReasoning != nil {
 		row.CapReasoning = *body.CapReasoning

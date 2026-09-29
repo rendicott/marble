@@ -30,6 +30,11 @@ type Runner struct {
 
 	clientMu    sync.Mutex
 	clientCache map[string]*model.Client
+
+	// learnedImageMax: base_url+model → image cap parsed from a provider 400.
+	// Covers the process model (no catalog row) and survives until restart.
+	imageMaxMu      sync.Mutex
+	learnedImageMax map[string]int
 }
 
 // PostUserMessage appends a user message and runs the agent loop in a new goroutine.
@@ -311,6 +316,7 @@ func (r *Runner) runTurn(s *Session) {
 		},
 	}
 
+	imageTrimNoted := false // one transcript note per turn when images are trimmed
 	for iter := 0; iter < hard; iter++ {
 		if err := ctx.Err(); err != nil {
 			stopNote = stopMessage(err, s)
@@ -465,14 +471,21 @@ func (r *Runner) runTurn(s *Session) {
 		s.publish(Event{Type: "status", Status: "calling_model"})
 		s.publishTurnProgress()
 
-		// KD13: materialize only deep clone for Chat (history stays sentinel)
-		outbound, mErr := r.materializeImages(s.ID, prompt)
-		if mErr != nil {
-			r.advisory(s, "[harness] attachment materialize: "+mErr.Error())
-			outbound = prompt
+		// Per-request image cap (session setting × model max_images). Trims the
+		// outbound copy only; history keeps every image.
+		imgLimit := s.ImageLimitFor(em)
+		var omittedImgs int
+		prompt, omittedImgs = applyImageLimit(prompt, imgLimit.Effective)
+		if omittedImgs > 0 && !imageTrimNoted {
+			imageTrimNoted = true
+			r.harnessNote(s, fmt.Sprintf(
+				"ℹ️ Image limit %d: only the %d most recent image(s) are sent to the model per request; %d older image(s) omitted (still in the transcript). Right-click / long-press 🔧 to change.",
+				imgLimit.Effective, imgLimit.Effective, omittedImgs,
+			))
 		}
-		// Strict providers (vLLM): only one system block at the start; never mid-history.
-		outbound = normalizeOutboundChatMessages(outbound)
+
+		// KD13: materialize only deep clone for Chat (history stays sentinel)
+		outbound := r.buildOutbound(s, prompt)
 		effort := ""
 		s.mu.Lock()
 		effort = s.ReasoningEffort
@@ -484,6 +497,21 @@ func (r *Runner) runTurn(s *Session) {
 			return
 		}
 		result, err := client.ChatWithOpts(ctx, outbound, toolSpecs, model.ChatOpts{ReasoningEffort: effort})
+		// Provider rejected the image count: learn its cap, trim, retry once.
+		if err != nil && em.CapImages {
+			sent := countImageParts(prompt)
+			if n, ok := parseImageLimitError(err.Error(), sent); ok {
+				r.learnImageLimit(s, &em, n, sent, err.Error())
+				limit := s.ImageLimitFor(em).Effective
+				if limit <= 0 || limit > n {
+					limit = n
+				}
+				prompt, _ = applyImageLimit(prompt, limit)
+				imageTrimNoted = true // learnImageLimit already explained the trim
+				outbound = r.buildOutbound(s, prompt)
+				result, err = client.ChatWithOpts(ctx, outbound, toolSpecs, model.ChatOpts{ReasoningEffort: effort})
+			}
+		}
 		if err != nil {
 			stopNote = stopMessage(err, s)
 			lowErr := strings.ToLower(err.Error())
@@ -809,6 +837,18 @@ func (r *Runner) forceEndAssistant(s *Session, reason string) {
 		r.Reg.syncSessionRow(s)
 	}
 	s.publish(Event{Type: "message", Message: &am})
+}
+
+// buildOutbound expands marble-att:// images to data URLs and normalizes
+// system blocks for the wire (history itself stays in sentinel form).
+func (r *Runner) buildOutbound(s *Session, prompt []model.Message) []model.Message {
+	outbound, mErr := r.materializeImages(s.ID, prompt)
+	if mErr != nil {
+		r.advisory(s, "[harness] attachment materialize: "+mErr.Error())
+		outbound = prompt
+	}
+	// Strict providers (vLLM): only one system block at the start; never mid-history.
+	return normalizeOutboundChatMessages(outbound)
 }
 
 func stopMessage(err error, s *Session) string {

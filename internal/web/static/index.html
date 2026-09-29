@@ -278,7 +278,22 @@
               <option value="">Process default</option>
             </select>
           </label>
-          <button type="button" id="btn-toggle-tools" class="icon-btn density-toggle" title="Expand tool results" aria-label="Toggle tool expansion" aria-pressed="false" disabled>🔧</button>
+          <div class="tools-wrap">
+            <button type="button" id="btn-toggle-tools" class="icon-btn density-toggle" title="Expand tool results · right-click / long-press for session settings" aria-label="Toggle tool expansion" aria-pressed="false" disabled>🔧</button>
+            <div id="session-settings-popover" class="session-settings-popover" hidden role="dialog" aria-label="Session settings">
+              <div class="sinks-pop-title">Session settings</div>
+              <div class="ss-section">
+                <label class="ss-label" for="ss-img-limit">Images per request</label>
+                <div class="ss-row">
+                  <input type="number" id="ss-img-limit" class="ss-num" min="1" max="100" step="1" inputmode="numeric" aria-describedby="ss-img-status" />
+                  <button type="button" id="ss-img-model" class="icon-btn ss-toggle" aria-pressed="false" title="Send as many images as the model accepts (unlimited if the model has no known cap)">Max for model</button>
+                </div>
+                <div id="ss-img-status" class="ss-status"></div>
+                <div id="ss-img-by" class="ss-by" hidden></div>
+                <p class="hint ss-hint">Only the most recent images are re-sent on each model call; older ones stay in the transcript. Fewer images = cheaper computer-use turns.</p>
+              </div>
+            </div>
+          </div>
           <div class="brain-wrap">
             <button type="button" id="btn-toggle-thinking" class="icon-btn density-toggle" title="Expand thinking · right-click / long-press for reasoning level" aria-label="Toggle thinking expansion" aria-pressed="false" disabled>🧠</button>
             <div id="reasoning-popover" class="reasoning-popover" hidden role="dialog" aria-label="Reasoning effort">

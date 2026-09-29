@@ -32,7 +32,10 @@ type EffectiveModel struct {
 	CapImages        bool
 	CapVoice         bool
 	CapTools         bool
-	Advisory         string // optional harness note (missing/disabled/empty key)
+	// MaxImages is the provider's image-parts-per-request cap (0 = unlimited/unknown).
+	// Catalog value, lowered by a harness-learned limit (see learnImageLimit).
+	MaxImages int
+	Advisory  string // optional harness note (missing/disabled/empty key)
 }
 
 // Budget returns prompt budget tokens.
@@ -64,6 +67,7 @@ func (e EffectiveModel) Public() map[string]interface{} {
 		"max_output":         e.MaxOutput,
 		"context_reserve":    e.ContextReserve,
 		"budget":             e.Budget(),
+		"max_images":         e.MaxImages,
 		"capabilities": map[string]bool{
 			"reasoning": e.CapReasoning,
 			"images":    e.CapImages,
@@ -96,8 +100,15 @@ type TurnOpts struct {
 // CatalogLookup fetches a catalog row by id (nil if missing).
 type CatalogLookup func(id string) (*db.ModelCatalogRow, error)
 
-// resolveEffective picks cron pin → session model_id → process (ADR-0018 KD3).
+// resolveEffective picks cron pin → session model_id → process (ADR-0018 KD3),
+// then applies any harness-learned image limit for that endpoint.
 func (r *Runner) resolveEffective(s *Session, opts TurnOpts) EffectiveModel {
+	em := r.resolveEffectiveBase(s, opts)
+	r.overlayLearnedImageLimit(&em)
+	return em
+}
+
+func (r *Runner) resolveEffectiveBase(s *Session, opts TurnOpts) EffectiveModel {
 	var advisories []string
 	// 1) Cron pin
 	if pin := strings.TrimSpace(opts.CronModelID); pin != "" {
@@ -236,6 +247,7 @@ func (r *Runner) effectiveFromRow(row *db.ModelCatalogRow, source string) Effect
 		CapImages:      row.CapImages,
 		CapVoice:       row.CapVoice,
 		CapTools:       row.CapTools,
+		MaxImages:      row.MaxImages,
 		APIKeyEnv:      row.APIKeyEnv,
 	}
 	// Auth (Q15)

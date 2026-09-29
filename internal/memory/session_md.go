@@ -31,6 +31,10 @@ type SessionMeta struct {
 	TitleCustom bool `json:"title_custom,omitempty"`
 	// SinkOverrides is per-session inherit/on/off map (ADR-0028). JSON object in front matter.
 	SinkOverrides map[string]string `json:"sink_overrides,omitempty"`
+	// ImageLimit is the per-request image cap: "" (default), "model", or a positive integer.
+	ImageLimit string `json:"image_limit,omitempty"`
+	// ImageLimitBy is "harness" when the harness last changed ImageLimit.
+	ImageLimitBy string `json:"image_limit_by,omitempty"`
 }
 
 // TranscriptMessage is one persisted UI-facing turn.
@@ -103,6 +107,12 @@ func EncodeSession(doc *SessionDoc) string {
 		if err == nil {
 			fmt.Fprintf(&b, "sink_overrides: %s\n", raw)
 		}
+	}
+	if doc.ImageLimit != "" {
+		fmt.Fprintf(&b, "image_limit: %s\n", doc.ImageLimit)
+	}
+	if doc.ImageLimitBy != "" {
+		fmt.Fprintf(&b, "image_limit_by: %s\n", doc.ImageLimitBy)
 	}
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "# Session %s — %s\n\n", doc.ID, doc.Title)
@@ -247,6 +257,10 @@ func parseFrontMatter(fm string) (SessionMeta, error) {
 			m.SubprocessContext = val
 		case "reasoning_effort":
 			m.ReasoningEffort = val
+		case "image_limit":
+			m.ImageLimit = val
+		case "image_limit_by":
+			m.ImageLimitBy = val
 		case "sink_overrides":
 			var ov map[string]string
 			if err := json.Unmarshal([]byte(val), &ov); err == nil {
