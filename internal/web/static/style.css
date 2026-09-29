@@ -35,7 +35,7 @@ html[data-theme="dark"] {
   --ok-text: #a7f3d0;
   --on-accent: #ffffff;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
 html[data-theme="light"] {
@@ -198,6 +198,14 @@ body {
   min-width: 0;
 }
 
+/* Wordmark — lowercase, medium-bold, tight tracking (marble brand kit 02/07).
+   Overrides the row's weight/tracking for the wordmark only. */
+.brand-name {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-transform: lowercase;
+}
+
 /*
  * Desktop: 260px sidebar cannot fit wordmark + Clerk + icon strip in one row
  * (mark/name/clerk get crushed; settings can sit off-edge). Stack brand and
@@ -240,13 +248,15 @@ body {
   }
 }
 
+/* Brand mark — the flat-glass primary icon from the marble brand kit.
+   Deliberately no gradient, recolour, glow or drop shadow: the kit's rules
+   of use forbid all of those. The transparent PNG reads on all 3 themes. */
 .mark {
   width: 22px;
   height: 22px;
-  border-radius: 7px;
   flex-shrink: 0;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 35%, transparent);
+  display: block;
+  object-fit: contain;
 }
 
 .icon-btn {
