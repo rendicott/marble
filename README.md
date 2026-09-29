@@ -669,7 +669,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.9](https://github.com/rendicott/marble/releases/tag/v0.4.9)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.10](https://github.com/rendicott/marble/releases/tag/v0.4.10)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.3](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.3)**).
 
