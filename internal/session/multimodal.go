@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/rendicott/marble/internal/db"
@@ -12,6 +13,9 @@ import (
 )
 
 const marbleAttScheme = "marble-att://"
+
+// attachmentIDRe finds "attachment_id":"<hex>" in (possibly truncated) tool text.
+var attachmentIDRe = regexp.MustCompile(`"attachment_id"\s*:\s*"([0-9a-f]{16,64})"`)
 
 // UIAttachment is a durable chip on a UI message (ADR-0019).
 type UIAttachment struct {
@@ -303,13 +307,10 @@ func extractAttachmentIDs(toolResult string) []string {
 		}
 		return ids
 	}
-	// Or "tool → {json}" UI style — try last `{...}`
-	if i := strings.LastIndex(toolResult, "{"); i >= 0 {
-		if json.Unmarshal([]byte(toolResult[i:]), &obj) == nil {
-			if s, ok := obj["attachment_id"].(string); ok {
-				add(s)
-			}
-		}
+	// Or "tool → {json…}" UI style, possibly truncated (compact 400 chars) —
+	// pull the ids straight from the text.
+	for _, m := range attachmentIDRe.FindAllStringSubmatch(toolResult, -1) {
+		add(m[1])
 	}
 	return ids
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -29,6 +30,7 @@ import (
 	"github.com/rendicott/marble/internal/mpub"
 	"github.com/rendicott/marble/internal/peerhub"
 	"github.com/rendicott/marble/internal/session"
+	"github.com/rendicott/marble/internal/sessionrepair"
 	"github.com/rendicott/marble/internal/shellpolicy"
 	"github.com/rendicott/marble/internal/sink"
 	"github.com/rendicott/marble/internal/tools"
@@ -46,6 +48,10 @@ func main() {
 			fmt.Println("marble-harness", versionString())
 			os.Exit(0)
 		}
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "repair-sessions" {
+		os.Exit(runRepairSessions(os.Args[2:]))
 	}
 
 	cfg, err := config.ParseFlags(os.Args[1:])
@@ -825,3 +831,20 @@ func (a *atomicBool) set(ok bool) {
 }
 
 func (a *atomicBool) get() bool { return atomic.LoadInt32(&a.v) == 1 }
+
+// runRepairSessions: marble-harness repair-sessions [-memory DIR] [-apply]
+// Fixes session Markdown damaged by the pre-v0.4.11 loader (see sessionrepair).
+func runRepairSessions(args []string) int {
+	fs := flag.NewFlagSet("repair-sessions", flag.ContinueOnError)
+	home, _ := os.UserHomeDir()
+	mem := fs.String("memory", filepath.Join(home, ".marble"), "Marble data home")
+	apply := fs.Bool("apply", false, "write repairs (default: dry run). Requires the harness to be stopped")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := sessionrepair.Run(*mem, *apply, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
+}

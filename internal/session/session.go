@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -495,6 +496,7 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 		if m.Presentation != nil {
 			tm.PresentationJSON = MarshalPresentationCompact(m.Presentation)
 		}
+		tm.Attachments = transcriptAttachments(m.Attachments)
 		msgs[i] = tm
 	}
 	st := s.Status
@@ -590,6 +592,12 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 			UserName:   m.UserName,
 			UserSub:    m.UserSub,
 		}
+		um.Attachments = uiAttachmentsFromTranscript(m.Attachments)
+		if len(um.Attachments) == 0 && m.Role == "tool" {
+			// Sessions saved before chips were persisted: the result text still
+			// carries attachment_id (e.g. computer_screenshot).
+			um.Attachments = uiAttachmentsFromToolResult(m.Content)
+		}
 		if m.PresentationJSON != "" {
 			um.Presentation = UnmarshalPresentation(m.PresentationJSON)
 		} else if m.Role == "assistant" {
@@ -599,8 +607,9 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 			}
 		}
 		s.ui = append(s.ui, um)
-		// Reload attachment markers into multimodal history when present (ADR-0019).
-		histContent := historyContentFromUIMessage(m)
+		// Reload image references into multimodal history (ADR-0019); the
+		// per-request image limit decides how many are actually sent.
+		histContent := historyContentFromUIMessage(um)
 		switch m.Role {
 		case "user":
 			// Model history: content only (ADR-0017 Q13)
@@ -615,17 +624,80 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 				ToolCallID: m.ToolCallID,
 			})
 		}
-		// bump seq from message ids when possible
 		s.seq++
+	}
+	// New ids must not collide with loaded ones: seed from the highest numeric
+	// suffix, not the message count (they differ once anything was dropped).
+	for _, m := range s.ui {
+		if n := idSeq(m.ID); n > s.seq {
+			s.seq = n
+		}
 	}
 	s.dirty = false
 	s.busy = false
 }
 
-// historyContentFromUIMessage rebuilds model Content from UI/MD text, including
-// attachment markers <!-- att:id name=… mime=… --> (ADR-0019).
-func historyContentFromUIMessage(m memory.TranscriptMessage) model.Content {
+// historyContentFromUIMessage rebuilds model Content from a reloaded UI message:
+// user image attachments and tool-result screenshots come back as marble-att://
+// image parts (materialized per call); everything else is text.
+func historyContentFromUIMessage(m Message) model.Content {
+	switch m.Role {
+	case "tool":
+		return toolResultContent(m.Content)
+	case "user":
+		var imgs []model.ContentPart
+		for _, a := range m.Attachments {
+			if a.Kind == "image" && a.ID != "" {
+				imgs = append(imgs, model.ContentPart{
+					Type:     "image_url",
+					ImageURL: &model.ImageURL{URL: marbleAttScheme + a.ID, Detail: "auto"},
+				})
+			}
+		}
+		if len(imgs) > 0 {
+			parts := []model.ContentPart{}
+			if t := strings.TrimSpace(m.Content); t != "" {
+				parts = append(parts, model.ContentPart{Type: "text", Text: t})
+			}
+			return model.ContentFromParts(append(parts, imgs...))
+		}
+	}
 	return model.ContentFromText(m.Content)
+}
+
+// idSeq returns the numeric suffix of a message id ("m-0werf619-470" → 470).
+func idSeq(id string) int {
+	i := strings.LastIndexByte(id, '-')
+	if i < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(id[i+1:])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func transcriptAttachments(in []UIAttachment) []memory.TranscriptAttachment {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]memory.TranscriptAttachment, len(in))
+	for i, a := range in {
+		out[i] = memory.TranscriptAttachment(a)
+	}
+	return out
+}
+
+func uiAttachmentsFromTranscript(in []memory.TranscriptAttachment) []UIAttachment {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]UIAttachment, len(in))
+	for i, a := range in {
+		out[i] = UIAttachment(a)
+	}
+	return out
 }
 
 func copySinkOverrides(in map[string]string) map[string]string {

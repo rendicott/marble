@@ -52,6 +52,21 @@ type TranscriptMessage struct {
 	// PresentationJSON is compact ADR-0025 presentation when present (assistant only).
 	// Stored as HTML comment on encode; not re-injected into model history.
 	PresentationJSON string `json:"presentation_json,omitempty"`
+	// Attachments are the message's durable chips (ADR-0019), stored as a
+	// base64 JSON comment so they survive a reload.
+	Attachments []TranscriptAttachment `json:"attachments,omitempty"`
+}
+
+// TranscriptAttachment is one persisted attachment chip (mirrors session.UIAttachment).
+type TranscriptAttachment struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	MIME      string `json:"mime,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	SourceURL string `json:"source_url,omitempty"`
+	Alt       string `json:"alt,omitempty"`
+	Credit    string `json:"credit,omitempty"`
 }
 
 // SessionDoc is the full on-disk session.
@@ -131,6 +146,7 @@ func EncodeSession(doc *SessionDoc) string {
 			} else if m.ID != "" {
 				fmt.Fprintf(&b, "<!-- id: %s -->\n", m.ID)
 			}
+			writeAttachmentsMeta(&b, m.Attachments)
 		default:
 			fmt.Fprintf(&b, "## %s · %s\n", ts, m.Role)
 			if m.ID != "" || m.UserEmail != "" {
@@ -151,6 +167,7 @@ func EncodeSession(doc *SessionDoc) string {
 			if m.PresentationJSON != "" {
 				fmt.Fprintf(&b, "<!-- presentation_b64: %s -->\n", encodePresentationB64(m.PresentationJSON))
 			}
+			writeAttachmentsMeta(&b, m.Attachments)
 		}
 		writeMessageContent(&b, m.Content)
 		b.WriteByte('\n')
@@ -158,15 +175,27 @@ func EncodeSession(doc *SessionDoc) string {
 	return b.String()
 }
 
+func writeAttachmentsMeta(b *strings.Builder, atts []TranscriptAttachment) {
+	if len(atts) == 0 {
+		return
+	}
+	raw, err := json.Marshal(atts)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(b, "<!-- attachments_b64: %s -->\n", stdb64.StdEncoding.EncodeToString(raw))
+}
+
 // writeMessageContent writes body text, neutralizing lines that would be parsed as
-// message headings (timestamp · role) so tool/README markdown cannot split the session.
+// message headings (timestamp · role) or metadata comments, so tool/README
+// markdown cannot split the session or overwrite a message's id.
 func writeMessageContent(b *strings.Builder, content string) {
 	if content == "" {
 		return
 	}
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
-		if isMessageHeading(line) {
+		if isMessageHeading(line) || strings.HasPrefix(strings.TrimSpace(line), "<!--") {
 			// Zero-width space keeps visual content but breaks "## " delimiter match.
 			b.WriteString("\u200b")
 		}
@@ -284,6 +313,7 @@ func parseMessages(body string) []TranscriptMessage {
 	var out []TranscriptMessage
 	var cur *TranscriptMessage
 	var content []string
+	inMeta := false // metadata comments only directly after the heading
 
 	flush := func() {
 		if cur == nil {
@@ -301,13 +331,14 @@ func parseMessages(body string) []TranscriptMessage {
 		if isMessageHeading(line) {
 			flush()
 			cur = parseHeading(line[3:])
+			inMeta = true
 			continue
 		}
 		if cur == nil {
 			continue
 		}
-		// HTML comment metadata
-		if strings.HasPrefix(strings.TrimSpace(line), "<!--") {
+		// HTML comment metadata (header block only; body comments are content)
+		if inMeta && strings.HasPrefix(strings.TrimSpace(line), "<!--") {
 			trim := strings.TrimSpace(line)
 			trim = strings.TrimPrefix(trim, "<!--")
 			trim = strings.TrimSuffix(trim, "-->")
@@ -315,6 +346,7 @@ func parseMessages(body string) []TranscriptMessage {
 			applyHTMLMeta(cur, trim)
 			continue
 		}
+		inMeta = false
 		content = append(content, line)
 	}
 	flush()
@@ -391,6 +423,11 @@ func applyHTMLMeta(cur *TranscriptMessage, trim string) {
 			if decoded := decodePresentationB64(val); decoded != "" {
 				cur.PresentationJSON = decoded
 			}
+		case "attachments_b64":
+			var atts []TranscriptAttachment
+			if raw := decodePresentationB64(val); raw != "" && json.Unmarshal([]byte(raw), &atts) == nil {
+				cur.Attachments = atts
+			}
 		}
 	}
 }
@@ -428,7 +465,7 @@ func isMessageHeading(line string) bool {
 	}
 	role := strings.TrimSpace(parts[1])
 	switch role {
-	case "user", "assistant", "tool", "system", "error", "harness", "attachment":
+	case "user", "assistant", "tool", "system", "error", "harness", "attachment", "thinking":
 		return true
 	default:
 		return false
@@ -441,8 +478,10 @@ func stripContentHeadingEscapes(s string) string {
 	}
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
-		if strings.HasPrefix(line, "\u200b## ") {
-			lines[i] = line[len("\u200b"):]
+		// Encoder prefixes a ZWSP to heading-like and comment-like content lines.
+		if rest, ok := strings.CutPrefix(line, "\u200b"); ok &&
+			(strings.HasPrefix(rest, "## ") || strings.HasPrefix(strings.TrimSpace(rest), "<!--")) {
+			lines[i] = rest
 		}
 	}
 	return strings.Join(lines, "\n")
