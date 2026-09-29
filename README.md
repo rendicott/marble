@@ -4,7 +4,25 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.9
+## What's new in v0.4.10
+
+Highlights since **[v0.4.9](https://github.com/rendicott/marble/releases/tag/v0.4.9)** (schema **v11**: `model_catalog.max_images`; migration is idempotent):
+
+### Per-request image limit (cheaper computer use)
+- Every image in history (attachments, peer screenshots) used to be **re-sent on every model call** — long computer-use turns paid for stale screenshots again and again, and vLLM endpoints with `--limit-mm-per-prompt` failed the turn outright (`At most 2 image(s) may be provided in one prompt`)
+- Sessions now send at most **2 images per request by default**: images from your latest message first, then the newest screenshots. Older ones stay in the transcript; the model gets a one-line placeholder telling it to re-screenshot if needed
+- **Right-click / long-press 🔧** opens a new **Session settings** popover: type a number (1–100) or toggle **Max for model** (the catalog's cap, unlimited if none). `PATCH /api/sessions/{id}` accepts `image_limit` (number, `"model"`, or `"default"`)
+- A harness note appears in the transcript the first time images are trimmed in a turn
+
+### Learned provider limits
+- New catalog field **`max_images`** (0 = unlimited/unknown) — Settings → Models, or `model_add` / `model_update`
+- If a provider rejects a request for too many images, the harness reads the limit from the error, saves it to the catalog row, lowers the session setting if it was higher, and **retries the call** instead of interrupting the turn
+- Nothing is hidden: a ⚠️ note lands in the transcript, the 🔧 popover updates live with "Set by the harness…", and a dot marks the wrench until you change the setting yourself
+
+### Brand refresh
+- Flat-glass **marble** mark, favicon + touch icons, and a lowercase wordmark
+
+### Earlier — v0.4.9
 
 Highlights since **[v0.4.8](https://github.com/rendicott/marble/releases/tag/v0.4.8)** (no schema change):
 
