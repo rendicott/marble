@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -118,13 +119,16 @@ const DefaultHTTPTimeout = 30 * time.Minute
 
 // Client talks to an OpenAI-compatible chat completions endpoint.
 type Client struct {
-	BaseURL    string
-	Model      string
-	MaxTokens  int
+	BaseURL   string
+	Model     string
+	MaxTokens int
 	// APIKey when non-empty sets Authorization: Bearer <key> (ADR-0016).
 	// Empty → no Authorization header (local/open endpoints).
 	APIKey     string
 	HTTPClient *http.Client
+	// omitTemperature is set once the provider rejects the temperature param
+	// (e.g. newer Claude models: "temperature is deprecated for this model").
+	omitTemperature atomic.Bool
 }
 
 // New creates a Client. baseURL should include /v1 (no trailing slash required).
@@ -188,6 +192,11 @@ func (c *Client) ChatWithOpts(ctx context.Context, messages []Message, tools []T
 		}
 		res, err := c.chatOnce(ctx, messages, tools, effort)
 		totalLatency += res.LatencyMs
+		if err != nil && !c.omitTemperature.Load() && looksLikeTemperatureRejected(err) {
+			c.omitTemperature.Store(true)
+			res, err = c.chatOnce(ctx, messages, tools, effort)
+			totalLatency += res.LatencyMs
+		}
 		if err == nil {
 			res.LatencyMs = totalLatency
 			res.ReasoningEffortApplied = effort
@@ -217,8 +226,10 @@ func (c *Client) chatOnce(ctx context.Context, messages []Message, tools []ToolS
 	if len(tools) > 0 {
 		reqBody.ToolChoice = "auto"
 	}
-	t := 0.2
-	reqBody.Temperature = &t
+	if !c.omitTemperature.Load() {
+		t := 0.2
+		reqBody.Temperature = &t
+	}
 	applyReasoningOpts(&reqBody, effort, c.BaseURL, c.Model)
 
 	raw, err := json.Marshal(reqBody)
@@ -294,6 +305,24 @@ func looksLikeReasoningNoneRejected(err error) bool {
 		strings.Contains(low, "expected") ||
 		strings.Contains(low, "400")
 	return mentionsReject
+}
+
+// looksLikeTemperatureRejected detects provider errors that mean the
+// temperature parameter is not accepted for this model.
+func looksLikeTemperatureRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	low := strings.ToLower(err.Error())
+	if !strings.Contains(low, "temperature") {
+		return false
+	}
+	return strings.Contains(low, "deprecated") ||
+		strings.Contains(low, "unsupported") ||
+		strings.Contains(low, "not support") ||
+		strings.Contains(low, "not allowed") ||
+		strings.Contains(low, "invalid") ||
+		strings.Contains(low, "400")
 }
 
 // Health hits /models to verify connectivity.
