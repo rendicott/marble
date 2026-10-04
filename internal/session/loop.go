@@ -178,6 +178,10 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *
 func (r *Runner) runTurn(s *Session) {
 	defer func() {
 		s.endTurn()
+		// Let other harnesses use any desktop peer this turn locked.
+		if r.Tools != nil && r.Tools.PeerHub != nil {
+			r.Tools.PeerHub.ReleaseLocks(s.ID)
+		}
 		if r.Reg != nil {
 			r.Reg.syncSessionRow(s)
 			// ADR-0023 Clerk: enqueue idle summary after any busy→idle

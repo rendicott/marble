@@ -394,6 +394,8 @@ func (s *Server) peerWS(w http.ResponseWriter, r *http.Request) {
 		Type:            "hello_ack",
 		ComputerID:      crow.ID,
 		ProtocolVersion: peerhub.ProtocolVersion,
+		InstanceID:      s.PeerHub.InstanceID,
+		HarnessName:     s.PeerHub.Name,
 	})
 	capsB, _ := json.Marshal(caps)
 	_ = s.Registry.DB().TouchComputer(crow.ID, string(capsB), peerRemote(r))
@@ -427,6 +429,13 @@ func (s *Server) computerRPC(w http.ResponseWriter, r *http.Request, id string) 
 		http.Error(w, "offline", http.StatusConflict)
 		return
 	}
+	// Multi-harness peers only accept actions from the lock holder (protocol v2).
+	holder := "rpc:" + uuid.NewString()
+	if err := s.PeerHub.AcquireLock(id, holder); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	defer s.PeerHub.ReleaseLocks(holder)
 	// For confirm: use shared id so harness UI can Accept/Deny the same wait.
 	deadline := 60 * time.Second
 	actionID := ""

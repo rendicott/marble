@@ -120,7 +120,22 @@ func (r *Registry) peerCallID(tc *TurnContext, computerID, actionID, kind string
 	if conn == nil {
 		return peerhub.Envelope{}, fmt.Errorf("computer %q offline", cid)
 	}
+	// A peer paired with several harnesses only obeys the lock holder. Held
+	// until this session's turn ends (session loop → PeerHub.ReleaseLocks).
+	holder := ""
+	if tc != nil {
+		holder = tc.SessionID
+	}
+	if holder == "" {
+		// No session turn to release at — hold the lock for this call only.
+		holder = "call:" + uuid.NewString()
+		defer r.PeerHub.ReleaseLocks(holder)
+	}
+	if err := r.PeerHub.AcquireLock(cid, holder); err != nil {
+		return peerhub.Envelope{}, err
+	}
 	var lastErr error
+	relocked := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if tc != nil && tc.Ctx != nil {
 			select {
@@ -140,6 +155,15 @@ func (r *Registry) peerCallID(tc *TurnContext, computerID, actionID, kind string
 			return res, nil
 		}
 		lastErr = callErr
+		if res.Meta["lock_required"] == true && !relocked {
+			// Lock was cleared from the peer tray (or lost) — try once to retake it.
+			relocked = true
+			conn.MarkLockLost()
+			if err := r.PeerHub.AcquireLock(cid, holder); err != nil {
+				return peerhub.Envelope{}, err
+			}
+			continue
+		}
 		msg := callErr.Error()
 		if !strings.Contains(msg, "peer busy") && !strings.Contains(msg, "action queue") {
 			return peerhub.Envelope{}, callErr

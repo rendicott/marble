@@ -1,6 +1,6 @@
 # Marble Peer Protocol v1 (ADR-0020 / ADR-0021)
 
-`peer_protocol_version`: **1**
+`peer_protocol_version`: **2** (v2 adds the peer lock; v1 peers/harnesses still interoperate — see [Peer lock](#peer-lock-v2))
 
 Transport: WebSocket (peer dials harness) + HTTP for mutual pairing.
 
@@ -67,13 +67,15 @@ Upgrades to WebSocket. First message may be `hello`; harness replies `hello_ack`
 | `pong` | |
 | `result` | id, ok, screenshot_b64?, text?, meta?, error? |
 | `confirm_result` | id, ok (accepted) |
+| `lock_state` (v2) | meta `{held, mine, holder, holder_name, since}` — sent on connect and whenever the lock changes |
 
 ### Harness → peer
 
 | type | fields |
 |------|--------|
-| `hello_ack` | computer_id, protocol_version |
+| `hello_ack` | computer_id, protocol_version, instance_id (v2), harness_name (v2) |
 | `action` | id, kind, deadline_ms, payload |
+| `lock` (v2) | id, kind = `acquire` \| `release` |
 | `cancel` | |
 | `ping` | |
 
@@ -91,6 +93,18 @@ Upgrades to WebSocket. First message may be `hello`; harness replies `hello_ack`
 | `browser_snapshot` | `{}` | text |
 | `browser_act` | `{action, target?, text?, x?, y?}` — actions include open, click, click_text, **click_button**, type, press, eval, wait (x=timeout_ms), set_input_files (text=paths). No jQuery `:contains` selectors. | ok/text |
 | `confirm` | `{prompt, risk}` | confirm_result ok |
+
+## Peer lock (v2)
+
+A peer can be paired with several harnesses (`marble-peer pair` once per harness; `marble-peer harnesses` lists them). It keeps one WebSocket per harness, but **only the harness holding the peer lock may send actions**.
+
+- Peer advertises `caps.lock: true`. Harness sends `{"type":"lock","id":…,"kind":"acquire"}`; peer replies `result` with `ok` (or `ok:false`, `error: "peer is locked by harness …"`).
+- An `action` from a harness without the lock gets `result ok:false` with `meta.lock_required: true`. `cancel` from a non-holder is ignored.
+- Marble acquires on a session's first peer call and releases when the last session using that peer finishes its turn.
+- The lock survives a reconnect from the same harness process. A `hello_ack` with a **new `instance_id`** (harness restarted) drops a lock that harness held.
+- **Stuck lock:** the peer tray / mini UI shows the holder and has **Clear lock** (`POST /lock/clear` on the mini UI). Clearing also stops the in-flight action; the holder is notified via `lock_state` (`mine:false`).
+- **v1 harness ↔ v2 peer:** the v1 harness's first action takes an implicit lock, released on disconnect or after 2 min without an action.
+- **v2 harness ↔ v1 peer:** no `caps.lock`, so the harness skips locking.
 
 Busy: concurrent actions while queue depth 1 → error `peer busy (action queue depth 1)` (harness retries briefly).
 

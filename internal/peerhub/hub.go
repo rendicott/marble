@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,34 +14,42 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const ProtocolVersion = 1
+// ProtocolVersion 2 adds the peer lock: a peer can be paired with several
+// harnesses and only the lock holder may send actions (see lock.go).
+const ProtocolVersion = 2
 
 // Caps reported by a peer.
 type Caps struct {
 	Browser bool `json:"browser"`
 	Desktop bool `json:"desktop"`
 	Confirm bool `json:"confirm"`
+	Exec    bool `json:"exec,omitempty"`
+	// Lock: peer enforces the v2 lock; harness must acquire before actions.
+	Lock bool `json:"lock,omitempty"`
 }
 
 // Envelope is a wire message (both directions).
 type Envelope struct {
-	Type            string          `json:"type"`
-	ProtocolVersion int             `json:"protocol_version,omitempty"`
-	ID              string          `json:"id,omitempty"`
-	DeviceID        string          `json:"device_id,omitempty"`
-	Token           string          `json:"token,omitempty"`
-	ComputerID      string          `json:"computer_id,omitempty"`
-	Kind            string          `json:"kind,omitempty"`
-	DeadlineMS      int64           `json:"deadline_ms,omitempty"`
-	Payload         json.RawMessage `json:"payload,omitempty"`
-	OK              bool            `json:"ok,omitempty"`
-	Error           string          `json:"error,omitempty"`
-	Caps            *Caps           `json:"caps,omitempty"`
-	OS              string          `json:"os,omitempty"`
-	PeerVersion     string          `json:"peer_version,omitempty"`
-	ScreenshotB64   string          `json:"screenshot_b64,omitempty"`
-	Text            string          `json:"text,omitempty"`
+	Type            string                 `json:"type"`
+	ProtocolVersion int                    `json:"protocol_version,omitempty"`
+	ID              string                 `json:"id,omitempty"`
+	DeviceID        string                 `json:"device_id,omitempty"`
+	Token           string                 `json:"token,omitempty"`
+	ComputerID      string                 `json:"computer_id,omitempty"`
+	Kind            string                 `json:"kind,omitempty"`
+	DeadlineMS      int64                  `json:"deadline_ms,omitempty"`
+	Payload         json.RawMessage        `json:"payload,omitempty"`
+	OK              bool                   `json:"ok,omitempty"`
+	Error           string                 `json:"error,omitempty"`
+	Caps            *Caps                  `json:"caps,omitempty"`
+	OS              string                 `json:"os,omitempty"`
+	PeerVersion     string                 `json:"peer_version,omitempty"`
+	ScreenshotB64   string                 `json:"screenshot_b64,omitempty"`
+	Text            string                 `json:"text,omitempty"`
 	Meta            map[string]interface{} `json:"meta,omitempty"`
+	// InstanceID / HarnessName are sent in hello_ack (protocol v2).
+	InstanceID  string `json:"instance_id,omitempty"`
+	HarnessName string `json:"harness_name,omitempty"`
 }
 
 // Conn is one online peer.
@@ -56,6 +65,9 @@ type Conn struct {
 	ws      *websocket.Conn
 	pending map[string]chan Envelope
 	closed  bool
+
+	hub  *Hub
+	lock connLock
 }
 
 // PendingConfirm is a high-risk peer action waiting for human Accept/Deny.
@@ -78,13 +90,29 @@ type Hub struct {
 	mu       sync.Mutex
 	peers    map[string]*Conn // computer_id
 	confirms map[string]*PendingConfirm
+
+	// InstanceID is sent to peers in hello_ack. It changes every harness start,
+	// so a peer drops a lock held by a previous (crashed) process of this harness.
+	InstanceID string
+	// Name labels this harness in the peer tray ("held by <Name>").
+	Name string
+
+	// lockUsers: computer_id → holder keys (session ids) using the peer lock.
+	// Kept on the hub, not the Conn, because the peer keeps our lock across a
+	// reconnect and we must still release it when the last user finishes.
+	lockMu    sync.Mutex
+	lockUsers map[string]map[string]bool
 }
 
 // NewHub creates an empty hub.
 func NewHub() *Hub {
+	name, _ := os.Hostname()
 	return &Hub{
-		peers:    make(map[string]*Conn),
-		confirms: make(map[string]*PendingConfirm),
+		peers:      make(map[string]*Conn),
+		confirms:   make(map[string]*PendingConfirm),
+		InstanceID: uuid.NewString(),
+		Name:       name,
+		lockUsers:  make(map[string]map[string]bool),
 	}
 }
 
@@ -108,6 +136,7 @@ func (h *Hub) Register(computerID, deviceID string, caps Caps, os, peerVer strin
 		LastSeen:   time.Now(),
 		ws:         ws,
 		pending:    make(map[string]chan Envelope),
+		hub:        h,
 	}
 	h.peers[computerID] = c
 	log.Printf("peerhub: online computer_id=%s device=%s os=%s", computerID, deviceID, os)
@@ -140,11 +169,12 @@ func (h *Hub) ListOnline() map[string]map[string]interface{} {
 	out := make(map[string]map[string]interface{})
 	for id, c := range h.peers {
 		out[id] = map[string]interface{}{
-			"online":      true,
-			"os":          c.OS,
-			"caps":        c.Caps,
-			"last_seen":   c.LastSeen.UTC().Format(time.RFC3339),
+			"online":       true,
+			"os":           c.OS,
+			"caps":         c.Caps,
+			"last_seen":    c.LastSeen.UTC().Format(time.RFC3339),
 			"peer_version": c.PeerVer,
+			"lock":         c.LockStatus(),
 		}
 	}
 	return out
@@ -214,6 +244,8 @@ func (c *Conn) ReadLoop() {
 			c.mu.Unlock()
 		case "pong", "hello_ack":
 			// ignore keepalives
+		case "lock_state":
+			c.onLockState(env.Meta)
 		case "ping":
 			// peer-initiated keepalive — reply
 			c.mu.Lock()
@@ -271,6 +303,12 @@ func (c *Conn) CallWithID(id, kind string, payload interface{}, deadline time.Du
 		DeadlineMS: deadline.Milliseconds(),
 		Payload:    raw,
 	}
+	return c.roundTrip(env, deadline+2*time.Second)
+}
+
+// roundTrip writes env and waits for the peer's result with the same id.
+func (c *Conn) roundTrip(env Envelope, timeout time.Duration) (Envelope, error) {
+	id := env.ID
 	ch := make(chan Envelope, 1)
 	c.mu.Lock()
 	if c.closed {
@@ -286,7 +324,7 @@ func (c *Conn) CallWithID(id, kind string, payload interface{}, deadline time.Du
 		c.mu.Unlock()
 		return Envelope{}, err
 	}
-	timer := time.NewTimer(deadline + 2*time.Second)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case res, ok := <-ch:
