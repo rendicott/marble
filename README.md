@@ -4,7 +4,27 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.11
+## What's new in v0.4.12
+
+Highlights since **[v0.4.11](https://github.com/rendicott/marble/releases/tag/v0.4.11)** (no schema change):
+
+### One peer, several harnesses (peer lock, protocol v2)
+`marble-desktop-peer` can now be paired with **more than one harness at once**. It keeps a WebSocket to each, but **only the harness holding its lock may drive it** — two harnesses can no longer fight over the same mouse and keyboard.
+
+- The peer advertises `caps.lock`; the harness acquires the lock on a session's first peer call and releases it when the **last** session on this harness finishes its turn. The lock is shared by all sessions, so sibling sessions don't shove each other out.
+- A `lock_required` refusal is retried once (the previous holder ended cleanly).
+- The lock survives a reconnect from the same harness process; a `hello_ack` with a new `instance_id` (harness restarted) drops a lock the dead process held.
+- Clearing the lock from the peer tray stops the in-flight action and tells the holder it lost it.
+- **Backwards compatible:** a v1 peer (no `caps.lock`) skips locking, and so does a v2 harness driving a v1 peer. See [`docs/peer-protocol.md`](docs/peer-protocol.md).
+
+### Copy button on code blocks
+Every fenced code block in the session log now carries a **Copy** button in its upper-right — dimmed until you hover or focus it, always visible on touch devices. It flashes **Copied** (or **Copy failed**) for a moment. Works in attachment markdown previews too, uses the async Clipboard API with an `execCommand` fallback, and the click never leaks into the bubble's own handlers.
+
+### Also fixed
+- Providers that reject `temperature` (newer Claude models answer HTTP 400 "temperature is deprecated for this model") no longer fail the turn: the harness retries once without it and remembers the omission for later calls.
+- Embedded web assets are now served `Cache-Control: no-cache`. They carry no `Last-Modified`/`ETag`, so browsers were free to keep running a stale UI after an upgrade.
+
+### Earlier — v0.4.11
 
 Highlights since **[v0.4.10](https://github.com/rendicott/marble/releases/tag/v0.4.10)** (no schema change):
 
@@ -690,9 +710,9 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.11](https://github.com/rendicott/marble/releases/tag/v0.4.11)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.12](https://github.com/rendicott/marble/releases/tag/v0.4.12)**.
 
-Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.1.3](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.1.3)**).
+Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.1](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.1)** — peer lock / protocol v2).
 
 | Asset | Platform |
 |-------|----------|
