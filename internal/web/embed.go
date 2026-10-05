@@ -17,6 +17,10 @@ func Handler() http.Handler {
 	}
 	fileServer := http.FileServer(http.FS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Embedded files carry no ModTime, so http.ServeContent emits no
+		// Last-Modified or ETag — browsers then heuristic-cache app.js/style.css
+		// and keep running a stale UI after an upgrade. Force revalidation.
+		w.Header().Set("Cache-Control", "no-cache")
 		// SPA fallback: unknown paths → index.html (except assets).
 		path := r.URL.Path
 		if path != "/" && !exists(sub, path) {

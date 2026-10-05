@@ -862,23 +862,38 @@
     els.ctx.setAttribute("aria-hidden", "false");
   }
 
+  /** Copy arbitrary text to the clipboard. Returns false if both paths fail. */
+  async function copyTextToClipboard(text) {
+    const val = text == null ? "" : String(text);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(val);
+        return true;
+      }
+    } catch (e) {
+      /* insecure context / permission denied — try the legacy path */
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = val;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return !!ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
   async function copySessionId(id) {
     hideCtx();
     if (!id) return;
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(id);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = id;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-      }
+      await copyTextToClipboard(id);
       // brief non-blocking feedback via status pill if present
       if (els.health) {
         const prev = els.health.textContent;
@@ -1089,6 +1104,49 @@
       });
     }
     return html;
+  }
+
+  /**
+   * Wrap every <pre> inside a rendered markdown container in a positioned
+   * shell and attach a "copy" button. Safe to call more than once.
+   */
+  function decorateCodeBlocks(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll("pre").forEach((pre) => {
+      if (pre.dataset.copyReady === "1") return;
+      const code = pre.querySelector("code");
+      const src = (code ? code.textContent : pre.textContent) || "";
+      if (!src.trim()) return;
+      pre.dataset.copyReady = "1";
+
+      const wrap = document.createElement("div");
+      wrap.className = "code-block";
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "code-copy-btn";
+      btn.textContent = "Copy";
+      btn.title = "Copy code to clipboard";
+      btn.setAttribute("aria-label", "Copy code to clipboard");
+      btn.addEventListener("click", (e) => {
+        // Never let the click fall through to bubble/collapsible handlers.
+        e.preventDefault();
+        e.stopPropagation();
+        copyTextToClipboard(src).then((ok) => {
+          btn.textContent = ok ? "Copied" : "Copy failed";
+          btn.classList.toggle("ok", ok);
+          btn.classList.toggle("err", !ok);
+          clearTimeout(btn._resetTimer);
+          btn._resetTimer = setTimeout(() => {
+            btn.textContent = "Copy";
+            btn.classList.remove("ok", "err");
+          }, 1400);
+        });
+      });
+      wrap.appendChild(btn);
+    });
   }
 
   function roleUsesMarkdown(role) {
@@ -1604,6 +1662,8 @@
     if (roleUsesMarkdown(role)) {
       body.classList.add("md");
       body.innerHTML = renderMarkdown(content);
+      // Session log: give every fenced/indented code block a copy button.
+      decorateCodeBlocks(body);
       body.querySelectorAll("a[href]").forEach((a) => {
         const href = a.getAttribute("href") || "";
         if (/^https?:\/\//i.test(href)) {
@@ -2980,6 +3040,7 @@
             const div = document.createElement("div");
             div.className = "md";
             div.innerHTML = DOMPurify.sanitize(marked.parse(text));
+            decorateCodeBlocks(div);
             els.attModalBody.appendChild(div);
           } else {
             const pre = document.createElement("pre");
