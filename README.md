@@ -4,7 +4,20 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.13
+## What's new in v0.4.14
+
+Highlights since **[v0.4.13](https://github.com/rendicott/marble/releases/tag/v0.4.13)** (no schema change):
+
+### The agent is told when it repeats itself
+Long turns could burn ~190 tool calls re-reading the same memory topics, re-running the same shell command, or retrying a command the shell policy will always block, all silently, because every result looked like the first. The harness knows the call history, and now it says so:
+
+- **Repeat notes.** Every tool+args combination is tracked across the whole turn, not just back-to-back. From the 3rd identical call with an identical result, the result carries `[marble] identical call #N this turn … result unchanged`. An identical *failure* is flagged from the 2nd attempt. If the result changed, nothing is added, so polling a file, URL or log is never flagged; agent and background-task polls by `task_id` are exempt.
+- **Unchanged re-reads are stubbed.** For read-only tools (`memory_fetch`, `file_read`, `grep`, `web_fetch`, …) an identical result over 1 KB is replaced with a short "unchanged, N bytes omitted" stub, so a loop stops eating the context it needs to notice itself. The stub is only used when the earlier identical result is verifiably still in the prompt the model just saw; if it was trimmed away, the full result is sent again.
+- **Repeat summary.** Each round's prompt lists the most-repeated unchanged calls.
+- **Terminal blocks say so.** Shell-policy refusals now read "not retryable" and point to the alternative (e.g. `memory_*` tools for the memory directory).
+- **Memory-path guard** also catches `~/…`, `$HOME/…`, `${HOME}/…` and quote-split forms. It remains best effort: a script that reads the path at runtime can't be seen from the command string.
+
+### Earlier — v0.4.13
 
 Highlights since **[v0.4.12](https://github.com/rendicott/marble/releases/tag/v0.4.12)** (no schema change):
 
@@ -725,7 +738,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.13](https://github.com/rendicott/marble/releases/tag/v0.4.13)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.14](https://github.com/rendicott/marble/releases/tag/v0.4.14)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.1](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.1)** — peer lock / protocol v2).
 
