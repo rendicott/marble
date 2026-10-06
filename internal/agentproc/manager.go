@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rendicott/marble/internal/memory"
 )
 
@@ -42,9 +44,12 @@ type Task struct {
 	Result        *Result    `json:"result,omitempty"`
 	Error         string     `json:"error,omitempty"`
 	Command       []string   `json:"command,omitempty"`
+	// AgentSessionID is the session id pinned on the child CLI (ADR-0035), if its driver supports it.
+	AgentSessionID string `json:"agent_session_id,omitempty"`
 	// Progress is filled on Get/List while running (or at finish).
 	Progress *Progress `json:"progress,omitempty"`
 
+	live       *liveTracker // multi-signal liveness (background tasks only)
 	cmd        *exec.Cmd
 	cancel     context.CancelFunc
 	stdoutSnap *bytes.Buffer // live capture for write-signal heuristics
@@ -147,6 +152,7 @@ func (m *Manager) ResolveCWD(cwdRel, workdir string) (string, error) {
 // RunSync executes the agent and waits (honors ctx cancel / turn Stop).
 func (m *Manager) RunSync(ctx context.Context, sessionID string, req Request) (Result, error) {
 	req = applyContextInject(req)
+	req.AgentSessionID = uuid.NewString()
 	argv, cwd, dcfg, err := m.prepare(req)
 	if err != nil {
 		return Result{}, err
@@ -227,6 +233,7 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 	userPrompt := req.Prompt
 	marker := req.ContextMarker
 	req = applyContextInject(req)
+	req.AgentSessionID = uuid.NewString()
 	argv, cwd, dcfg, err := m.prepare(req)
 	if err != nil {
 		return nil, err
@@ -244,24 +251,36 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 
 	var stdout, stderr bytes.Buffer
 	maxOut := m.maxOut()
-	cmd.Stdout = &limitedBuf{buf: &stdout, max: maxOut}
-	cmd.Stderr = &limitedBuf{buf: &stderr, max: maxOut}
+	outW := &limitedBuf{buf: &stdout, max: maxOut}
+	errW := &limitedBuf{buf: &stderr, max: maxOut}
+	cmd.Stdout = outW
+	cmd.Stderr = errW
+
+	agentSID := ""
+	if dcfg.SessionPinned() {
+		agentSID = req.AgentSessionID
+	}
+	startedAt := time.Now()
+	live := newLiveTracker(req.Format, agentSID, startedAt, dcfg, m.Config(), cmd.Env,
+		func() int64 { return outW.seen.Load() + errW.seen.Load() })
 
 	id := memory.NewSessionID()
 	t := &Task{
-		ID:            id,
-		SessionID:     sessionID,
-		Format:        req.Format,
-		Prompt:        userPrompt,
-		ContextMarker: marker,
-		CWD:           cwd,
-		Status:        StatusRunning,
-		StartedAt:     time.Now(),
-		Command:       argv,
-		cmd:           cmd,
-		cancel:        cancel,
-		stdoutSnap:    &stdout,
-		stderrSnap:    &stderr,
+		ID:             id,
+		SessionID:      sessionID,
+		Format:         req.Format,
+		Prompt:         userPrompt,
+		ContextMarker:  marker,
+		CWD:            cwd,
+		Status:         StatusRunning,
+		StartedAt:      startedAt,
+		Command:        argv,
+		AgentSessionID: agentSID,
+		live:           live,
+		cmd:            cmd,
+		cancel:         cancel,
+		stdoutSnap:     &stdout,
+		stderrSnap:     &stderr,
 	}
 
 	m.mu.Lock()
@@ -278,8 +297,12 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 		return t, err
 	}
 	t.PID = cmd.Process.Pid
+	live.setPID(t.PID)
+	exited := make(chan struct{})
+	go sampleLiveness(live, m.Config().Liveness.withDefaults().SampleSec, exited)
 
 	go func() {
+		defer close(exited)
 		waitDone := make(chan struct{})
 		go func() {
 			select {
@@ -317,6 +340,24 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 	}()
 
 	return t, nil
+}
+
+// sampleLiveness ticks the tracker's process/output signals until the child exits,
+// so the verdict does not depend on poll cadence (ADR-0035).
+func sampleLiveness(lt *liveTracker, everySec int, exited <-chan struct{}) {
+	if everySec <= 0 {
+		everySec = 5
+	}
+	tk := time.NewTicker(time.Duration(everySec) * time.Second)
+	defer tk.Stop()
+	for {
+		select {
+		case <-exited:
+			return
+		case now := <-tk.C:
+			lt.tick(now)
+		}
+	}
 }
 
 func killProcessGroup(cmd *exec.Cmd) {
@@ -386,6 +427,7 @@ func (m *Manager) snapshotTask(t *Task) *Task {
 	cp.stderrSnap = nil
 	cp.cmd = nil
 	cp.cancel = nil
+	cp.live = nil
 	return &cp
 }
 
@@ -630,12 +672,14 @@ func jailJoin(root, rel string) (string, error) {
 }
 
 type limitedBuf struct {
-	buf *bytes.Buffer
-	max int
-	n   int
+	buf  *bytes.Buffer
+	max  int
+	n    int
+	seen atomic.Int64 // total bytes offered, including past max (output liveness signal)
 }
 
 func (w *limitedBuf) Write(p []byte) (int, error) {
+	w.seen.Add(int64(len(p)))
 	if w.n >= w.max {
 		return len(p), nil
 	}

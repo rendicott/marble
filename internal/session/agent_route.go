@@ -164,8 +164,10 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 				detail := "subprocess running"
 				if task.Progress.StuckHint {
 					detail = "stuck_hint: " + task.Progress.StuckReason
-				} else if task.Progress.CWDMtimeChanged {
-					detail = "cwd mtime changed"
+				} else if task.Progress.Phase != "" {
+					detail = "subprocess " + task.Progress.Phase
+				} else if task.Progress.AliveSignal != "" {
+					detail = fmt.Sprintf("subprocess active (%s %ds ago)", task.Progress.AliveSignal, task.Progress.AliveAgeSec)
 				}
 				s.appendStep(TurnStep{Kind: "tool_result", Tool: "subprocess", Detail: detail})
 				s.publishTurnProgress()

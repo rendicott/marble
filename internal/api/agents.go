@@ -89,6 +89,7 @@ func (s *Server) agentsGet(w http.ResponseWriter, r *http.Request) {
 			"max_output_bytes":      cfg.MaxOutputBytes,
 			"system_agents_enabled": cfg.SystemAgentsEnabled,
 			"stuck_after_sec":       cfg.StuckAfterSec,
+			"alive_window_sec":      cfg.AliveWindowSec,
 			"config_path":           agentproc.ConfigPath(s.Cfg.Memory),
 			"context_default":       g.Sources,
 			"context_max_chars":     g.MaxChars,

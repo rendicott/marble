@@ -44,6 +44,7 @@ func (opencodeDriver) BuildArgv(req Request, cfg DriverConfig) ([]string, error)
 	argv = append(argv, cfg.DefaultArgs...)
 	argv = append(argv, filterExtra(req.ExtraArgs, opencodeExtraAllow)...)
 	argv = dedupeFlagsLastWins(argv)
+	argv = withSessionID(argv, req, cfg)
 	argv = append(argv, req.Prompt)
 	return argv, nil
 }

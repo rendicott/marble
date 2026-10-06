@@ -24,6 +24,8 @@ type Request struct {
 	// ContextBlock is prepended to Prompt in prepare (ADR-0031). Empty = no inject.
 	ContextBlock  string
 	ContextMarker string
+	// AgentSessionID pins the child's session (ADR-0035); passed via DriverConfig.SessionIDFlag.
+	AgentSessionID string
 }
 
 // Result is returned to the Marble model (and stored on BG completion).
@@ -119,7 +121,7 @@ func (grokDriver) BuildArgv(req Request, cfg DriverConfig) ([]string, error) {
 	// Extra args override defaults for the same flag (avoid "cannot be used multiple times").
 	argv = append(argv, filterExtra(req.ExtraArgs, grokExtraAllow)...)
 	argv = dedupeFlagsLastWins(argv)
-	return argv, nil
+	return withSessionID(argv, req, cfg), nil
 }
 
 func (grokDriver) Parse(stdout, stderr string, exitCode int) Result {
@@ -196,7 +198,7 @@ func (claudeDriver) BuildArgv(req Request, cfg DriverConfig) ([]string, error) {
 	argv = append(argv, cfg.DefaultArgs...)
 	argv = append(argv, filterExtra(req.ExtraArgs, claudeExtraAllow)...)
 	argv = dedupeFlagsLastWins(argv)
-	return argv, nil
+	return withSessionID(argv, req, cfg), nil
 }
 
 func (claudeDriver) Parse(stdout, stderr string, exitCode int) Result {
@@ -311,7 +313,7 @@ func dedupeFlagsLastWins(argv []string) []string {
 		} else if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
 			// value-taking flags we know about
 			switch key {
-			case "--output-format", "--cwd", "-m", "--model",
+			case "--output-format", "--cwd", "-m", "--model", "-s", "--session-id",
 				"--max-turns", "--effort", "--reasoning-effort",
 				"--worktree", "--worktree-ref", "--ref", "--rules",
 				"--tools", "--sandbox", "--permission-mode", "--debug-file",
@@ -339,6 +341,34 @@ func dedupeFlagsLastWins(argv []string) []string {
 		}
 	}
 	return out
+}
+
+// withSessionID appends cfg.SessionIDFlag <req.AgentSessionID> exactly once, dropping
+// any earlier occurrence (e.g. from DefaultArgs) so the pinned id always wins (ADR-0035).
+// Applied after dedupeFlagsLastWins so flag names it doesn't know still pair correctly.
+func withSessionID(argv []string, req Request, cfg DriverConfig) []string {
+	if !cfg.SessionPinned() || req.AgentSessionID == "" {
+		return argv
+	}
+	flag := strings.TrimSpace(cfg.SessionIDFlag)
+	out := make([]string, 0, len(argv)+2)
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		if a == "-p" && i+1 < len(argv) { // never match inside the prompt
+			out = append(out, a, argv[i+1])
+			i++
+			continue
+		}
+		if a == flag {
+			i++ // skip its value
+			continue
+		}
+		if strings.HasPrefix(a, flag+"=") {
+			continue
+		}
+		out = append(out, a)
+	}
+	return append(out, flag, req.AgentSessionID)
 }
 
 func extractSummary(raw interface{}, fallback string) string {

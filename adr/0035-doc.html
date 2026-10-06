@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0035</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0035</span>
+      <span class="status accepted">Accepted (implementation in progress)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0035-subprocess-liveness-signals.md">Markdown</a>
+      <a href="0034-doc.html">← 0034</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0035-subprocess-liveness-signals-multi-signal-stuck-detection">ADR-0035: Subprocess Liveness Signals — Multi-Signal Stuck Detection</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (implementation in progress)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-10-06</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tools, subprocess, agents, call_agent_process, anti-thrash</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0014 (<code>call_agent_process</code>), ADR-0030 (agent-process presets), ADR-0022 (long-turn efficiency / anti-thrash)</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>Field report 2026-10-06: two healthy <code>grok</code> agents killed at ~12m and ~7.5m on <code>stuck_hint</code>; both were streaming tokens the whole time. Follow-up measurements of process-tree and session-state signals on a live <code>grok</code> run (below).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p><code>call_agent_process</code> runs headless external coding agents (<code>grok</code>, <code>claude</code>, <code>opencode</code>) and
+returns a <code>progress</code> block on every poll. <code>progress.stuck_hint</code> is meant to say &ldquo;this child looks
+hung — consider killing it&rdquo;, and both the tool description and the system prompt licensed a caller
+to kill a background agent &ldquo;unless it is under ~5–8m&rdquo; when <code>stuck_hint</code> is true.</p>
+<p>The hint was computed from the <strong>child&rsquo;s working directory</strong> only:</p>
+<pre><code>CWDMtimeChanged = newest mtime under Task.CWD (depth 4, 400 files) is newer than StartedAt + 3s
+WriteSignals    = count of write-ish tokens in captured stdout+stderr
+StuckHint       = running &amp;&amp; elapsed* &gt;= stuck_after_sec &amp;&amp; !CWDMtimeChanged &amp;&amp; WriteSignals == 0
+                  (*elapsed = time since PROCESS START, not since the last sign of life)
+</code></pre>
+<p>Two structural defects:</p>
+<ol>
+<li><strong><code>elapsed</code> measures the wrong interval.</strong> The predicate is effectively &ldquo;has this agent ever
+   written a file&rdquo;, not &ldquo;is it still working&rdquo;. An agent 12 minutes into a long reasoning phase is
+   indistinguishable from one wedged at t=0.</li>
+<li><strong>One signal, and the wrong one.</strong> Coding agents are I/O-bound on a model API and write nothing
+   to cwd during planning/reasoning. With <code>--output-format json</code>, stdout is buffered until exit,
+   so <code>WriteSignals</code> is structurally 0 for the whole run and can never rescue the decision.</li>
+</ol>
+<p>A first draft of this ADR replaced cwd with each vendor&rsquo;s private session-state files
+(<code>grok</code> <code>events.jsonl</code>, <code>claude</code> transcript JSONL), parsed per vendor. That fixes today&rsquo;s failure
+but couples correctness to undocumented, fast-moving file formats. <strong>Harnesses will change over
+time</strong>, and a detector that silently loses its only signal when a vendor renames a file regresses
+straight back to the false-positive kill.</p>
+<h2 id="evidence-2026-10-06">Evidence (2026-10-06)</h2>
+<p>The two killed agents:</p>
+<table>
+<thead>
+<tr>
+<th>Session</th>
+<th>Effort</th>
+<th>Messages</th>
+<th>Last phase</th>
+<th>Runtime</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>01a11029-7be9-7582-b288-cb10e19f572c</code></td>
+<td>high</td>
+<td>292 msg / 145 chat</td>
+<td><code>streaming_text</code></td>
+<td>07:41→07:49</td>
+<td>killed at ~12m</td>
+</tr>
+<tr>
+<td><code>01a11034-f8bf-7b11-9d0f-d37c211f953674</code></td>
+<td>medium</td>
+<td>170 msg / 90 chat</td>
+<td><code>streaming_reasoning</code></td>
+<td>07:54→08:02</td>
+<td>killed at ~7.5m</td>
+</tr>
+</tbody>
+</table>
+<p>Both were emitting tokens continuously; neither had touched cwd, correctly, since neither had
+reached its first edit.</p>
+<p><code>grok</code> session-state event cadence across four real sessions:</p>
+<table>
+<thead>
+<tr>
+<th>Session</th>
+<th>events</th>
+<th>span</th>
+<th>median gap</th>
+<th>p95 gap</th>
+<th><strong>max gap</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>…fix-w2-android-ui</code></td>
+<td>1538</td>
+<td>286 s</td>
+<td>0.08 s</td>
+<td>1.2 s</td>
+<td>6.1 s</td>
+</tr>
+<tr>
+<td><code>…fix-w3-web</code></td>
+<td>1551</td>
+<td>288 s</td>
+<td>0.02 s</td>
+<td>1.0 s</td>
+<td>40.5 s</td>
+</tr>
+<tr>
+<td><code>…fix-w1-sync</code></td>
+<td>3697</td>
+<td>713 s</td>
+<td>0.04 s</td>
+<td>0.8 s</td>
+<td><strong>77.7 s</strong></td>
+</tr>
+<tr>
+<td><code>…orb</code></td>
+<td>3305</td>
+<td>661 s</td>
+<td>0.07 s</td>
+<td>1.0 s</td>
+<td>29.6 s</td>
+</tr>
+</tbody>
+</table>
+<p>A live <code>grok</code> run (reason, then run a <code>sleep 25</code> tool, then answer), sampled every 2 s across
+the child&rsquo;s process tree via <code>/proc</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Δ read bytes / 2 s</th>
+<th>Δ write bytes / 2 s</th>
+<th>Δ CPU ticks / 2 s</th>
+<th>session-state age</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>startup / streaming</td>
+<td>36 KB – 164 MB</td>
+<td>42 KB – 1.3 MB</td>
+<td>6 – 142</td>
+<td>&lt; 2 s</td>
+</tr>
+<tr>
+<td>tool running (<code>sleep 25</code>)</td>
+<td>64 – 560</td>
+<td>168 – 285</td>
+<td>0 – 1</td>
+<td>grew to 18.7 s</td>
+</tr>
+</tbody>
+</table>
+<p>The same probe against <code>claude</code> (2.1.289, headless <code>-p</code>, one tool call running
+<code>python3 -c "import time; time.sleep(45)"</code>), same sampling:</p>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Δ read bytes / 2 s</th>
+<th>Δ write bytes / 2 s</th>
+<th>Δ CPU ticks / 2 s</th>
+<th>transcript age</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>startup / streaming</td>
+<td>12 KB – 1.9 MB</td>
+<td>5 KB – 305 KB</td>
+<td>13 – 175</td>
+<td>&lt; 2.2 s</td>
+</tr>
+<tr>
+<td>tool running (45 s)</td>
+<td>628 – 1198</td>
+<td>112 – 192</td>
+<td>2 – 17</td>
+<td>grew to 44.5 s</td>
+</tr>
+</tbody>
+</table>
+<p>During the tool call the transcript was silent for the full 44 s; only the process tree (<code>bash</code>,
+<code>python3</code> descendants) showed the agent was mid-tool.</p>
+<p>Observations that shape the decision:</p>
+<ul>
+<li><strong>Every single signal has gaps.</strong> Session state went quiet for ~19 s while a tool ran;
+  process I/O and CPU are near-idle during the same window; cwd is quiet for the whole reasoning
+  phase. Only the <em>combination</em> is continuous.</li>
+<li><strong>Raw counters never stop ticking.</strong> An idle CLI still accrues I/O (~125 B/s for <code>grok</code>,
+  up to ~675 B/s for <code>claude</code>) and CPU. &ldquo;Counter changed&rdquo; is meaningless; a <strong>rate threshold</strong> is
+  required. Active streaming never dropped below ~8.8 KB/s.</li>
+<li><strong>Agent CPU does not discriminate.</strong> Idle <code>claude</code> spikes to ~8.5 % CPU (event loop, GC), the
+  same as while streaming. CPU therefore only counts <em>real compute</em> (a tool building or testing),
+  with a high threshold; model streaming is left to I/O and session state.</li>
+<li><strong>Tools escape the process group.</strong> The <code>sleep 25</code> the agent ran was <em>not</em> in the child&rsquo;s
+  process group, so descendant discovery must follow the <code>ppid</code> chain, not <code>pgid</code>.</li>
+</ul>
+<h2 id="decision">Decision</h2>
+<p><strong><code>stuck_hint</code> fires only when every available liveness signal has been quiet for
+<code>stuck_after_sec</code>. Signals are generic by default; vendor-specific knowledge is configuration,
+not code.</strong></p>
+<h3 id="1-signals">1. Signals</h3>
+<p>Each running background task carries a tracker that measures independent signals. Each signal
+reports <em>available</em> (could it be measured at all) and <em>last advance</em> (when it last showed
+activity). A signal that never advanced is aged from <code>StartedAt</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Source</th>
+<th>Advance means</th>
+<th>Generic?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>proc_io</code></td>
+<td><code>/proc/&lt;pid&gt;/io</code> <code>rchar+wchar</code>, summed over the child&rsquo;s descendant tree</td>
+<td>rate ≥ <code>min_io_bytes_per_sec</code> over the sample interval</td>
+<td>yes (Linux)</td>
+</tr>
+<tr>
+<td><code>proc_cpu</code></td>
+<td><code>/proc/&lt;pid&gt;/stat</code> <code>utime+stime+cutime+cstime</code> over the tree (reaped children land in their reaper&rsquo;s <code>cutime</code>)</td>
+<td>rate ≥ <code>min_cpu_percent</code> (real compute, e.g. a build)</td>
+<td>yes (Linux)</td>
+</tr>
+<tr>
+<td><code>proc_tree</code></td>
+<td>descendant set, discovered via the <code>ppid</code> chain</td>
+<td>a descendant appeared or exited (tool start/finish)</td>
+<td>yes (Linux)</td>
+</tr>
+<tr>
+<td><code>output</code></td>
+<td>bytes written to the child&rsquo;s stdout+stderr</td>
+<td>byte count grew</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>newest mtime under <code>Task.CWD</code> (existing walk)</td>
+<td>newest mtime moved past <code>StartedAt + 3s</code></td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>session_state</code></td>
+<td>files matched by the driver&rsquo;s <code>state_globs</code> for the pinned session id</td>
+<td>newest mtime, or newest timestamp in the tail of the newest JSONL, moved</td>
+<td>config-driven</td>
+</tr>
+</tbody>
+</table>
+<p>Process signals are sampled by a lightweight background loop per task (default every 5 s), so the
+verdict does not depend on how often a caller polls. A poll also samples, throttled. Where <code>/proc</code>
+is unavailable the process signals report unavailable and the rest still decide.</p>
+<h3 id="2-the-detection-rule">2. The detection rule</h3>
+<pre><code>alive_age_sec = now - max(last advance of every available signal)
+stuck_hint    = status == running
+                &amp;&amp; elapsed &gt;= stuck_after_sec
+                &amp;&amp; alive_age_sec &gt;= stuck_after_sec
+alive         = alive_age_sec &lt;= alive_window_sec
+</code></pre>
+<p><code>elapsed</code> is only a floor (nothing is stuck before it has existed for the window). Losing any one
+signal (a vendor renames its state files, <code>/proc</code> is absent, output is buffered) makes the
+detector <strong>less sensitive, never more trigger-happy</strong>. Every failure path degrades toward
+&ldquo;alive&rdquo;, never toward a kill.</p>
+<p>Tasks with no tracker (synchronous runs, which are never polled, and tasks that failed to start)
+keep the previous cwd/write-signal rule, labelled as such in <code>stuck_reason</code>.</p>
+<h3 id="3-session-state-signal-is-configuration">3. Session-state signal is configuration</h3>
+<p>Many agent CLIs keep a per-session state directory and accept a session-id flag. The harness
+generates a UUID v4 per task, passes it via the driver&rsquo;s configured flag, and globs for the
+state by that id. The id is ours and fresh, so a match needs no cwd cross-check.</p>
+<p><code>agent_process.json</code>, per driver (built-in defaults shown; an older config file that sets
+neither key inherits them):</p>
+<pre><code class="language-json">&quot;grok&quot;:   { &quot;session_id_flag&quot;: &quot;-s&quot;,
+            &quot;state_globs&quot;: [&quot;$GROK_HOME/sessions/*/{session_id}&quot;,
+                            &quot;~/.grok/sessions/*/{session_id}&quot;] },
+&quot;claude&quot;: { &quot;session_id_flag&quot;: &quot;--session-id&quot;,
+            &quot;state_globs&quot;: [&quot;$CLAUDE_CONFIG_DIR/projects/*/{session_id}.jsonl&quot;,
+                            &quot;~/.claude/projects/*/{session_id}.jsonl&quot;] },
+&quot;opencode&quot;: { }
+</code></pre>
+<ul>
+<li><code>{session_id}</code> is substituted; <code>~/</code> and <code>$VARS</code> expand from the child&rsquo;s environment; a pattern
+  naming an unset variable is skipped.</li>
+<li>A glob matching a directory contributes its direct files; a file contributes itself.</li>
+<li><code>session_id_flag: "none"</code> disables pinning for a driver.</li>
+<li>The session flag is appended once, after flag de-duplication; any earlier occurrence is removed.</li>
+</ul>
+<p>Parsing stays deliberately shallow and format-agnostic: <code>stat</code> every matched file (mtime, size);
+tail-read at most 16 KB of the newest <code>*.jsonl</code> and scan backwards for the first line carrying a
+timestamp key (<code>ts</code> / <code>timestamp</code> / <code>time</code>) and a <code>phase</code> key. Truncated or unparseable lines are
+skipped. <strong>Never read a whole state file per poll</strong>; real transcripts reach tens of MB (39.7 MB
+observed).</p>
+<p>When a harness changes its layout, the fix is a config edit. The detector meanwhile still has
+five generic signals.</p>
+<h2 id="api-surface-additive-json-on-progress">API surface (additive JSON on <code>progress</code>)</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>alive</code></td>
+<td>bool</td>
+<td>some available signal advanced within <code>alive_window_sec</code></td>
+</tr>
+<tr>
+<td><code>alive_age_sec</code></td>
+<td>int</td>
+<td>seconds since the freshest advance across all signals</td>
+</tr>
+<tr>
+<td><code>alive_signal</code></td>
+<td>string</td>
+<td>name of the freshest signal (<code>proc_io</code>, <code>session_state</code>, …)</td>
+</tr>
+<tr>
+<td><code>last_signal_at</code></td>
+<td>RFC3339</td>
+<td>when that advance happened</td>
+</tr>
+<tr>
+<td><code>phase</code></td>
+<td>string</td>
+<td>last <code>phase</code> value from session state, if any; else <code>""</code></td>
+</tr>
+<tr>
+<td><code>signals</code></td>
+<td>object</td>
+<td>per signal: <code>{available, age_sec, detail}</code></td>
+</tr>
+<tr>
+<td><code>stuck_reason</code></td>
+<td>string</td>
+<td>lists every signal with its age, and every unavailable one with why</td>
+</tr>
+</tbody>
+</table>
+<p>The task also carries <code>agent_session_id</code> when a session id was pinned.</p>
+<p>Unchanged: <code>elapsed_sec</code>, <code>cwd_mtime_changed</code>, <code>newest_mtime</code>, <code>stuck_hint</code>, <code>stuck_after_sec</code>,
+<code>write_signals</code>. Field names are additive only, since pollers are LLM callers reading prose.</p>
+<p><code>stuck_reason</code> example:</p>
+<pre><code>no liveness advance for 512s on any signal: proc_io 512s (&lt;4096 B/s), proc_cpu 512s (&lt;25%),
+proc_tree 600s (1 descendant: sleep), output 600s, cwd 600s (unchanged since start),
+session_state 515s (phase=streaming_text); unavailable: none
+</code></pre>
+<h2 id="config-memoryagent_processjson">Config (<code>$MEMORY/agent_process.json</code>)</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stuck_after_sec</code></td>
+<td>480</td>
+<td><strong>restated</strong>: seconds with <em>no advance on any signal</em> before <code>stuck_hint</code></td>
+</tr>
+<tr>
+<td><code>alive_window_sec</code></td>
+<td>120</td>
+<td>an advance younger than this reports <code>alive: true</code> (advisory)</td>
+</tr>
+<tr>
+<td><code>liveness.min_io_bytes_per_sec</code></td>
+<td>4096</td>
+<td>tree I/O rate counted as activity (~6× worst idle noise, ~½ slowest observed streaming)</td>
+</tr>
+<tr>
+<td><code>liveness.min_cpu_percent</code></td>
+<td>25</td>
+<td>tree CPU rate counted as activity: real compute only (~3× idle <code>claude</code> spikes)</td>
+</tr>
+<tr>
+<td><code>liveness.sample_sec</code></td>
+<td>5</td>
+<td>background sample interval</td>
+</tr>
+<tr>
+<td><code>drivers.&lt;name&gt;.session_id_flag</code></td>
+<td>per driver</td>
+<td>flag used to pin the session id; <code>"none"</code> disables</td>
+</tr>
+<tr>
+<td><code>drivers.&lt;name&gt;.state_globs</code></td>
+<td>per driver</td>
+<td>where that session&rsquo;s state lives</td>
+</tr>
+<tr>
+<td><code>stuck_kill</code></td>
+<td>false</td>
+<td>unchanged; never auto-kill by default</td>
+</tr>
+</tbody>
+</table>
+<h2 id="caller-facing-text">Caller-facing text</h2>
+<p>The tool description (<code>internal/tools/specs.go</code>), the background-start note and <code>stuck_hint</code> note
+(<code>internal/tools/agentproc.go</code>), the system prompt (<code>internal/session/session.go</code>), and the routed
+subprocess status line (<code>internal/session/agent_route.go</code>) said <em>&ldquo;Do not kill under ~5–8m unless
+stuck_hint.&rdquo;</em> That guidance turned a bad hint into a dead agent. Replace it with: judge by
+<code>progress.alive</code> / <code>alive_age_sec</code> / <code>phase</code> / <code>signals</code>; <code>stuck_hint</code> means <em>every</em> measured
+signal has been quiet for the window, and <code>stuck_reason</code> lists what was measured.
+<code>internal/api/agents.go</code> exposes <code>alive_window_sec</code> alongside <code>stuck_after_sec</code>.</p>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li>Streaming child stdout into the turn (still wait-for-exit).</li>
+<li>Auto-kill (<code>stuck_kill</code> unchanged, default off).</li>
+<li>Deep per-vendor parsing (message counts, turn numbers). The <code>signals</code> detail strings carry
+  what generic parsing can recover; anything richer belongs in config-driven extensions later.</li>
+<li>Non-Linux process signals. <code>/proc</code> is Linux-only; elsewhere the process signals report
+  unavailable.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<ul>
+<li>Unit tests with on-disk fixtures, no network, no real agent runs:</li>
+<li><strong>regression for the field failure:</strong> fresh session-state file, stale cwd, no output,
+    <code>stuck_after_sec</code> forced to 5 s ⇒ <code>stuck_hint</code> false, <code>alive</code> true, <code>phase</code> non-empty;</li>
+<li>process-tree sampling of a real short-lived child (e.g. <code>sleep</code>) finds the descendant via
+    <code>ppid</code> even when it is in its own process group;</li>
+<li>every signal stale beyond the window ⇒ <code>stuck_hint</code> true, <code>stuck_reason</code> lists each signal;</li>
+<li>no state configured (<code>opencode</code>) ⇒ <code>session_state</code> reported unavailable with the reason, and
+    the other signals still decide;</li>
+<li>a JSONL whose last line is truncated does not panic and does not lose liveness (mtime holds);</li>
+<li>glob expansion: <code>{session_id}</code>, <code>~/</code>, <code>$VAR</code>, unset-var skip;</li>
+<li><code>BuildArgv</code> emits the configured session flag exactly once after de-duplication;</li>
+<li>an older config without <code>session_id_flag</code> / <code>state_globs</code> inherits the driver defaults;</li>
+<li>the existing <code>TestBuildProgressStuck</code> keeps passing on the tracker-less path.</li>
+<li><code>go build ./... &amp;&amp; go vet ./... &amp;&amp; go test ./...</code> green.</li>
+</ul>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li>Long-reasoning agents are no longer killable by a heuristic that cannot see them think.</li>
+<li>Robust to harness drift: a renamed or removed vendor state file removes one signal out of six,
+  and is fixed by editing <code>agent_process.json</code>.</li>
+<li>A tool that legitimately runs silent for longer than <code>stuck_after_sec</code> (no output, no compute,
+  no new processes, e.g. a long <code>sleep</code>) is reported stuck. That is honest: nothing observable is
+  happening. <code>stuck_hint</code> stays advisory.</li>
+<li>Biased toward &ldquo;alive&rdquo;. Background noise above the thresholds (e.g. a CLI that polls a server
+  while wedged) can keep a hung agent looking alive. That is the intended failure direction; the
+  hard <code>timeout_sec</code> still bounds every run.</li>
+<li>The harness reads <code>/proc</code> and, where configured, vendor-private state files. Both are read-only,
+  bounded (tail reads, capped directory listings), and every parse failure degrades a signal to
+  unavailable rather than to a kill.</li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0035-subprocess-liveness-signals.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

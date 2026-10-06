@@ -109,9 +109,9 @@ func (r *Registry) callAgentProcess(argsJSON string, tc *TurnContext) (string, e
 				"task_id": t.ID,
 			},
 			"note": "Background agent started. Poll with {\"task_id\":\"" + t.ID + "\"} (omit full command after first poll). " +
-				"Judge progress by progress.cwd_mtime_changed / stuck_hint, not by identical poll text. " +
-				"Kill: {\"task_id\":\"" + t.ID + "\",\"kill\":true}. " +
-				"Do not kill under ~5–8m unless stuck_hint or no writes; prefer shorter prompts + medium effort.",
+				"Judge progress by progress.alive / alive_age_sec / phase / signals, not by identical poll text or missing file writes " +
+				"(long reasoning before the first edit is normal). Kill only if stuck_hint (every signal quiet for stuck_after_sec; see stuck_reason). " +
+				"Kill: {\"task_id\":\"" + t.ID + "\",\"kill\":true}. Prefer shorter prompts + medium effort.",
 		}), nil
 	}
 
@@ -152,8 +152,8 @@ func taskView(t *agentproc.Task, detail bool) map[string]interface{} {
 	if t.Progress != nil {
 		out["progress"] = t.Progress
 		if t.Progress.StuckHint {
-			out["note"] = "stuck_hint: child still running but no cwd file changes / write signals for stuck_after_sec. " +
-				"Prefer kill+retry with tighter prompt/extra_args, or wait if edits are expected soon. " +
+			out["note"] = "stuck_hint: no liveness signal advanced for stuck_after_sec (stuck_reason lists each signal measured). " +
+				"Prefer kill+retry with tighter prompt/extra_args. " +
 				"Kill: {\"task_id\":\"" + t.ID + "\",\"kill\":true}."
 		}
 	}

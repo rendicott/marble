@@ -2,6 +2,7 @@ package agentproc
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -18,9 +19,17 @@ type Progress struct {
 	StuckAfterSec   int    `json:"stuck_after_sec,omitempty"`
 	// WriteSignals is a soft count of write-like tokens in captured stdout/stderr (best-effort).
 	WriteSignals int `json:"write_signals,omitempty"`
+
+	// Multi-signal liveness (ADR-0035). Absent signals degrade sensitivity, never toward stuck.
+	Alive        bool                    `json:"alive"`
+	AliveAgeSec  int                     `json:"alive_age_sec"`
+	AliveSignal  string                  `json:"alive_signal"`
+	LastSignalAt string                  `json:"last_signal_at,omitempty"`
+	Phase        string                  `json:"phase,omitempty"`
+	Signals      map[string]SignalStatus `json:"signals,omitempty"`
 }
 
-// buildProgress computes elapsed / cwd activity / stuck_hint for a task.
+// buildProgress computes elapsed / cwd activity / liveness / stuck_hint for a task.
 // Does not take the manager lock (caller should hold snapshot fields).
 func buildProgress(t *Task, stuckAfter time.Duration, stdout, stderr string) Progress {
 	now := time.Now()
@@ -33,22 +42,100 @@ func buildProgress(t *Task, stuckAfter time.Duration, stdout, stderr string) Pro
 		StuckAfterSec: int(stuckAfter.Seconds()),
 		WriteSignals:  countWriteSignals(stdout) + countWriteSignals(stderr),
 	}
+	var newest time.Time
 	if t.CWD != "" {
-		newest, ok := newestMtime(t.CWD, 4, 400)
+		n, ok := newestMtime(t.CWD, 4, 400)
 		if ok {
-			p.NewestMtime = newest.UTC().Format(time.RFC3339)
+			newest = n
+			p.NewestMtime = n.UTC().Format(time.RFC3339)
 			// Allow a small grace after start so "touch" of open dirs doesn't count as success.
 			grace := t.StartedAt.Add(3 * time.Second)
-			p.CWDMtimeChanged = newest.After(grace)
+			p.CWDMtimeChanged = n.After(grace)
 		}
 	}
+	if t.live != nil {
+		applyLiveness(&p, t, now, newest, elapsed, stuckAfter)
+		return p
+	}
+	// No tracker (sync run, or never started): previous cwd/write-signal rule.
 	if t.Status == StatusRunning && stuckAfter > 0 && elapsed >= stuckAfter {
 		if !p.CWDMtimeChanged && p.WriteSignals == 0 {
 			p.StuckHint = true
-			p.StuckReason = "running with no cwd mtime change and no write signals for stuck_after_sec"
+			p.StuckReason = fmt.Sprintf("cwd mtime unchanged and no write signals for %ds "+
+				"(no process liveness tracking for this task; format=%s)", p.ElapsedSec, t.Format)
 		}
 	}
 	return p
+}
+
+// applyLiveness merges tracker signals with the cwd signal and decides stuck_hint:
+// running, older than stuckAfter, and every available signal quiet for stuckAfter.
+func applyLiveness(p *Progress, t *Task, now, newestCWD time.Time, elapsed, stuckAfter time.Duration) {
+	sigs, phase := t.live.observe(now)
+	cwd := SignalStatus{Available: t.CWD != "", Detail: "unchanged since start"}
+	if !cwd.Available {
+		cwd.Detail = "no cwd"
+	} else if p.CWDMtimeChanged {
+		cwd.lastAdvance = newestCWD
+		cwd.Detail = "newest mtime " + p.NewestMtime
+	}
+	sigs[SigCWD] = cwd
+
+	var freshest time.Time
+	for _, name := range signalOrder {
+		s, ok := sigs[name]
+		if !ok || !s.Available {
+			continue
+		}
+		adv := s.lastAdvance
+		if adv.Before(t.StartedAt) {
+			adv = t.StartedAt
+		}
+		if adv.After(now) {
+			adv = now
+		}
+		s.AgeSec = int(now.Sub(adv).Seconds())
+		sigs[name] = s
+		if p.AliveSignal == "" || adv.After(freshest) {
+			freshest = adv
+			p.AliveSignal = name
+		}
+	}
+	p.Signals = sigs
+	p.Phase = phase
+	if p.AliveSignal == "" {
+		return // nothing measurable; never infer stuck from nothing
+	}
+	age := now.Sub(freshest)
+	p.AliveAgeSec = int(age.Seconds())
+	p.LastSignalAt = freshest.UTC().Format(time.RFC3339)
+	p.Alive = age <= t.live.aliveWindow
+
+	if t.Status == StatusRunning && stuckAfter > 0 && elapsed >= stuckAfter && age >= stuckAfter {
+		p.StuckHint = true
+		p.StuckReason = stuckReason(p.AliveAgeSec, sigs)
+	}
+}
+
+// stuckReason names every signal measured and every one that was unavailable.
+func stuckReason(ageSec int, sigs map[string]SignalStatus) string {
+	var measured, missing []string
+	for _, name := range signalOrder {
+		s, ok := sigs[name]
+		if !ok {
+			continue
+		}
+		if s.Available {
+			measured = append(measured, fmt.Sprintf("%s %ds (%s)", name, s.AgeSec, s.Detail))
+		} else {
+			missing = append(missing, fmt.Sprintf("%s (%s)", name, s.Detail))
+		}
+	}
+	r := fmt.Sprintf("no liveness advance for %ds on any signal: %s", ageSec, strings.Join(measured, ", "))
+	if len(missing) > 0 {
+		r += "; unavailable: " + strings.Join(missing, ", ")
+	}
+	return r
 }
 
 var errWalkDone = errors.New("walk done")

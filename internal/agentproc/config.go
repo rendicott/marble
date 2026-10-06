@@ -17,13 +17,28 @@ type Config struct {
 	MaxPerSession       int                     `json:"max_per_session"`
 	MaxOutputBytes      int                     `json:"max_output_bytes"`
 	SystemAgentsEnabled bool                    `json:"system_agents_enabled"`
-	// StuckAfterSec: while status=running, if cwd has no mtime newer than start
-	// for this many seconds, poll reports stuck_hint (default 480 = 8m). 0 → default.
+	// StuckAfterSec: while status=running, if no liveness signal (session state,
+	// process I/O/CPU, child processes, output, cwd mtime) has advanced for this many
+	// seconds, poll reports stuck_hint (default 480 = 8m). 0 → default. ADR-0035.
 	StuckAfterSec int `json:"stuck_after_sec"`
+	// AliveWindowSec: a signal advance younger than this reports progress.alive
+	// (default 120). Advisory; does not gate stuck_hint.
+	AliveWindowSec int `json:"alive_window_sec"`
+	// Liveness tunes the generic process signals (ADR-0035).
+	Liveness LivenessConfig `json:"liveness"`
 	// StuckKill: if true, auto-kill process group when stuck_hint would fire.
 	StuckKill bool `json:"stuck_kill"`
 	// Context is the global default source-list for subprocess injection (ADR-0031).
 	Context ContextConfig `json:"context"`
+}
+
+// LivenessConfig holds rate thresholds for process-tree liveness signals.
+// Idle CLIs tick counters slightly (timers, event loops), so a signal counts as
+// an advance only above these rates.
+type LivenessConfig struct {
+	MinIOBytesPerSec int     `json:"min_io_bytes_per_sec"` // rchar+wchar across the tree; default 4096
+	MinCPUPercent    float64 `json:"min_cpu_percent"`      // utime+stime across the tree; default 25 (real compute only)
+	SampleSec        int     `json:"sample_sec"`           // background sample interval; default 5
 }
 
 // ContextConfig is agent_process.json `context` (ADR-0031).
@@ -40,6 +55,12 @@ type DriverConfig struct {
 	DefaultArgs         []string          `json:"default_args"`
 	AutoApprove         *bool             `json:"auto_approve"` // nil = true
 	Env                 map[string]string `json:"env"`
+	// SessionIDFlag pins the child's session id (e.g. "-s", "--session-id") so its
+	// state files can be found. "" → built-in default for known drivers; "none" disables.
+	SessionIDFlag string `json:"session_id_flag,omitempty"`
+	// StateGlobs locate the child's per-session state (files or dirs). "{session_id}"
+	// is substituted; "~/" and $VARS expand (a pattern naming an unset var is skipped).
+	StateGlobs []string `json:"state_globs,omitempty"`
 }
 
 // DefaultConfig returns ADR-0014 defaults tuned for headless implement jobs
@@ -57,7 +78,12 @@ func DefaultConfig() Config {
 					"--effort", "medium",
 					"--max-turns", "40",
 				},
-				AutoApprove: &t,
+				AutoApprove:   &t,
+				SessionIDFlag: "-s",
+				StateGlobs: []string{
+					"$GROK_HOME/sessions/*/{session_id}",
+					"~/.grok/sessions/*/{session_id}",
+				},
 			},
 			"claude": {
 				Enabled:             true,
@@ -65,6 +91,11 @@ func DefaultConfig() Config {
 				DefaultOutputFormat: "json",
 				DefaultArgs:         nil,
 				AutoApprove:         &t,
+				SessionIDFlag:       "--session-id",
+				StateGlobs: []string{
+					"$CLAUDE_CONFIG_DIR/projects/*/{session_id}.jsonl",
+					"~/.claude/projects/*/{session_id}.jsonl",
+				},
 			},
 			"opencode": {
 				Enabled:             true,
@@ -79,8 +110,10 @@ func DefaultConfig() Config {
 		MaxPerSession:       10,
 		MaxOutputBytes:      1 << 20,
 		SystemAgentsEnabled: false,
-		StuckAfterSec:       480, // 8m with no cwd mtime change → stuck_hint
+		StuckAfterSec:       480, // 8m with no liveness advance → stuck_hint
+		AliveWindowSec:      120,
 		StuckKill:           false,
+		Liveness:            DefaultLivenessConfig(),
 		Context: ContextConfig{
 			Default:  DefaultContextSources(),
 			MaxChars: DefaultContextMaxChars,
@@ -122,12 +155,24 @@ func Load(path string) (Config, error) {
 	if cfg.StuckAfterSec == 0 {
 		cfg.StuckAfterSec = def.StuckAfterSec
 	}
+	if cfg.AliveWindowSec <= 0 {
+		cfg.AliveWindowSec = def.AliveWindowSec
+	}
+	cfg.Liveness = cfg.Liveness.withDefaults()
 	if cfg.Drivers == nil {
 		cfg.Drivers = def.Drivers
 	}
 	for name, d := range def.Drivers {
-		if _, ok := cfg.Drivers[name]; !ok {
+		cur, ok := cfg.Drivers[name]
+		if !ok {
 			cfg.Drivers[name] = d
+			continue
+		}
+		// Older agent_process.json files predate session pinning; inherit defaults.
+		if cur.SessionIDFlag == "" && len(cur.StateGlobs) == 0 {
+			cur.SessionIDFlag = d.SessionIDFlag
+			cur.StateGlobs = d.StateGlobs
+			cfg.Drivers[name] = cur
 		}
 	}
 	if len(cfg.Context.Default) == 0 && cfg.Context.MaxChars == 0 {
@@ -162,6 +207,42 @@ func (c Config) StuckAfter() time.Duration {
 		sec = 480
 	}
 	return time.Duration(sec) * time.Second
+}
+
+// AliveWindow returns the window within which a signal advance reports alive.
+func (c Config) AliveWindow() time.Duration {
+	sec := c.AliveWindowSec
+	if sec <= 0 {
+		sec = 120
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// DefaultLivenessConfig returns thresholds above observed idle noise (ADR-0035):
+// idle I/O ~125 B/s (grok) to ~675 B/s (claude); active ≥ 8.8 KB/s. Idle claude
+// CPU spikes to ~8.5% — as high as when streaming — so CPU only counts real compute.
+func DefaultLivenessConfig() LivenessConfig {
+	return LivenessConfig{MinIOBytesPerSec: 4096, MinCPUPercent: 25, SampleSec: 5}
+}
+
+func (l LivenessConfig) withDefaults() LivenessConfig {
+	def := DefaultLivenessConfig()
+	if l.MinIOBytesPerSec <= 0 {
+		l.MinIOBytesPerSec = def.MinIOBytesPerSec
+	}
+	if l.MinCPUPercent <= 0 {
+		l.MinCPUPercent = def.MinCPUPercent
+	}
+	if l.SampleSec <= 0 {
+		l.SampleSec = def.SampleSec
+	}
+	return l
+}
+
+// SessionPinned reports whether this driver should get a pinned session id.
+func (d DriverConfig) SessionPinned() bool {
+	f := strings.TrimSpace(d.SessionIDFlag)
+	return f != "" && f != "none"
 }
 
 // ConfigPath returns $MEMORY/agent_process.json
