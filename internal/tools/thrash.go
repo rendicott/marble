@@ -58,6 +58,9 @@ type ThrashState struct {
 	ChecklistHint      bool // advisory already fired
 	ScreenshotStreak   int
 	WaitStreak         int
+	// Repeats is every tool+args fingerprint this turn (not a ring): repeat notes,
+	// unchanged-read stubs and the repeat summary (repeat.go).
+	Repeats map[string]*repeatRec
 }
 
 func (tc *TurnContext) thrash() *ThrashState {

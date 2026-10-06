@@ -56,6 +56,10 @@ type TurnContext struct {
 	PostClickShotAt time.Time
 	// Thrash is ADR-0022 turn-scoped anti-repeat / escalate state.
 	Thrash *ThrashState
+	// ResultVisible reports whether an identical tool result is still in the model's
+	// context (this round's prompt, or appended since). Set by the session loop; nil
+	// disables unchanged-read stubs (repeat.go).
+	ResultVisible func(content string) bool
 	// callbacks set by session loop
 	GetUsage     func() map[string]interface{}
 	Compact      func(style string, keepLast int) (string, error)
@@ -170,7 +174,7 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 	if err := r.preflightThrash(name, argsJSON, tc); err != nil {
 		msg := "error: " + err.Error()
 		r.postflightThrash(name, argsJSON, msg, tc)
-		return msg
+		return r.noteRepeat(name, argsJSON, msg, tc)
 	}
 
 	parent := context.Background()
@@ -185,7 +189,7 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		defer cancel()
 		out := clamp(r.MCP.Execute(ctx, name, argsJSON), max)
 		r.postflightThrash(name, argsJSON, out, tc)
-		return out
+		return r.noteRepeat(name, argsJSON, out, tc)
 	}
 
 	var out string
@@ -317,7 +321,7 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 	if err != nil {
 		msg := "error: " + err.Error()
 		r.postflightThrash(name, argsJSON, msg, tc)
-		return msg
+		return r.noteRepeat(name, argsJSON, msg, tc)
 	}
 	// Eval mutate soft warning (under hard limit)
 	if name == "computer_browser_act" {
@@ -333,7 +337,7 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 		// only note occasionally — caller may ignore duplicates
 		tc.OnHarnessNote("[harness] escalate lock: computer click blocked until confirm / different approach (ADR-0022)")
 	}
-	return result
+	return r.noteRepeat(name, argsJSON, result, tc)
 }
 
 func clamp(s string, max int) string {

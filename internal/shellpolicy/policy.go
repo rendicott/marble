@@ -156,7 +156,7 @@ func (p *Policy) Check(command, cwdRel string) error {
 			}
 		}
 		if !ok {
-			return fmt.Errorf("command not on shell allow list")
+			return fmt.Errorf("command not on shell allow list (not retryable: rewording will not help; use a different tool or ask the operator to allow it)")
 		}
 	} else {
 		for _, re := range p.Deny {
@@ -166,19 +166,44 @@ func (p *Policy) Check(command, cwdRel string) error {
 					strings.Contains(re.String(), "sudo") {
 					continue
 				}
-				return fmt.Errorf("command blocked by shell deny policy")
+				return fmt.Errorf("command blocked by shell deny policy (not retryable: it matches a deny rule; use a different approach or ask the operator)")
 			}
 		}
 	}
 	if p.BlockMemory && p.MemoryRoot != "" {
-		if strings.Contains(cmd, p.MemoryRoot) {
-			return fmt.Errorf("command appears to target memory root (blocked)")
+		if refsMemoryRoot(cmd, p.MemoryRoot) {
+			return fmt.Errorf("command references the Marble memory directory (blocked, not retryable: no rewording of it will run). " +
+				"Use memory_search / memory_fetch / memory_write for memory content; $MEMORY/env secrets are operator-only")
 		}
 	}
 	if p.CwdStrict && cwdRel != "" && cwdRel != "." {
 		// path escape checked by resolve in tools
 	}
 	return nil
+}
+
+// refsMemoryRoot reports whether cmd names the memory root literally or via ~, $HOME or
+// ${HOME}, after dropping quote characters and backslashes (so ".ma""rble" still matches).
+// Best effort: indirection (a script that reads the path at runtime, a variable built in
+// pieces) is not detectable from the command string.
+func refsMemoryRoot(cmd, root string) bool {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "" || root == "." || root == "/" {
+		return false
+	}
+	norm := strings.NewReplacer(`"`, "", `'`, "", `\`, "").Replace(cmd)
+	forms := []string{root}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rel, err := filepath.Rel(home, root); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			forms = append(forms, "~/"+rel, "$HOME/"+rel, "${HOME}/"+rel)
+		}
+	}
+	for _, f := range forms {
+		if strings.Contains(norm, f) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClampTimeout applies default/max rules. Returns timeout and optional hint.

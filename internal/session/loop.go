@@ -415,6 +415,13 @@ func (r *Runner) runTurn(s *Session) {
 				"[harness] escalate lock ON (ADR-0022): desktop/browser clicks hard-blocked. Use computer_confirm, screenshot/snapshot, shell/API, or a different approach — not more identical clicks.",
 			)
 		}
+		// Repeat awareness: the harness knows what was already asked; say so every round.
+		if sum := tc.RepeatSummary(3, 4); sum != "" {
+			advisories = append(advisories,
+				"[harness] repeated calls this turn returned unchanged results: "+sum+
+					". Repeating them yields nothing new; change the arguments or the tool, or act on what you already have.",
+			)
+		}
 		// ADR-0022 P3: soft checklist advisory mid long turn
 		if toolRounds >= soft/2 && soft > 0 && (tc.Thrash == nil || !tc.Thrash.ChecklistHint) {
 			advisories = append(advisories,
@@ -486,6 +493,29 @@ func (r *Runner) runTurn(s *Session) {
 				"ℹ️ Image limit %d: only the %d most recent image(s) are sent to the model per request; %d older image(s) omitted (still in the transcript). Right-click / long-press 🔧 to change.",
 				imgLimit.Effective, imgLimit.Effective, omittedImgs,
 			))
+		}
+
+		// Unchanged-read stubs may only point at a result the model can still see:
+		// this round's prompt (trimHistory may have dropped or cut older ones), or a
+		// tool result appended during this round.
+		roundPrompt, histMark := prompt, len(hist)
+		tc.ResultVisible = func(content string) bool {
+			for _, m := range roundPrompt {
+				if m.Role == "tool" && m.Content.PlainText() == content {
+					return true
+				}
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if histMark > len(s.history) {
+				return false // compacted mid-round
+			}
+			for _, m := range s.history[histMark:] {
+				if m.Role == "tool" && m.Content.PlainText() == content {
+					return true
+				}
+			}
+			return false
 		}
 
 		// KD13: materialize only deep clone for Chat (history stays sentinel)
