@@ -4,7 +4,21 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.12
+## What's new in v0.4.13
+
+Highlights since **[v0.4.12](https://github.com/rendicott/marble/releases/tag/v0.4.12)** (no schema change):
+
+### `stuck_hint` no longer kills agents that are thinking
+`call_agent_process` used to flag a background agent as stuck when it had not written a file in cwd within `stuck_after_sec` of **starting**. Coding agents often reason for many minutes before their first edit, so healthy agents were reported stuck and killed mid-stream. `stuck_hint` now fires only when **every** liveness signal has been quiet for `stuck_after_sec` ([ADR-0035](adr/0035-subprocess-liveness-signals.md)):
+
+- **Process tree** — I/O rate, CPU rate (real compute only) and child processes starting or exiting, across all descendants (tools that leave the agent's process group included). Sampled every 5 s in the background, so the verdict does not depend on poll cadence.
+- **Output** — stdout/stderr growth.
+- **cwd** — file changes, as before, now one signal of six.
+- **Session state** — the CLI's own state files, found by a session id the harness pins at spawn (`-s` for grok, `--session-id` for claude). The flag and file globs are config (`session_id_flag`, `state_globs` per driver in `agent_process.json`), so when a CLI changes its layout it is a config edit; until then the other signals still decide.
+
+Polls gain `progress.alive`, `alive_age_sec`, `alive_signal`, `last_signal_at`, `phase` and a per-signal `signals` map; `stuck_reason` names every signal measured and any that were unavailable. New config: `alive_window_sec` (120) and `liveness.{min_io_bytes_per_sec, min_cpu_percent, sample_sec}`. Existing config files inherit the defaults. `stuck_kill` still defaults to off.
+
+### Earlier — v0.4.12
 
 Highlights since **[v0.4.11](https://github.com/rendicott/marble/releases/tag/v0.4.11)** (no schema change):
 
@@ -707,10 +721,11 @@ Notable ADRs:
 | 0032 | Selectable UI themes (dark / light / tan, cookie) |
 | 0033 | Image-generation models (`kind=image`) + `generate_image` |
 | 0034 | `computer_exec`, peer state legibility, type-class thrash guard |
+| 0035 | Subprocess liveness signals (multi-signal stuck detection) |
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.12](https://github.com/rendicott/marble/releases/tag/v0.4.12)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.13](https://github.com/rendicott/marble/releases/tag/v0.4.13)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.1](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.1)** — peer lock / protocol v2).
 
