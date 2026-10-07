@@ -92,3 +92,40 @@ func TestMaxPerSession(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDoneClosesOnExit(t *testing.T) {
+	ws := t.TempDir()
+	mem := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-grok")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho '{\"result\":\"ok\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	g := cfg.Drivers["grok"]
+	g.Command = script
+	cfg.Drivers["grok"] = g
+	b, _ := json.Marshal(cfg)
+	if err := os.WriteFile(ConfigPath(mem), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(mem, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Done("nope") != nil {
+		t.Fatal("unknown id should have no done channel")
+	}
+	task, err := m.StartBackground("s1", Request{Format: "grok", Prompt: "hi", CWD: ws, Background: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-m.Done(task.ID):
+	case <-time.After(5 * time.Second):
+		t.Fatal("done never closed")
+	}
+	got, _ := m.Get(task.ID)
+	if got.Status != StatusExited || got.Result == nil || got.Result.Summary != "ok" {
+		t.Fatalf("result must be set before done closes: %+v", got)
+	}
+}

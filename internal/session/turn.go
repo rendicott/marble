@@ -259,6 +259,25 @@ func (s *Session) appendStepLocked(step TurnStep) {
 	s.turn.prog.LastEventAt = time.Now()
 }
 
+// upsertStep replaces the last step when it has the same Kind and Tool (a live
+// heartbeat line updated in place), otherwise appends.
+func (s *Session) upsertStep(step TurnStep) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n := len(s.turn.prog.Steps); n > 0 {
+		last := s.turn.prog.Steps[n-1]
+		if last.Kind == step.Kind && last.Tool == step.Tool {
+			if step.At == "" {
+				step.At = time.Now().UTC().Format(time.RFC3339)
+			}
+			s.turn.prog.Steps[n-1] = step
+			s.turn.prog.LastEventAt = time.Now()
+			return
+		}
+	}
+	s.appendStepLocked(step)
+}
+
 func (s *Session) setTurnMessage(msg string) {
 	s.mu.Lock()
 	s.turn.prog.Message = msg

@@ -49,7 +49,8 @@ type Task struct {
 	// Progress is filled on Get/List while running (or at finish).
 	Progress *Progress `json:"progress,omitempty"`
 
-	live       *liveTracker // multi-signal liveness (background tasks only)
+	live       *liveTracker  // multi-signal liveness (background tasks only)
+	done       chan struct{} // closed by finishTask
 	cmd        *exec.Cmd
 	cancel     context.CancelFunc
 	stdoutSnap *bytes.Buffer // live capture for write-signal heuristics
@@ -277,6 +278,7 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 		Command:        argv,
 		AgentSessionID: agentSID,
 		live:           live,
+		done:           make(chan struct{}),
 		cmd:            cmd,
 		cancel:         cancel,
 		stdoutSnap:     &stdout,
@@ -428,6 +430,7 @@ func (m *Manager) snapshotTask(t *Task) *Task {
 	cp.cmd = nil
 	cp.cancel = nil
 	cp.live = nil
+	cp.done = nil
 	return &cp
 }
 
@@ -640,6 +643,20 @@ func (m *Manager) finishTask(t *Task, st Status, code *int, res *Result, errMsg 
 	now := time.Now()
 	t.EndedAt = &now
 	t.cancel = nil
+	if t.done != nil {
+		close(t.done)
+	}
+}
+
+// Done returns a channel closed when the background task finishes, so a waiter
+// can block instead of polling Get. Nil (blocks forever) for an unknown id.
+func (m *Manager) Done(id string) <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.tasks[id]; ok {
+		return t.done
+	}
+	return nil
 }
 
 func mergeEnv(extra map[string]string) []string {

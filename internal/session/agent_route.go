@@ -144,8 +144,12 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 		r.emitRoutedAssistant(s, formatRoutedResult(preset.ID, agentproc.Result{OK: false, Error: err.Error(), CWD: ws}))
 		return
 	}
-	ticker := time.NewTicker(time.Second)
+	// Block on exit; refresh progress on a slow tick. The step list gets one live
+	// heartbeat line updated in place, not a new line per tick.
+	done := m.Done(t.ID)
+	ticker := time.NewTicker(routedProgressEvery)
 	defer ticker.Stop()
+	stuckNoted := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -160,41 +164,66 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 				s.finalizeTurnProgress("error", "task lost")
 				return
 			}
-			if task.Progress != nil {
-				detail := "subprocess running"
-				if task.Progress.StuckHint {
-					detail = "stuck_hint: " + task.Progress.StuckReason
-				} else if task.Progress.Phase != "" {
-					detail = "subprocess " + task.Progress.Phase
-				} else if task.Progress.AliveSignal != "" {
-					detail = fmt.Sprintf("subprocess active (%s %ds ago)", task.Progress.AliveSignal, task.Progress.AliveAgeSec)
+			if task.Status != agentproc.StatusRunning {
+				r.finishRoutedTurn(s, preset, ws, task)
+				return
+			}
+			if p := task.Progress; p != nil {
+				if p.StuckHint && !stuckNoted {
+					stuckNoted = true
+					s.appendStep(TurnStep{Kind: "advisory", Tool: "subprocess", Detail: "stuck_hint: " + p.StuckReason})
 				}
-				s.appendStep(TurnStep{Kind: "tool_result", Tool: "subprocess", Detail: detail})
+				s.upsertStep(TurnStep{Kind: "tool_result", Tool: "subprocess", Detail: routedHeartbeat(p)})
 				s.publishTurnProgress()
 			}
-			if task.Status == agentproc.StatusRunning {
-				continue
+		case <-done:
+			task, ok := m.Get(t.ID)
+			if !ok {
+				r.emitRoutedAssistant(s, "[subprocess: "+preset.ID+" · error]\ntask lost")
+				s.finalizeTurnProgress("error", "task lost")
+				return
 			}
-			res := agentproc.Result{OK: false, CWD: ws, Error: task.Error}
-			if task.Result != nil {
-				res = *task.Result
-			}
-			if task.Status == agentproc.StatusKilled {
-				res.OK = false
-				if res.Error == "" {
-					res.Error = "killed"
-				}
-			}
-			out := formatRoutedResult(preset.ID, res)
-			r.emitRoutedAssistant(s, out)
-			phase := "complete"
-			if !res.OK {
-				phase = "error"
-			}
-			s.finalizeTurnProgress(phase, "subprocess "+string(task.Status))
+			r.finishRoutedTurn(s, preset, ws, task)
 			return
 		}
 	}
+}
+
+// routedProgressEvery is how often a routed subprocess turn refreshes its heartbeat.
+// Exit is observed immediately via Manager.Done, so this only paces the status line.
+const routedProgressEvery = 15 * time.Second
+
+func routedHeartbeat(p *agentproc.Progress) string {
+	parts := []string{"subprocess"}
+	if p.Phase != "" {
+		parts = append(parts, p.Phase)
+	} else {
+		parts = append(parts, "running")
+	}
+	parts = append(parts, (time.Duration(p.ElapsedSec) * time.Second).String())
+	if p.AliveSignal != "" {
+		parts = append(parts, fmt.Sprintf("last signal %s %ds ago", p.AliveSignal, p.AliveAgeSec))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (r *Runner) finishRoutedTurn(s *Session, preset *db.AgentPresetRow, ws string, task *agentproc.Task) {
+	res := agentproc.Result{OK: false, CWD: ws, Error: task.Error}
+	if task.Result != nil {
+		res = *task.Result
+	}
+	if task.Status == agentproc.StatusKilled {
+		res.OK = false
+		if res.Error == "" {
+			res.Error = "killed"
+		}
+	}
+	r.emitRoutedAssistant(s, formatRoutedResult(preset.ID, res))
+	phase := "complete"
+	if !res.OK {
+		phase = "error"
+	}
+	s.finalizeTurnProgress(phase, "subprocess "+string(task.Status))
 }
 
 func (r *Runner) emitRoutedAssistant(s *Session, content string) {

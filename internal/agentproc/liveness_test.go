@@ -484,8 +484,19 @@ sleep 30
 		t.Fatal("agent_session_id not exposed on poll")
 	}
 	if _, err := os.Stat("/proc/self/stat"); err == nil {
-		if s := p.Signals[SigProcTree]; !s.Available || !strings.Contains(s.Detail, "sleep") {
-			t.Fatalf("proc_tree should see the sleep child: %+v", s)
+		// The child may still be between fork and exec (named fake-grok); samples are
+		// throttled to 1s, so allow a few.
+		deadline := time.Now().Add(4 * time.Second)
+		for {
+			got, _ := m.Get(task.ID)
+			s := got.Progress.Signals[SigProcTree]
+			if s.Available && strings.Contains(s.Detail, "sleep") {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("proc_tree should see the sleep child: %+v", s)
+			}
+			time.Sleep(200 * time.Millisecond)
 		}
 	}
 }
