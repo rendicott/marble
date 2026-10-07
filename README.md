@@ -4,7 +4,20 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.14
+## What's new in v0.4.15
+
+Highlights since **[v0.4.14](https://github.com/rendicott/marble/releases/tag/v0.4.14)** (no schema change):
+
+### Quieter sessions locked to grok / claude
+A session locked to an agent preset used to check on the subprocess every second for the whole run, writing a new `subprocess streaming_text` line each time. After a couple of minutes those lines pushed the useful steps (routing, context) out of the turn view, and every tick re-scanned the working directory and process tree.
+
+- The turn now waits for the subprocess to exit and shows the result the moment it does, with no polling.
+- Status refreshes every 15 s as **one live line updated in place**: `subprocess · streaming_text · 3m15s · last signal session_state 2s ago`.
+- A stuck hint, if one fires, gets its own line.
+
+The session is still busy for the whole run, as before.
+
+### Earlier — v0.4.14
 
 Highlights since **[v0.4.13](https://github.com/rendicott/marble/releases/tag/v0.4.13)** (no schema change):
 
@@ -738,7 +751,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.14](https://github.com/rendicott/marble/releases/tag/v0.4.14)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.15](https://github.com/rendicott/marble/releases/tag/v0.4.15)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.1](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.1)** — peer lock / protocol v2).
 
