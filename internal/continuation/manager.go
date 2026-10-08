@@ -10,19 +10,25 @@ import (
 
 // Job is a scheduled session resume.
 type Job struct {
-	ID        string     `json:"id"`
-	SessionID string     `json:"session_id"`
-	Prompt    string     `json:"prompt"`
-	Label     string     `json:"label,omitempty"`
-	FireAt    time.Time  `json:"fire_at"`
-	WaitTask  string     `json:"wait_for_task,omitempty"`
-	Cancelled bool       `json:"cancelled"`
-	Fired     bool       `json:"fired"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID        string    `json:"id"`
+	SessionID string    `json:"session_id"`
+	Prompt    string    `json:"prompt"`
+	Label     string    `json:"label,omitempty"`
+	FireAt    time.Time `json:"fire_at"`
+	WaitTask  string    `json:"wait_for_task,omitempty"`
+	Cancelled bool      `json:"cancelled"`
+	Fired     bool      `json:"fired"`
+	CreatedAt time.Time `json:"created_at"`
+	// FiredAt / Reason: when the job became due and why (delay | task_done).
+	FiredAt *time.Time `json:"fired_at,omitempty"`
+	Reason  string     `json:"reason,omitempty"`
+	// Outcome after firing or cancelling: started | dropped | cancelled (+ detail).
+	Outcome string `json:"outcome,omitempty"`
 }
 
-// FireFunc is invoked when a job should run (session may be busy — caller handles).
-type FireFunc func(sessionID, prompt string)
+// FireFunc is invoked when a job should run (session may be busy — caller handles
+// and reports the result with SetOutcome).
+type FireFunc func(job Job)
 
 // TaskDoneFunc reports whether a background task has finished.
 type TaskDoneFunc func(taskID string) bool
@@ -36,6 +42,28 @@ type Manager struct {
 	onFire   FireFunc
 	taskDone TaskDoneFunc
 	stop     chan struct{}
+	// Notify (optional) is called with the session id whenever a job is scheduled,
+	// fires, changes outcome or is cancelled (live UI chips). Set before first use.
+	Notify func(sessionID string)
+}
+
+func (m *Manager) notify(sessionID string) {
+	if m != nil && m.Notify != nil && sessionID != "" {
+		m.Notify(sessionID)
+	}
+}
+
+// SetOutcome records what happened when a fired job was delivered.
+func (m *Manager) SetOutcome(jobID, outcome string) {
+	m.mu.Lock()
+	j, ok := m.jobs[jobID]
+	if ok {
+		j.Outcome = outcome
+	}
+	m.mu.Unlock()
+	if ok {
+		m.notify(j.SessionID)
+	}
 }
 
 // New creates a continuation manager.
@@ -96,18 +124,26 @@ func (m *Manager) Schedule(sessionID, prompt string, delaySec int, waitTask, lab
 		m.bySess[sessionID] = make(map[string]struct{})
 	}
 	m.bySess[sessionID][id] = struct{}{}
+	cp := *j
 	m.mu.Unlock()
-	return j, nil
+	m.notify(sessionID)
+	return &cp, nil
 }
 
 // CancelSession cancels all pending jobs for a session (Q20).
 func (m *Manager) CancelSession(sessionID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	changed := false
 	for id := range m.bySess[sessionID] {
-		if j, ok := m.jobs[id]; ok && !j.Fired {
+		if j, ok := m.jobs[id]; ok && !j.Fired && !j.Cancelled {
 			j.Cancelled = true
+			j.Outcome = "cancelled"
+			changed = true
 		}
+	}
+	m.mu.Unlock()
+	if changed {
+		m.notify(sessionID)
 	}
 }
 
@@ -147,33 +183,29 @@ func (m *Manager) tick() {
 			continue
 		}
 		ready := false
+		reason := ""
 		if j.WaitTask != "" && m.taskDone != nil && m.taskDone(j.WaitTask) {
-			ready = true
+			ready, reason = true, "task_done"
 		}
-		if now.After(j.FireAt) || now.Equal(j.FireAt) {
-			ready = true
-		}
-		// If both set: fire on whichever first (task done OR delay)
-		if j.WaitTask != "" && now.Before(j.FireAt) {
-			if m.taskDone != nil && m.taskDone(j.WaitTask) {
-				ready = true
-			} else {
-				// only delay path later
-				if !ready {
-					continue
-				}
-			}
+		// Whichever comes first: the awaited task finishing, or fire_at (the delay, or
+		// the max-delay ceiling for wait-only jobs).
+		if !ready && !now.Before(j.FireAt) {
+			ready, reason = true, "delay"
 		}
 		if ready {
 			j.Fired = true
+			fired := now
+			j.FiredAt = &fired
+			j.Reason = reason
 			cp := *j
 			due = append(due, &cp)
 		}
 	}
 	m.mu.Unlock()
 	for _, j := range due {
+		m.notify(j.SessionID)
 		if m.onFire != nil {
-			m.onFire(j.SessionID, j.Prompt)
+			m.onFire(*j)
 		}
 	}
 }

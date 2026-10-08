@@ -1284,6 +1284,7 @@ func recordToolResultLocked(s *Session, name, callID, toolResult string, capImag
 		ToolCallID:  callID,
 		CreatedAt:   time.Now(),
 		Attachments: uiAttachmentsFromToolResult(toolResult),
+		Refs:        taskRefsFromResult(name, toolResult),
 	}
 	s.appendUI(tm)
 	s.history = append(s.history, model.Message{

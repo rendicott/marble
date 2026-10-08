@@ -55,6 +55,15 @@ type TranscriptMessage struct {
 	// Attachments are the message's durable chips (ADR-0019), stored as a
 	// base64 JSON comment so they survive a reload.
 	Attachments []TranscriptAttachment `json:"attachments,omitempty"`
+	// Refs name the continuation / background task / agent task a tool call created,
+	// so the UI can show a live chip after a reload. Stored as a base64 JSON comment.
+	Refs []TranscriptRef `json:"refs,omitempty"`
+}
+
+// TranscriptRef points a transcript row at a continuation or task by id.
+type TranscriptRef struct {
+	Kind string `json:"kind"` // continuation | bg_task | agent_task
+	ID   string `json:"id"`
 }
 
 // TranscriptAttachment is one persisted attachment chip (mirrors session.UIAttachment).
@@ -147,6 +156,11 @@ func EncodeSession(doc *SessionDoc) string {
 				fmt.Fprintf(&b, "<!-- id: %s -->\n", m.ID)
 			}
 			writeAttachmentsMeta(&b, m.Attachments)
+			if len(m.Refs) > 0 {
+				if raw, err := json.Marshal(m.Refs); err == nil {
+					fmt.Fprintf(&b, "<!-- refs_b64: %s -->\n", stdb64.StdEncoding.EncodeToString(raw))
+				}
+			}
 		default:
 			fmt.Fprintf(&b, "## %s · %s\n", ts, m.Role)
 			if m.ID != "" || m.UserEmail != "" {
@@ -427,6 +441,11 @@ func applyHTMLMeta(cur *TranscriptMessage, trim string) {
 			var atts []TranscriptAttachment
 			if raw := decodePresentationB64(val); raw != "" && json.Unmarshal([]byte(raw), &atts) == nil {
 				cur.Attachments = atts
+			}
+		case "refs_b64":
+			var refs []TranscriptRef
+			if raw := decodePresentationB64(val); raw != "" && json.Unmarshal([]byte(raw), &refs) == nil {
+				cur.Refs = refs
 			}
 		}
 	}

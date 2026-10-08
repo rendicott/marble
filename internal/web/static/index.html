@@ -348,6 +348,8 @@
         </button>
       </div>
       <form id="composer">
+        <!-- Continuations / background tasks this session is waiting on (pending.js) -->
+        <div id="pending-bar" class="pending-bar" hidden aria-live="polite"></div>
         <div id="attach-stage" class="attach-stage" hidden></div>
         <p id="attach-warn" class="attach-warn muted" hidden></p>
         <div class="composer-row">
@@ -391,6 +393,7 @@
   <script src="/prompt.js"></script>
   <script src="/cron.js"></script>
   <script src="/session-info.js"></script>
+  <script src="/pending.js"></script>
   <script src="/clerk.js"></script>
   <script src="/app.js"></script>
 </body>

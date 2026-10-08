@@ -3372,3 +3372,73 @@ button.tip {
 .theme-swatch[data-theme-choice="tan"] .sw-bar i:nth-child(1) { background: #8b5e3c; }
 .theme-swatch[data-theme-choice="tan"] .sw-bar i:nth-child(2) { background: #2f6f4e; }
 .theme-swatch[data-theme-choice="tan"] .sw-bar i:nth-child(3) { background: #f4ead8; }
+
+/* Continuation / background-task chips (pending.js) */
+.pending-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.4rem;
+  padding: 0 0.1rem;
+}
+.pending-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ref-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.15rem 0.6rem 0.4rem;
+}
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  background: var(--chip);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  cursor: pointer;
+  user-select: none;
+}
+.ref-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.ref-chip.tone-pending {
+  border-color: var(--accent);
+}
+.ref-chip.tone-running {
+  border-color: var(--accent-2);
+}
+.ref-chip.tone-ok {
+  background: var(--ok-fill);
+  border-color: var(--ok-edge);
+  color: var(--ok-text);
+}
+.ref-chip.tone-warn {
+  background: var(--warn-fill);
+  border-color: var(--warn-edge);
+  color: var(--warn-text);
+}
+.ref-chip.tone-bad {
+  background: var(--danger-fill);
+  border-color: var(--danger-edge);
+  color: var(--danger-text);
+}
+.ref-chip.tone-muted {
+  color: var(--muted);
+}
+.ref-chip.copied {
+  outline: 2px solid var(--ok);
+}

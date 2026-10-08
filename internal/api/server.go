@@ -317,6 +317,10 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionProgress(w, r, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "pending" {
+		s.handleSessionPending(w, r, id)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "stop" {
 		s.handleSessionStop(w, r, id)
 		return

@@ -66,6 +66,9 @@ type Manager struct {
 	active  map[string]int // sessionID → running count (sync + bg)
 	wsRoot  string
 	memRoot string
+	// Notify (optional) is called with the session id after a background task
+	// starts or finishes, outside the lock (live UI chips). Set before first use.
+	Notify func(sessionID string)
 }
 
 // New loads config from memory root and binds workspace jail.
@@ -302,6 +305,7 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 	live.setPID(t.PID)
 	exited := make(chan struct{})
 	go sampleLiveness(live, m.Config().Liveness.withDefaults().SampleSec, exited)
+	m.notify(sessionID)
 
 	go func() {
 		defer close(exited)
@@ -393,6 +397,17 @@ func (m *Manager) Get(id string) (*Task, bool) {
 		m.refreshProgress(t)
 	}
 	return m.snapshotTask(t), true
+}
+
+// Status is a cheap lookup (no progress refresh) for callers that poll often.
+func (m *Manager) Status(id string) (Status, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return "", false
+	}
+	return t.Status, true
 }
 
 // List session agent tasks.
@@ -632,10 +647,12 @@ func (m *Manager) release(sessionID string) {
 
 func (m *Manager) finishTask(t *Task, st Status, code *int, res *Result, errMsg string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if t.Status != StatusRunning {
+		m.mu.Unlock()
 		return
 	}
+	defer m.notify(t.SessionID)
+	defer m.mu.Unlock()
 	t.Status = st
 	t.ExitCode = code
 	t.Result = res
@@ -645,6 +662,12 @@ func (m *Manager) finishTask(t *Task, st Status, code *int, res *Result, errMsg 
 	t.cancel = nil
 	if t.done != nil {
 		close(t.done)
+	}
+}
+
+func (m *Manager) notify(sessionID string) {
+	if m != nil && m.Notify != nil && sessionID != "" {
+		m.Notify(sessionID)
 	}
 }
 

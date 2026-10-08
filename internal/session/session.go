@@ -69,6 +69,8 @@ type Message struct {
 	Attachments []UIAttachment `json:"attachments,omitempty"`
 	// Presentation is optional structured immersion (ADR-0025); assistant only in protocol 1.
 	Presentation *Presentation `json:"presentation,omitempty"`
+	// Refs: continuation / task ids this tool call created (live UI chips).
+	Refs []TaskRef `json:"refs,omitempty"`
 }
 
 // Actor is optional identity for a human-authored message.
@@ -497,6 +499,7 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 			tm.PresentationJSON = MarshalPresentationCompact(m.Presentation)
 		}
 		tm.Attachments = transcriptAttachments(m.Attachments)
+		tm.Refs = transcriptRefs(m.Refs)
 		msgs[i] = tm
 	}
 	st := s.Status
@@ -593,6 +596,7 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 			UserSub:    m.UserSub,
 		}
 		um.Attachments = uiAttachmentsFromTranscript(m.Attachments)
+		um.Refs = uiRefsFromTranscript(m.Refs)
 		if len(um.Attachments) == 0 && m.Role == "tool" {
 			// Sessions saved before chips were persisted: the result text still
 			// carries attachment_id (e.g. computer_screenshot).

@@ -52,6 +52,9 @@ type Manager struct {
 	policy   *shellpolicy.Policy
 	maxPerS  int
 	maxOut   int
+	// Notify (optional) is called with the session id after a task starts or
+	// finishes, outside the lock (live UI chips). Set before first use.
+	Notify func(sessionID string)
 }
 
 // New creates a manager (max 8 concurrent per session per ADR-0005).
@@ -121,6 +124,7 @@ func (m *Manager) Start(sessionID, command, cwdRel, label string) (*Task, error)
 		return t, err
 	}
 	t.PID = cmd.Process.Pid
+	m.notify(sessionID)
 
 	go func() {
 		err := cmd.Wait()
@@ -152,8 +156,8 @@ func (m *Manager) Start(sessionID, command, cwdRel, label string) (*Task, error)
 
 func (m *Manager) finish(t *Task, st Status, code *int, errMsg string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if t.Status != StatusRunning {
+		m.mu.Unlock()
 		return
 	}
 	t.Status = st
@@ -162,6 +166,15 @@ func (m *Manager) finish(t *Task, st Status, code *int, errMsg string) {
 	now := time.Now()
 	t.EndedAt = &now
 	t.cancel = nil
+	sid := t.SessionID
+	m.mu.Unlock()
+	m.notify(sid)
+}
+
+func (m *Manager) notify(sessionID string) {
+	if m != nil && m.Notify != nil && sessionID != "" {
+		m.Notify(sessionID)
+	}
 }
 
 // Kill sends signal to task process group.

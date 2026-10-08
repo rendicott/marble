@@ -38,6 +38,9 @@ import (
 	"github.com/rendicott/marble/internal/workspacefs"
 )
 
+// continuationBusyRetryFor is how long a due continuation keeps retrying a busy session.
+const continuationBusyRetryFor = 30 * time.Minute
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("marble ")
@@ -511,32 +514,66 @@ func main() {
 		return row.ID, row.MIME, row.Kind, nil
 	}
 
-	cont := continuation.New(func(sessionID, prompt string) {
-		s, err := reg.EnsureLoaded(sessionID)
+	// Live UI chips: tell a session's connected clients that its continuations or
+	// background tasks changed (they refetch /api/sessions/{id}/pending).
+	notifyPending := func(sessionID string) {
+		if s, ok := reg.Get(sessionID); ok {
+			s.NotifyPending()
+		}
+	}
+	bg.Notify = notifyPending
+	if agents != nil {
+		agents.Notify = notifyPending
+	}
+
+	var cont *continuation.Manager
+	cont = continuation.New(func(j continuation.Job) {
+		s, err := reg.EnsureLoaded(j.SessionID)
 		if err != nil {
-			log.Printf("continuation: session %s: %v", sessionID, err)
+			log.Printf("continuation: session %s: %v", j.SessionID, err)
+			cont.SetOutcome(j.ID, "dropped: "+err.Error())
 			return
 		}
 		if s.Status == "closed" {
+			cont.SetOutcome(j.ID, "dropped: session closed")
 			return
 		}
-		if !runner.PostContinuation(s, prompt) {
-			// busy: re-schedule shortly
-			log.Printf("continuation: session %s busy; retry in 5s", sessionID)
-			go func() {
-				time.Sleep(5 * time.Second)
-				if !runner.PostContinuation(s, prompt) {
-					log.Printf("continuation: session %s still busy; dropped", sessionID)
+		if runner.PostContinuation(s, j.Prompt) {
+			cont.SetOutcome(j.ID, "started")
+			return
+		}
+		// Busy (e.g. a long routed subprocess turn): keep retrying instead of
+		// dropping after one attempt, and say so on the chip.
+		cont.SetOutcome(j.ID, "waiting: session busy")
+		go func() {
+			deadline := time.Now().Add(continuationBusyRetryFor)
+			for time.Now().Before(deadline) {
+				time.Sleep(10 * time.Second)
+				if s.Status == "closed" {
+					cont.SetOutcome(j.ID, "dropped: session closed")
+					return
 				}
-			}()
-		}
+				if runner.PostContinuation(s, j.Prompt) {
+					cont.SetOutcome(j.ID, "started")
+					return
+				}
+			}
+			log.Printf("continuation: session %s busy for %s; dropped", j.SessionID, continuationBusyRetryFor)
+			cont.SetOutcome(j.ID, "dropped: session busy for "+continuationBusyRetryFor.String())
+		}()
 	}, func(taskID string) bool {
-		t, ok := bg.Get(taskID)
-		if !ok {
-			return false
+		// wait_for_task accepts shell background tasks and call_agent_process tasks.
+		if t, ok := bg.Get(taskID); ok {
+			return t.Status != bgtask.StatusRunning
 		}
-		return t.Status != bgtask.StatusRunning
+		if agents != nil {
+			if st, ok := agents.Status(taskID); ok {
+				return st != agentproc.StatusRunning
+			}
+		}
+		return false
 	})
+	cont.Notify = notifyPending
 	toolReg.Cont = cont
 	defer cont.Stop()
 

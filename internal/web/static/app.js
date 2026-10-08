@@ -1598,6 +1598,9 @@
     // Attachments always visible when collapsed (Q10)
     const chips = attachChipsRow(m);
     if (chips) div.appendChild(chips);
+    // Live continuation / task chips, also visible when collapsed
+    const refChips = window.MarblePending && window.MarblePending.chipsRow(m.refs);
+    if (refChips) div.appendChild(refChips);
 
     const body = document.createElement("div");
     body.className = "bubble-body plain";
@@ -2231,12 +2234,14 @@
       syncTranscript(id);
       hydrateProgress(id);
       pollPeerConfirms(id);
+      if (window.MarblePending) window.MarblePending.refresh(id);
     });
     es.addEventListener("hello", () => {
       if (id !== activeId) return;
       syncTranscript(id);
       hydrateProgress(id);
       pollPeerConfirms(id);
+      if (window.MarblePending) window.MarblePending.refresh(id);
     });
     es.onerror = () => {
       // Browser will auto-reconnect; while down, keep polling if a turn is live.
@@ -2320,6 +2325,8 @@
         if (window.MarbleSessionInfo) window.MarbleSessionInfo.refreshIfSession(id);
       } else if (data.type === "confirm" && data.confirm) {
         showPeerConfirm(data.confirm);
+      } else if (data.type === "pending") {
+        if (window.MarblePending) window.MarblePending.refresh(id);
       } else if (data.type === "session_meta") {
         if (data.model_id !== undefined && data.model_id !== null || data.agent_preset_id !== undefined) {
           setSessionModelPicker(data.model_id || "", busy, data.agent_preset_id || "");
@@ -2420,6 +2427,7 @@
       liveThinkSeg = null;
     }
     activeId = id;
+    if (window.MarblePending) window.MarblePending.setSession(id);
     setBusyPoll(false);
     pendingConfirms = {};
     liveThinkSeg = null;
@@ -2534,6 +2542,7 @@
         await selectSession(next.id);
       } else {
         activeId = null;
+        if (window.MarblePending) window.MarblePending.setSession(null);
         messages = [];
         renderTranscript({ forceScroll: true });
         setComposerEnabled(false);
@@ -2623,6 +2632,7 @@
             await selectSession(next.id);
           } else {
             activeId = null;
+            if (window.MarblePending) window.MarblePending.setSession(null);
             messages = [];
             renderTranscript({ forceScroll: true });
             setComposerEnabled(false);
