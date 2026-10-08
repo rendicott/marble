@@ -4,7 +4,21 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.15
+## What's new in v0.4.16
+
+Highlights since **[v0.4.15](https://github.com/rendicott/marble/releases/tag/v0.4.15)** (no schema change). Pairs with **[marble-desktop-peer v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)**.
+
+### Zoom in on small targets
+Desktop screenshots are downscaled to 1280 px, so a small pane (a phone mirror, a VM console, a dense table) left tap targets a few pixels wide and clicks missed. With peer v0.2.2:
+
+- **`computer_screenshot(region: {x, y, w, h})`** returns that area at full detail. The coordinates are pixels of the image the agent is already looking at; `space: "screen"` takes display coordinates instead. A 400×500 region on a Retina Mac comes back at 800×1000. `scale` and `max_edge` (0 = uncapped) are also accepted.
+- **Clicks follow the zoom.** After a region shot, click coordinates are pixels of the crop and the peer maps them back. Post-click screenshots stay zoomed, so each one confirms the hit at full detail; a screenshot without `region` zooms back out.
+- **`computer_desktop_act(click, zoom: true)`** returns a native-detail crop centred on the click, to check it hit the intended control.
+- **Precision is spelled out.** Screenshot results include a `precision` line, e.g. "image is 1.50× downscaled … for small targets re-shoot with region=…", and `meta` gains `region`, `zoom` and `downscaled`.
+
+Older peers keep working; a region request to one returns an "upgrade marble-desktop-peer" error instead of a silently full screenshot.
+
+### Earlier — v0.4.15
 
 Highlights since **[v0.4.14](https://github.com/rendicott/marble/releases/tag/v0.4.14)** (no schema change):
 
@@ -751,9 +765,9 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.15](https://github.com/rendicott/marble/releases/tag/v0.4.15)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.16](https://github.com/rendicott/marble/releases/tag/v0.4.16)**.
 
-Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.1](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.1)** — peer lock / protocol v2).
+Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 
 | Asset | Platform |
 |-------|----------|
