@@ -4,7 +4,24 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.16
+## What's new in v0.4.17
+
+Highlights since **[v0.4.16](https://github.com/rendicott/marble/releases/tag/v0.4.16)** (no schema change):
+
+### See what a session is waiting on
+When the agent schedules a continuation or starts a background task, the transcript now shows a live chip on that tool row, and a **Waiting on** bar above the message box lists everything still pending:
+
+- **Continuations:** `⏱ next step · in 4m 12s` (or `when <task> finishes`), then `✓ fired 16:20`, `⏳ due, session busy, retrying`, `⚠ dropped: …` or `✕ cancelled`.
+- **Background shell tasks:** `⚙ build <id> · running 2m 03s`, then the exit code and duration.
+- **Background agents (grok / claude):** `🤖 grok <id> · streaming_text 3m 15s`, flagged if a stuck hint fires.
+
+Click a chip to copy its id; hover for the full prompt or command. Chips survive a page reload. After a harness restart they say the item is no longer tracked, since continuations and tasks live in memory.
+
+### Also fixed
+- A continuation that came due while its session was busy got one retry and was then silently dropped. It now keeps retrying for up to 30 minutes, and its chip shows what happened.
+- `schedule_continuation` with `wait_for_task` set to a `call_agent_process` task id now fires when the agent finishes. Before, only shell background tasks were recognised and it waited for the 24-hour ceiling.
+
+### Earlier — v0.4.16
 
 Highlights since **[v0.4.15](https://github.com/rendicott/marble/releases/tag/v0.4.15)** (no schema change). Pairs with **[marble-desktop-peer v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)**.
 
@@ -765,7 +782,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.16](https://github.com/rendicott/marble/releases/tag/v0.4.16)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.17](https://github.com/rendicott/marble/releases/tag/v0.4.17)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 
