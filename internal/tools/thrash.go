@@ -160,7 +160,13 @@ func normalizeArgsForFingerprint(name, argsJSON string) string {
 	case "computer_browser_open":
 		u, _ := m["url"].(string)
 		return "open|" + strings.TrimSpace(u)
-	case "computer_screenshot", "computer_browser_snapshot", "computer_browser_tabs":
+	case "computer_screenshot":
+		// Different regions are different views, not repeats.
+		if reg, ok := m["region"]; ok {
+			return fmt.Sprintf("region|%v|%v", reg, m["space"])
+		}
+		return name
+	case "computer_browser_snapshot", "computer_browser_tabs":
 		return name
 	}
 	b, err := json.Marshal(m)

@@ -83,8 +83,8 @@ Upgrades to WebSocket. First message may be `hello`; harness replies `hello_ack`
 
 | kind | payload | result |
 |------|---------|--------|
-| `screenshot` | `{}` | screenshot_b64 (JPEG max edge 1280), meta `{w,h,scale,screen_w,screen_h,locked?}` — `w/h` are **image** pixels (click space); `scale = screen_w/w` |
-| `desktop_click` | `{x,y,button?}` — **image-space** coords | ok + screenshot_b64 + meta (atomic post-click shot in same queue slot); `last_click` in meta |
+| `screenshot` | `{}` or, with `caps.region`, `{region?:{x,y,w,h}, space?:"image"\|"screen", scale?, max_edge?}` | screenshot_b64 (JPEG, max edge 1280 by default), meta `{w,h,scale,screen_w,screen_h,region,zoom,downscaled,locked?}` — `w/h` are **image** pixels (click space); `scale` = display px per image px; `region` = captured display area (full screen when not cropped); `zoom` = image px per display px; `downscaled` = fewer image px than display px. See [Region capture](#region-capture). |
+| `desktop_click` | `{x,y,button?,zoom?}` — **image-space** coords of the last screenshot | ok + screenshot_b64 + meta (atomic post-click shot in same queue slot, same view as the last screenshot); `last_click` in meta. `zoom:true` (caps.region) makes the post-click shot a 400×400 display-px native crop centred on the click. |
 | `desktop_type` | `{text}` | ok |
 | `desktop_key` | `{key, mods?}` | ok |
 | `browser_ensure` | `{force?}` | text JSON ensure result; attaches or launches user Chrome with CDP |
@@ -109,3 +109,20 @@ A peer can be paired with several harnesses (`marble-peer pair` once per harness
 Busy: concurrent actions while queue depth 1 → error `peer busy (action queue depth 1)` (harness retries briefly).
 
 Deadlines: default 120s, max 300s (peer clamp).
+
+## Region capture
+
+Peers advertising `caps.region` accept options on `screenshot`. Added from field report `marble-peer-region-capture` (2026-10-08): driving a phone mirror ~140 px wide inside a 1.5×-downscaled full shot put 44 pt tap targets at ~5 image px, and about one tap in six landed.
+
+| Field | Meaning |
+|---|---|
+| `region` | `{x,y,w,h}` to capture; omitted = full screen. Clamped to the display; entirely off-screen is an error. |
+| `space` | `image` (default): pixels of the **last screenshot**, the same space clicks use, so a caller outlines what it sees. `screen`: display (click-space) coordinates. |
+| `scale` | Image px per display px. Default: everything captured, e.g. 2 per display px on Retina. Never upscales beyond the capture. |
+| `max_edge` | Longest-edge cap. Omitted = 1280; `0` = uncapped (bounded at 4096). Applies to regions too. |
+
+- The peer crops the captured frame in software, so behaviour is identical on Linux, macOS and Windows.
+- **Clicks follow the view.** After a region shot, click coordinates are pixels of that crop; the peer maps them back through `meta.region`. No extra arithmetic for the caller.
+- **The view is sticky.** Post-click and post-type shots repeat the last explicit capture request (a zoomed view stays zoomed), so the post-action image verifies the hit at the same detail. A `screenshot` with no options returns to the full screen.
+- The last-click crosshair is stored in display coordinates and drawn wherever it falls in the current image.
+- With no options, `screenshot` behaves exactly as before, so older harnesses are unaffected. A harness must not send options to a peer without `caps.region`; the Marble harness refuses with an upgrade message instead.

@@ -303,11 +303,22 @@ func allSpecs() []model.ToolSpec {
 					"computer_id": map[string]interface{}{"type": "string"},
 				},
 			}),
-		spec("computer_screenshot", "Capture peer primary display (JPEG, max edge 1280) as an image attachment. meta.w/h are IMAGE pixels (click space); meta.screen_w/h are full display; meta.scale = screen/image; meta.window_title/meta.focused_app are best-effort (may be absent). After a desktop click or type, a post-action shot is already attached — do NOT immediately re-call this. USE when CDP fails, click_text/click_button miss, or for non-browser apps. Look at pixels; if ui_unchanged after clicks/type → computer_confirm. To READ peer state (files, logs, config, installed software) prefer computer_exec over screenshotting a terminal — a >40-line-tall window truncates output you cannot scroll.",
+		spec("computer_screenshot", "Capture peer primary display (JPEG, max edge 1280) as an image attachment, or a REGION of it at native detail. meta.w/h are IMAGE pixels (click space); meta.screen_w/h are full display; meta.scale = display px per image px; meta.region = captured display area; meta.downscaled = fewer image px than display px (small targets unreliable). SMALL TARGETS (phone/VM mirror, dense table, tiny controls): pass region={x,y,w,h} in the pixels of the image you are looking at to get that area at full detail; clicks then use the new image's pixels (mapped back by the peer) and post-click shots stay zoomed until you take a screenshot without region. meta.window_title/meta.focused_app are best-effort (may be absent). After a desktop click or type, a post-action shot is already attached — do NOT immediately re-call this. USE when CDP fails, click_text/click_button miss, or for non-browser apps. Look at pixels; if ui_unchanged after clicks/type → computer_confirm. To READ peer state (files, logs, config, installed software) prefer computer_exec over screenshotting a terminal — a >40-line-tall window truncates output you cannot scroll.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"computer_id": map[string]interface{}{"type": "string"},
+					"region": map[string]interface{}{
+						"type":        "object",
+						"description": "Optional crop {x,y,w,h}. Default space=image: pixels of the latest screenshot (same space as clicks). Omit for full screen.",
+						"properties": map[string]interface{}{
+							"x": map[string]interface{}{"type": "integer"}, "y": map[string]interface{}{"type": "integer"},
+							"w": map[string]interface{}{"type": "integer"}, "h": map[string]interface{}{"type": "integer"},
+						},
+					},
+					"space":    map[string]interface{}{"type": "string", "description": "image (default) | screen: coordinates of region"},
+					"scale":    map[string]interface{}{"type": "number", "description": "Optional image px per display px (1.0 = display resolution). Default: all captured detail (2× on Retina), within max_edge."},
+					"max_edge": map[string]interface{}{"type": "integer", "description": "Optional longest-edge cap (default 1280; 0 = uncapped up to 4096)."},
 				},
 			}),
 		spec("computer_desktop_act", "OS-level click/type/key on Marble Peer. Click coords are IMAGE pixels from the latest screenshot (meta.w×meta.h), not necessarily full screen size. Workflow: screenshot → LOOK → click button=1. click AND type both return a post-action screenshot in the same result (attachment_id top-level); if ui_unchanged=true STOP repeating — the click missed or the text did not land in a focused field; use click_button, computer_screenshot to find focus, or computer_confirm. Near-duplicate clicks and repeated identical typed text both escalate. Prefer click_button for labeled web buttons. To run a command and read its actual output (not a screenshot of a terminal), use computer_exec instead of type into a shell window.",
@@ -321,6 +332,7 @@ func allSpecs() []model.ToolSpec {
 					"text":        map[string]interface{}{"type": "string"},
 					"key":         map[string]interface{}{"type": "string"},
 					"button":      map[string]interface{}{"type": "string", "description": "1=left (default), 2=middle, 3=right. Never empty."},
+					"zoom":        map[string]interface{}{"type": "boolean", "description": "click only: post-click shot is a native-detail crop centred on the click (verify you hit the intended control). Later clicks use that crop's pixels."},
 				},
 				"required": []string{"action"},
 			}),

@@ -104,6 +104,59 @@ func (r *Registry) computerBind(argsJSON string, tc *TurnContext) (string, error
 	return string(b), nil
 }
 
+// peerCaps returns the bound peer's advertised capabilities (zero value if offline).
+func (r *Registry) peerCaps(tc *TurnContext, computerID string) (peerhub.Caps, bool) {
+	if r.PeerHub == nil {
+		return peerhub.Caps{}, false
+	}
+	cid, err := r.resolveComputerID(tc, computerID)
+	if err != nil {
+		return peerhub.Caps{}, false
+	}
+	conn := r.PeerHub.Get(cid)
+	if conn == nil {
+		return peerhub.Caps{}, false
+	}
+	return conn.Caps, true
+}
+
+// screenshotPrecision spells out the image↔display mapping so the agent can budget its
+// pointing precision instead of deriving it from meta (field report
+// marble-peer-region-capture: 1.5× downscale + a small mirror pane put tap targets at ~5 px).
+func screenshotPrecision(meta map[string]interface{}, regionCap bool) string {
+	if meta == nil {
+		return ""
+	}
+	num := func(v interface{}) float64 {
+		f, _ := v.(float64)
+		return f
+	}
+	scale := num(meta["scale"])
+	down, known := meta["downscaled"].(bool)
+	if !known {
+		down = scale > 1.01 // peers before caps.region
+	}
+	var parts []string
+	if reg, ok := meta["region"].(map[string]interface{}); ok {
+		full := num(reg["x"]) == 0 && num(reg["y"]) == 0 &&
+			num(reg["w"]) == num(meta["screen_w"]) && num(reg["h"]) == num(meta["screen_h"])
+		if !full {
+			parts = append(parts, fmt.Sprintf("zoomed view: display region x=%.0f y=%.0f w=%.0f h=%.0f of %.0f×%.0f at %.2f image px per display px. Clicks use THIS image's pixels; post-click shots stay zoomed until a screenshot without region.",
+				num(reg["x"]), num(reg["y"]), num(reg["w"]), num(reg["h"]), num(meta["screen_w"]), num(meta["screen_h"]), num(meta["zoom"])))
+		}
+	}
+	if down && scale > 0 {
+		p := fmt.Sprintf("image is %.2f× downscaled (1 image px = %.2f display px); targets under ~10 image px are unreliable.", scale, scale)
+		if regionCap {
+			p += " For small targets re-shoot with region={x,y,w,h} in this image's pixels for native detail."
+		} else {
+			p += " This peer predates region capture; upgrade marble-desktop-peer for native-detail crops."
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, " ")
+}
+
 func (r *Registry) peerCall(tc *TurnContext, computerID, kind string, payload interface{}, deadline time.Duration) (peerhub.Envelope, error) {
 	return r.peerCallID(tc, computerID, "", kind, payload, deadline)
 }
@@ -227,12 +280,34 @@ func (r *Registry) stagePeerScreenshot(tc *TurnContext, raw []byte, name string)
 
 func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string, error) {
 	var args struct {
-		ComputerID string `json:"computer_id"`
+		ComputerID string                 `json:"computer_id"`
+		Region     map[string]interface{} `json:"region"`
+		Space      string                 `json:"space"`
+		Scale      float64                `json:"scale"`
+		MaxEdge    *int                   `json:"max_edge"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &args)
+	payload := map[string]interface{}{}
+	if len(args.Region) > 0 {
+		payload["region"] = args.Region
+		if sp := strings.TrimSpace(args.Space); sp != "" {
+			payload["space"] = sp
+		}
+	}
+	if args.Scale > 0 {
+		payload["scale"] = args.Scale
+	}
+	if args.MaxEdge != nil {
+		payload["max_edge"] = *args.MaxEdge
+	}
+	caps, _ := r.peerCaps(tc, args.ComputerID)
+	if len(payload) > 0 && !caps.Region {
+		return "", fmt.Errorf("this computer's marble-desktop-peer predates region capture (caps.region); upgrade the peer, or take a full screenshot without region/scale/max_edge")
+	}
 
-	// Suppress redundant shots right after an atomic post-click screenshot.
-	if tc != nil && !tc.PostClickShotAt.IsZero() && time.Since(tc.PostClickShotAt) < postClickScreenshotGrace && tc.LastScreenshotAttID != "" {
+	// Suppress redundant shots right after an atomic post-click screenshot
+	// (a deliberate region/scale request is never redundant).
+	if len(payload) == 0 && tc != nil && !tc.PostClickShotAt.IsZero() && time.Since(tc.PostClickShotAt) < postClickScreenshotGrace && tc.LastScreenshotAttID != "" {
 		out := map[string]interface{}{
 			"ok":            true,
 			"skipped":       true,
@@ -243,7 +318,7 @@ func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string,
 		return string(b), nil
 	}
 
-	res, err := r.peerCall(tc, args.ComputerID, "screenshot", map[string]interface{}{}, 120*time.Second)
+	res, err := r.peerCall(tc, args.ComputerID, "screenshot", payload, 120*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -251,6 +326,9 @@ func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string,
 		"ok":   true,
 		"meta": res.Meta,
 		"hint": "Screenshot image is attached for vision. Coords are in IMAGE pixel space (meta.w×meta.h); meta.scale maps to screen. LOOK at the image. If lock/login screen: DESKTOP LOCKED — stop. Prefer click_button/click_text for labeled buttons; desktop click only from visible pixels. OTP/SMS → computer_confirm.",
+	}
+	if p := screenshotPrecision(res.Meta, caps.Region); p != "" {
+		out["precision"] = p
 	}
 	if res.Text != "" {
 		out["lock_warning"] = res.Text
@@ -342,11 +420,13 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 		Text       string `json:"text"`
 		Key        string `json:"key"`
 		Button     string `json:"button"`
+		Zoom       bool   `json:"zoom"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", err
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
+	zoomNote := ""
 	var kind string
 	var payload map[string]interface{}
 	switch action {
@@ -360,6 +440,13 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 		}
 		kind = "desktop_click"
 		payload = map[string]interface{}{"x": args.X, "y": args.Y, "button": btn}
+		if args.Zoom {
+			if caps, _ := r.peerCaps(tc, args.ComputerID); caps.Region {
+				payload["zoom"] = true
+			} else {
+				zoomNote = "zoom ignored: this marble-desktop-peer predates region capture (caps.region); upgrade the peer"
+			}
+		}
 	case "type":
 		kind = "desktop_type"
 		payload = map[string]interface{}{"text": args.Text}
@@ -396,6 +483,14 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 		r.notePeerAction(tc, fmt.Sprintf("desktop_click (%d,%d)", args.X, args.Y))
 		r.attachPostActionScreenshot(tc, args.ComputerID, res, preHash, out,
 			"pixels identical after click — STOP repeating these coords. NEXT: computer_browser_act action=click_button text=\"…\", open a direct URL, or computer_confirm for a human click.")
+		if zoomNote != "" {
+			out["zoom_note"] = zoomNote
+		}
+		if caps, _ := r.peerCaps(tc, args.ComputerID); res.Meta != nil {
+			if p := screenshotPrecision(res.Meta, caps.Region); p != "" {
+				out["precision"] = p
+			}
+		}
 	case "type":
 		r.notePeerAction(tc, "desktop_type")
 		r.attachPostActionScreenshot(tc, args.ComputerID, res, preHash, out,

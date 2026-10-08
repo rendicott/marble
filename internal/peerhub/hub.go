@@ -26,6 +26,8 @@ type Caps struct {
 	Exec    bool `json:"exec,omitempty"`
 	// Lock: peer enforces the v2 lock; harness must acquire before actions.
 	Lock bool `json:"lock,omitempty"`
+	// Region: screenshot accepts region/space/scale/max_edge and desktop_click zoom.
+	Region bool `json:"region,omitempty"`
 }
 
 // Envelope is a wire message (both directions).
