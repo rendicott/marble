@@ -4,7 +4,27 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.17
+## What's new in v0.4.18
+
+Highlights since **[v0.4.17](https://github.com/rendicott/marble/releases/tag/v0.4.17)** (schema **v12**, additive). Pairs with **[marble-desktop-peer v0.2.3](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.3)**.
+
+### Machines can enroll themselves ([ADR-0036](adr/0036-peer-enrollment-grants.md))
+Pairing a peer used to need an operator at both ends: carry an H-code over, type the P-code back, click Confirm. That blocks disposable VMs and fleet provisioning. Now **Settings → Computers → Create grant** mints a single-use secret for a machine you are about to bring up. Deliver it however fits (cloud-init / user-data, SSH, a file drop) and the machine enrolls with one request:
+
+```bash
+MARBLE_HARNESS=http://harness:8080 MARBLE_GRANT=mgrant_… marble-peer enroll   # peer v0.2.3+
+```
+
+- Grants are single use and expire after 24h by default (up to 7 days). Only a hash of the secret is stored.
+- The machine's own hostname becomes its computer id; the name you gave the grant is only a hint.
+- Optional source-address allowlist per grant; failed claims are rate-limited per address.
+- `/api/computers/enroll` is off (404) unless a grant is pending.
+- Pending grants show on the Computers page as *expected, waiting for it to call home*, so a provisioning that never arrives is visible. Claimed grants show who claimed them, from where and with which peer version.
+- A peer that lost its credentials can re-enroll with a fresh grant and keeps its computer id.
+
+The H-code / P-code flow is unchanged for interactive pairing. API and a provisioning recipe: [docs/peer-protocol.md](docs/peer-protocol.md#enrollment-grants-adr-0036).
+
+### Earlier — v0.4.17
 
 Highlights since **[v0.4.16](https://github.com/rendicott/marble/releases/tag/v0.4.16)** (no schema change):
 
@@ -783,7 +803,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.17](https://github.com/rendicott/marble/releases/tag/v0.4.17)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.18](https://github.com/rendicott/marble/releases/tag/v0.4.18)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 
