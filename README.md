@@ -779,6 +779,7 @@ Notable ADRs:
 | 0033 | Image-generation models (`kind=image`) + `generate_image` |
 | 0034 | `computer_exec`, peer state legibility, type-class thrash guard |
 | 0035 | Subprocess liveness signals (multi-signal stuck detection) |
+| 0036 | Peer auto-enrollment via single-use grants |
 
 ## Releases
 

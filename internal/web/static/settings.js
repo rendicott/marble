@@ -1037,10 +1037,54 @@
     if (body) body.focus();
   }
 
+  function grantAge(iso) {
+    const ms = Date.parse(iso) - Date.now();
+    if (isNaN(ms)) return "";
+    const abs = Math.abs(ms);
+    const h = Math.floor(abs / 3600e3);
+    const m = Math.floor((abs % 3600e3) / 60e3);
+    const span = h ? `${h}h ${m}m` : `${m}m`;
+    return ms >= 0 ? `in ${span}` : `${span} ago`;
+  }
+
+  function grantRowHtml(g, editable) {
+    const st = g.state || "";
+    let detail = "";
+    if (st === "pending") detail = `expected — waiting for it to call home · expires ${grantAge(g.expires_at)}`;
+    else if (st === "claimed")
+      detail = `claimed ${grantAge(g.claimed_at)} by ${g.claimed_device_name || "?"} from ${g.claimed_ip || "?"} → ${g.computer_id || ""}`;
+    else if (st === "expired") detail = `never claimed · expired ${grantAge(g.expires_at)}`;
+    else if (st === "revoked") detail = "revoked";
+    return `<div class="settings-group model-row">
+      <div class="model-row-head">
+        <div class="model-row-title">
+          <span class="model-row-name">${escapeHtml(g.device_name || "(any name)")}</span>
+          <span class="settings-chip">grant · ${escapeHtml(st)}</span>
+        </div>
+        <div class="model-row-actions">
+          ${editable && st === "pending" ? `<button type="button" class="icon-btn pc-grant-revoke" data-id="${escapeAttr(g.grant_id)}">Revoke</button>` : ""}
+        </div>
+      </div>
+      <div class="model-row-meta mono muted">
+        <span>${escapeHtml(g.grant_id)}</span>
+        ${g.os ? `<span>${escapeHtml(g.os)}</span>` : ""}
+        ${g.note ? `<span>${escapeHtml(g.note)}</span>` : ""}
+        ${(g.allow_cidrs || []).length ? `<span>from ${escapeHtml(g.allow_cidrs.join(", "))}</span>` : ""}
+      </div>
+      <div class="hint">${escapeHtml(detail)}</div>
+    </div>`;
+  }
+
   async function renderComputersSection(editable) {
     try {
       const res = await api("/api/computers");
       const computers = res.computers || [];
+      let grants = [];
+      try {
+        grants = (await api("/api/computers/grants")).grants || [];
+      } catch {
+        /* older harness or db unavailable */
+      }
       const rows = computers
         .map((c) => {
           const id = c.id || "";
@@ -1064,13 +1108,111 @@
         .join("");
       els.pane.innerHTML = `
         <h3>Computers</h3>
-        <p class="hint">Desktop peers (marble-peer). Pair with mutual H-code / P-code. See docs/peer-protocol.md.</p>
+        <p class="hint">Desktop peers (marble-peer). Pair interactively with mutual H-code / P-code, or create a
+        single-use <strong>grant</strong> for a machine you are about to provision — it enrolls itself with no
+        operator step. See docs/peer-protocol.md.</p>
         ${rows || "<p class='hint'>No computers paired yet.</p>"}
         <div class="model-list-actions">
           ${editable ? `<button type="button" class="icon-btn" id="pc-pair">Pair computer</button>` : ""}
+          ${editable ? `<button type="button" class="icon-btn" id="pc-grant">Create grant</button>` : ""}
         </div>
         <div id="pc-pair-panel" class="settings-group" hidden></div>
+        <div id="pc-grant-panel" class="settings-group" hidden></div>
+        ${grants.length ? `<h4>Enrollment grants</h4>${grants.map((g) => grantRowHtml(g, editable)).join("")}` : ""}
       `;
+      const grantBtn = els.pane.querySelector("#pc-grant");
+      const grantPanel = els.pane.querySelector("#pc-grant-panel");
+      if (grantBtn && grantPanel) {
+        grantBtn.onclick = () => {
+          grantPanel.hidden = false;
+          grantPanel.innerHTML = `
+            <h4>Create enrollment grant</h4>
+            <p class="hint">Single use. Deliver the secret out-of-band (cloud-init / user-data, SSH, SSM, a file drop);
+            the machine runs <code class="mono">marble-peer enroll</code> and appears here. Its own hostname wins
+            over the name hint.</p>
+            <div class="settings-field">
+              <label>Device name (hint)</label>
+              <input type="text" id="pcg-name" placeholder="orb-win-test" />
+            </div>
+            <div class="settings-field">
+              <label>OS (hint)</label>
+              <select id="pcg-os">
+                <option value="">any</option>
+                <option value="windows">windows</option>
+                <option value="linux">linux</option>
+                <option value="darwin">darwin</option>
+              </select>
+            </div>
+            <div class="settings-field">
+              <label>Valid for (hours)</label>
+              <input type="number" id="pcg-ttl" min="1" max="168" value="24" />
+            </div>
+            <div class="settings-field">
+              <label>Allowed source addresses (optional, comma-separated IPs / CIDRs)</label>
+              <input type="text" id="pcg-cidrs" class="mono" placeholder="100.64.0.0/10" />
+            </div>
+            <div class="settings-field">
+              <label>Note (optional, e.g. delivery channel)</label>
+              <input type="text" id="pcg-note" placeholder="terraform user-data" />
+            </div>
+            <button type="button" class="icon-btn" id="pcg-create">Create</button>
+            <p class="hint model-editor-err" id="pcg-err" hidden></p>
+            <div id="pcg-out"></div>
+          `;
+          grantPanel.querySelector("#pcg-create").onclick = async () => {
+            const errEl = grantPanel.querySelector("#pcg-err");
+            errEl.hidden = true;
+            try {
+              const hours = Number(grantPanel.querySelector("#pcg-ttl").value) || 24;
+              const g = await api("/api/computers/grants", {
+                method: "POST",
+                body: JSON.stringify({
+                  device_name: grantPanel.querySelector("#pcg-name").value.trim(),
+                  os: grantPanel.querySelector("#pcg-os").value,
+                  ttl_sec: Math.round(hours * 3600),
+                  note: grantPanel.querySelector("#pcg-note").value.trim(),
+                  allow_cidrs: grantPanel
+                    .querySelector("#pcg-cidrs")
+                    .value.split(",")
+                    .map((x) => x.trim())
+                    .filter(Boolean),
+                }),
+              });
+              const h = g.harness_url_hint || "";
+              const env = `MARBLE_HARNESS=${h} MARBLE_GRANT=${g.grant_secret} marble-peer enroll`;
+              grantPanel.querySelector("#pcg-out").innerHTML = `
+                <p><strong>Shown once.</strong> Grant <span class="mono">${escapeHtml(g.grant_id)}</span>
+                expires ${escapeHtml(grantAge(g.expires_at))}.</p>
+                <div class="settings-field"><label>Secret</label>
+                  <input type="text" readonly class="mono" value="${escapeAttr(g.grant_secret)}" /></div>
+                <div class="settings-field"><label>Enroll (CLI)</label>
+                  <input type="text" readonly class="mono" value="${escapeAttr(g.enroll_command)}" /></div>
+                <div class="settings-field"><label>Enroll (environment, for cloud-init)</label>
+                  <input type="text" readonly class="mono" value="${escapeAttr(env)}" /></div>
+                <p class="hint">Or drop the secret in <code class="mono">~/.marble-peer/grant</code> (with
+                <code class="mono">MARBLE_HARNESS</code> set, or the file as
+                <code class="mono">{"harness":"${escapeHtml(h)}","grant":"…"}</code>) and
+                <code class="mono">marble-peer run</code> enrolls on start.</p>
+                <button type="button" class="icon-btn" id="pcg-done">Done</button>`;
+              grantPanel.querySelectorAll("input[readonly]").forEach((el) => {
+                el.onfocus = () => el.select();
+              });
+              grantPanel.querySelector("#pcg-done").onclick = () => renderComputersSection(editable);
+            } catch (e) {
+              errEl.hidden = false;
+              errEl.textContent = e.message || String(e);
+            }
+          };
+        };
+      }
+      els.pane.querySelectorAll(".pc-grant-revoke").forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute("data-id");
+          if (!confirm("Revoke grant " + id + "? A machine holding it can no longer enroll.")) return;
+          await api("/api/computers/grants/" + encodeURIComponent(id), { method: "DELETE" });
+          renderComputersSection(editable);
+        };
+      });
       const pairBtn = els.pane.querySelector("#pc-pair");
       const panel = els.pane.querySelector("#pc-pair-panel");
       if (pairBtn && panel) {

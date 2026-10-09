@@ -59,8 +59,10 @@ func isPublicPath(path string) bool {
 	if path == "/api/health" {
 		return true
 	}
-	// Desktop peer pairing + WebSocket (ADR-0020) — auth via H-code / device token.
-	if path == "/api/computers/pair/join" || path == "/api/computers/pair/status" || path == "/api/computers/ws" {
+	// Desktop peer pairing + WebSocket (ADR-0020) — auth via H-code / device token;
+	// grant enrollment (ADR-0036) — auth via the single-use grant secret.
+	if path == "/api/computers/pair/join" || path == "/api/computers/pair/status" || path == "/api/computers/ws" ||
+		path == "/api/computers/enroll" {
 		return true
 	}
 	if strings.HasPrefix(path, "/auth/") {

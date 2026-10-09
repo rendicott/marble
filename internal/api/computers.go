@@ -31,6 +31,14 @@ func (s *Server) handleComputers(w http.ResponseWriter, r *http.Request) {
 		s.pairConfirm(w, r)
 	case path == "pair/status" && r.Method == http.MethodGet:
 		s.pairStatus(w, r)
+	case path == "grants" && r.Method == http.MethodGet:
+		s.listGrants(w, r)
+	case path == "grants" && r.Method == http.MethodPost:
+		s.createGrant(w, r)
+	case strings.HasPrefix(path, "grants/") && r.Method == http.MethodDelete:
+		s.revokeGrant(w, r, strings.Trim(strings.TrimPrefix(path, "grants/"), "/"))
+	case path == "enroll" && r.Method == http.MethodPost:
+		s.enroll(w, r)
 	case path == "ws" && r.Method == http.MethodGet:
 		s.peerWS(w, r)
 	case path == "confirms" && r.Method == http.MethodGet:
@@ -111,8 +119,8 @@ func (s *Server) pairStart(w http.ResponseWriter, r *http.Request) {
 	d := s.Registry.DB()
 	d.CleanupExpiredPairings()
 	n, _ := d.CountComputers()
-	if n >= 8 {
-		http.Error(w, "max 8 computers", http.StatusBadRequest)
+	if n >= db.MaxComputers {
+		http.Error(w, db.ErrComputerLimit.Error(), http.StatusBadRequest)
 		return
 	}
 	hCode, err := db.RandomCode(6)

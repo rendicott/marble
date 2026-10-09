@@ -47,6 +47,7 @@ type Server struct {
 	Clerk    *clerk.Manager
 	// sealedTokens maps pairing_id → device_token once (pair confirm → peer poll).
 	sealedTokens map[string]string
+	enrollLimit  enrollLimiter // failed grant claims per address (ADR-0036)
 	Mux          *http.ServeMux
 }
 

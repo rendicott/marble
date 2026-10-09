@@ -2,7 +2,7 @@
 
 `peer_protocol_version`: **2** (v2 adds the peer lock; v1 peers/harnesses still interoperate — see [Peer lock](#peer-lock-v2))
 
-Transport: WebSocket (peer dials harness) + HTTP for mutual pairing.
+Transport: WebSocket (peer dials harness) + HTTP for mutual pairing or grant enrollment.
 
 ## Pairing (HTTP)
 
@@ -53,6 +53,111 @@ Peer then polls `GET /api/computers/pair/status?pairing_id=&device_id=` until `s
 ```
 
 Creates `computers` row; status becomes sealed for peer poll.
+
+## Enrollment grants (ADR-0036)
+
+Unattended alternative to the H-code / P-code handshake, for machines you provision
+(cloud-init, EC2 user-data, SSH, config management). The operator pre-authorizes one
+machine; the machine redeems the grant with a single request. The mutual handshake stays
+for interactive pairing.
+
+### Create (operator / Settings → Computers → Create grant)
+
+`POST /api/computers/grants`  
+Auth: same as Settings.
+```json
+{
+  "device_name": "orb-win-test",   // hint: seeds the default computer_id; the machine's own name wins
+  "os": "windows",                 // hint
+  "ttl_sec": 86400,                // default 24h, 60s … 7d
+  "note": "terraform user-data",   // optional, e.g. delivery channel (audit)
+  "allow_cidrs": ["100.64.0.0/10"] // optional source-address allowlist
+}
+```
+→ `201`
+```json
+{
+  "grant_id": "g_7f3a91c2",
+  "grant_secret": "mgrant_…",      // shown once; only its hash is stored
+  "state": "pending",
+  "expires_at": "2026-10-10T09:25:00Z",
+  "harness_url_hint": "http://host:8080",
+  "enroll_command": "marble-peer enroll --harness http://host:8080 --grant mgrant_…"
+}
+```
+
+`GET /api/computers/grants` lists grants without secrets: `state` is `pending`, `claimed`,
+`expired` (pending past its TTL) or `revoked`; claimed grants carry `claimed_at`,
+`claimed_ip`, `claimed_device_name`, `peer_version`, `computer_id`. Claimed, expired and
+revoked grants stay listed for 7 days, so a provisioning that never called home is visible.
+`DELETE /api/computers/grants/{id}` revokes a pending grant; peers that already claimed it
+keep their own device tokens.
+
+### Enroll (peer — public)
+
+`POST /api/computers/enroll`
+```json
+{
+  "grant_secret": "mgrant_…",
+  "device_name": "EC2AMAZ-9TG1LM4",
+  "device_id": "uuid",             // optional; minted when omitted
+  "os": "windows",
+  "peer_version": "v0.2.3",
+  "caps": {"browser": true, "desktop": true, "exec": true}
+}
+```
+→ `200`
+```json
+{
+  "computer_id": "ec2amaz-9tg1lm4",
+  "display_name": "EC2AMAZ-9TG1LM4",
+  "device_id": "uuid",
+  "device_token": "<long-lived peer credential>",
+  "harness_url": "http://host:8080",
+  "grant_id": "g_7f3a91c2",
+  "reenrolled": false
+}
+```
+The peer stores `device_token` as after pairing and connects to the WebSocket.
+
+| Status | Meaning |
+|--------|---------|
+| 404 | No pending grant exists: the endpoint is dark by default |
+| 401 | Unknown secret |
+| 409 | Grant already claimed, or the computer limit (8) is reached |
+| 410 | Grant expired or revoked |
+| 403 | Source address not in the grant's `allow_cidrs` |
+| 429 | 10 failed claims from this address in 10 minutes |
+
+Rules: single use (no reusable grants: mint one per machine); `computer_id` is the slug of
+the reported name, suffixed `-2`, `-3`… on collision. A `device_id` that is already
+registered (a peer that lost its credentials, even if revoked) keeps its computer id and
+gets a fresh token.
+
+### Recipe: a disposable peer
+
+1. Settings → Computers → **Create grant** (or `POST /api/computers/grants`).
+2. Deliver it with the machine. Any of:
+   - environment: `MARBLE_HARNESS=http://host:8080 MARBLE_GRANT=mgrant_… marble-peer enroll`
+   - a file: write `{"harness":"http://host:8080","grant":"mgrant_…"}` to
+     `~/.marble-peer/grant` (`%USERPROFILE%\.marble-peer\grant` on Windows); `marble-peer run`
+     enrolls from it on start and deletes it once spent.
+3. Install autostart (`marble-peer install-autostart`) or start `marble-peer run`.
+   The computer appears under Settings → Computers and the grant shows `claimed`.
+
+`marble-peer enroll` is idempotent: when the peer already holds a token for that harness it
+exits 0 without spending the grant, so a re-run bootstrap after a reboot is harmless. It
+retries an unreachable harness for `--wait` (default 2m; `run` waits 5m). Cleartext
+`http://` outside loopback and `100.x` tailnet addresses needs `--allow-http` or
+`MARBLE_ALLOW_HTTP=1`.
+
+Example bootstrap step (run as the desktop user whose screen the peer drives, since the
+peer's state lives in that user's home):
+```bash
+export MARBLE_HARNESS=http://harness.example:8080
+export MARBLE_GRANT=mgrant_…            # from Create grant; single use, expires in 24h
+marble-peer enroll && marble-peer install-autostart
+```
 
 ## WebSocket (peer → harness)
 
