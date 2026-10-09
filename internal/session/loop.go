@@ -109,6 +109,18 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *
 		}
 	}
 	uid := s.nextID("m")
+	titleSnap := s.Title
+	customSnap := s.TitleCustom
+	s.mu.Unlock()
+
+	// Copy user uploads into the workspace before the model sees the turn.
+	// Disk IO stays off s.mu. A failed copy does not fail the send.
+	if len(uis) > 0 {
+		note := r.copyUserUploads(s.ID, uid, uis)
+		content = appendHarnessNote(content, note)
+	}
+
+	s.mu.Lock()
 	um := Message{
 		ID:          uid,
 		Role:        "user",
@@ -124,8 +136,6 @@ func (r *Runner) postMessage(s *Session, text string, continuation bool, actor *
 	s.appendUI(um)
 	// Model history: never identity (ADR-0017 Q13). Multimodal sentinels (ADR-0019).
 	s.history = append(s.history, model.Message{Role: "user", Content: content})
-	titleSnap := s.Title
-	customSnap := s.TitleCustom
 	s.mu.Unlock()
 
 	if titleUpdated {

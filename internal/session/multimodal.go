@@ -27,6 +27,10 @@ type UIAttachment struct {
 	SourceURL string `json:"source_url,omitempty"`
 	Alt       string `json:"alt,omitempty"`
 	Credit    string `json:"credit,omitempty"`
+	// WorkspacePath is the workspace-relative copy of a user upload
+	// (.attachments/<session>/<message>-N.ext). Empty for screenshots
+	// and files the agent attached itself.
+	WorkspacePath string `json:"workspace_path,omitempty"`
 }
 
 // Message with attachments (extend existing Message in session.go)

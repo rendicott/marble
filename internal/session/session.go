@@ -261,6 +261,7 @@ You work inside a single workspace directory (tool jail). Memory is separate.
 Desktop / Marble Peer (also called Pier): computer_list/bind/screenshot/desktop_act/exec/browser_* drive a remote peer. To READ peer state (config, logs, installed software, directory listings, command output) use computer_exec, not a screenshot of a terminal — a terminal window truncates at its visible height with no way to scroll, so output you can't see is indistinguishable from a command that never ran; only fall back to typing into a shell when the peer lacks caps.exec. Prefer computer_browser_act action=click_button for labeled buttons; desktop clicks use IMAGE pixel coords (meta.w×meta.h). If a click OR type returns ui_unchanged or near-duplicate thrash, stop repeating it — computer_confirm, computer_screenshot to re-check focus, computer_exec, or a different strategy. Do not re-screenshot immediately after a post-click/post-type attachment. computer_confirm surfaces an Accept/Deny card in the Marble harness UI and a Tailscale-reachable /confirm/{id} link — never rewrite peer loopback (127.0.0.1) URLs to Tailscale; tell the user to use the harness card or /confirm/{id}. Pending confirms block other computer_* until Accept or Deny/Dismiss.
 
 Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), surgical edits (edit_file requires prior file_read in the same turn; apply_patch is atomic), shell_execute (policy-limited; prefer start_background_task for jobs >60s), background tasks, schedule_continuation, get_context_usage, session_compact when context is high, memory_* and skill_* for long-term knowledge, message_attach for durable chat chips the operator can download (png/jpeg/webp/gif, txt/md/csv/json/html/svg; no audio/PDF), attach_from_url to fetch remote images (http/https) into chat attachments — prefer that over shell-curl; attach_file only for ephemeral workspace preview (vanishes when the turn ends), web_fetch for HTTP(S) page retrieval.
+Chat attachments: a file the user pasted or uploaded is copied into the workspace at .attachments/<session>/<message>-N.ext, and that user message lists the path. Copy, hash, or archive it from that path. Do not look in the Marble memory directory for it. Do not say the original was saved when that path line is absent.
 Cron: use cron_list/get/create/update/delete/run for durable recurring schedules (SQLite, survive restarts). schedule_continuation is one-shot delay or wait-for-background-task only. Prefer interval ≥ 60s; target a session_id for a known thread, or omit session_id so the first fire creates a session. Keep cron prompts short.
 Sinks: use manage_sinks to list/create/update/delete/test turn sinks (Orb, Slack, ntfy, Discord, webhook, stdout) that mirror finished turns. secret_env is an env-var NAME only — never the secret; operator stores KEY=secret in $MEMORY/env (Settings → Secrets). action=set_override (inherit|on|off) / pause_all / resume_all apply to THIS session only; create/update/delete change the global sinks.json.
 Secrets: every name in Settings → Secrets ($MEMORY/env) is exported, with its current value, into each shell_execute, start_background_task, call_agent_process and MCP stdio process on this harness host. Use them as "$NAME" in commands and scripts you write (e.g. curl -H "Authorization: Bearer $FOO_TOKEN"); never source or read $MEMORY/env (blocked), never ask the user to paste a secret, never copy one into a file. Check presence with [ -n "$NAME" ]. Values are masked as [secret:NAME] in tool output. Peers (computer_exec) are other machines and do not get them.
@@ -656,7 +657,8 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 
 // historyContentFromUIMessage rebuilds model Content from a reloaded UI message:
 // user image attachments and tool-result screenshots come back as marble-att://
-// image parts (materialized per call); everything else is text.
+// image parts (materialized per call). A user upload that was copied into the
+// workspace also gets that path as text. Everything else is text.
 func historyContentFromUIMessage(m Message) model.Content {
 	switch m.Role {
 	case "tool":
@@ -671,10 +673,14 @@ func historyContentFromUIMessage(m Message) model.Content {
 				})
 			}
 		}
-		if len(imgs) > 0 {
+		note := workspacePathNote(m.Attachments)
+		if len(imgs) > 0 || note != "" {
 			parts := []model.ContentPart{}
 			if t := strings.TrimSpace(m.Content); t != "" {
 				parts = append(parts, model.ContentPart{Type: "text", Text: t})
+			}
+			if note != "" {
+				parts = append(parts, model.ContentPart{Type: "text", Text: note})
 			}
 			return model.ContentFromParts(append(parts, imgs...))
 		}

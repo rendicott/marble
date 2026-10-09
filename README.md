@@ -4,7 +4,19 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.20
+## What's new in v0.4.21
+
+Highlights since **[v0.4.20](https://github.com/rendicott/marble/releases/tag/v0.4.20)** (no schema change):
+
+### Chat attachments land in the workspace
+A file pasted into chat was stored only under the Marble memory directory. The agent could see the image, but workspace tools cannot read that directory, so it could not archive the original file.
+
+- When the message is sent, each pasted or uploaded file is copied to `.attachments/<session>/<message>-N.ext` in the workspace.
+- The agent is told that path and can copy, hash, or archive the file with the usual workspace tools.
+- If the copy fails, the turn still runs and the agent is told the original was not saved.
+- Screenshots and files the agent attaches itself are unchanged. The memory directory stays closed to the shell.
+
+### Earlier — v0.4.20
 
 Highlights since **[v0.4.19](https://github.com/rendicott/marble/releases/tag/v0.4.19)** (schema **v13**, additive: `sessions.agent_cwd`):
 
@@ -828,7 +840,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.20](https://github.com/rendicott/marble/releases/tag/v0.4.20)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.21](https://github.com/rendicott/marble/releases/tag/v0.4.21)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 

@@ -78,6 +78,8 @@ type TranscriptAttachment struct {
 	SourceURL string `json:"source_url,omitempty"`
 	Alt       string `json:"alt,omitempty"`
 	Credit    string `json:"credit,omitempty"`
+	// WorkspacePath mirrors session.UIAttachment.WorkspacePath.
+	WorkspacePath string `json:"workspace_path,omitempty"`
 }
 
 // SessionDoc is the full on-disk session.
