@@ -13,6 +13,7 @@ import (
 
 	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/bgtask"
+	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/continuation"
 	"github.com/rendicott/marble/internal/cron"
 	"github.com/rendicott/marble/internal/db"
@@ -158,7 +159,13 @@ func (r *Registry) Specs() []model.ToolSpec {
 }
 
 // Execute runs a named tool. tc may be nil for simple tools (reads still work).
+// Secret values from Settings → Secrets are masked in the result, which is what the
+// transcript and the model see.
 func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
+	return config.ScrubSecrets(r.execute(name, argsJSON, tc))
+}
+
+func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 	max := r.MaxResultChars
 	if max <= 0 {
 		max = 32000

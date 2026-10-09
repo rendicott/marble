@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rendicott/marble/internal/config"
 )
 
 // SettingsSource reads string settings (DB or in-memory map).
@@ -173,7 +175,7 @@ func (p *Policy) Check(command, cwdRel string) error {
 	if p.BlockMemory && p.MemoryRoot != "" {
 		if refsMemoryRoot(cmd, p.MemoryRoot) {
 			return fmt.Errorf("command references the Marble memory directory (blocked, not retryable: no rewording of it will run). " +
-				"Use memory_search / memory_fetch / memory_write for memory content; $MEMORY/env secrets are operator-only")
+				"Use memory_search / memory_fetch / memory_write for memory content. " + secretsHint())
 		}
 	}
 	if p.CwdStrict && cwdRel != "" && cwdRel != "." {
@@ -275,4 +277,17 @@ func ShellBinary() (bin string, arg string) {
 		return "/bin/bash", "-lc"
 	}
 	return "/bin/sh", "-c"
+}
+
+// secretsHint tells a caller that tried to read $MEMORY/env that it does not need to:
+// Settings → Secrets are already exported into every shell this harness starts.
+func secretsHint() string {
+	names := config.SecretNames()
+	msg := "Do not source $MEMORY/env: Settings → Secrets are already set in this shell's environment " +
+		"(and in start_background_task / agent subprocesses). Reference them as \"$NAME\" in commands and scripts; " +
+		"values are masked as [secret:NAME] in tool output"
+	if len(names) == 0 {
+		return msg + ". No secrets are configured."
+	}
+	return msg + ". Available: " + strings.Join(names, ", ") + "."
 }

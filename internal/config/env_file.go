@@ -418,3 +418,136 @@ func AuthHintForAPIKeyEnv(apiKeyEnv string) string {
 		pathHint + "; applies within seconds for catalog models). " +
 		"If the var exists only in process env from an old EnvironmentFile, restart marble-harness after clearing/updating it."
 }
+
+// ChildEnv is the environment for processes the harness spawns (shell_execute, background
+// tasks, agent subprocesses, MCP stdio servers): the harness's own environment with the
+// managed $MEMORY/env overlay applied live, then extra. Without the overlay, children see the
+// snapshot loaded at harness start, so a secret added in Settings → Secrets is missing
+// until a restart. Secrets in children are fine; ScrubSecrets keeps their values out of
+// tool results, transcripts and model requests.
+func ChildEnv(extra map[string]string) []string {
+	overlay := loadEnvOverlay()
+	env := make([]string, 0, len(os.Environ())+len(overlay)+len(extra))
+	for _, kv := range os.Environ() {
+		k := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			k = kv[:i]
+		}
+		if _, ok := overlay[k]; ok {
+			continue
+		}
+		if _, ok := extra[k]; ok {
+			continue
+		}
+		env = append(env, kv)
+	}
+	for k, v := range overlay {
+		if _, ok := extra[k]; !ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	for k, v := range extra {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+// SecretNames lists the names in the managed $MEMORY/env (never values).
+func SecretNames() []string {
+	overlay := loadEnvOverlay()
+	names := make([]string, 0, len(overlay))
+	for k := range overlay {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// minScrubLen skips short values ("1", "true") that would mangle unrelated output.
+const minScrubLen = 8
+
+// secretishNameRE marks process-env names worth masking even when they are not in the
+// managed file (e.g. set only via systemd EnvironmentFile=).
+var secretishNameRE = regexp.MustCompile(`(?i)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)|_AK$`)
+
+var (
+	scrubMu       sync.Mutex
+	scrubFor      map[string]string // overlay map the replacer was built from
+	scrubReplacer *strings.Replacer
+)
+
+// ScrubSecrets replaces secret values in s with [secret:NAME]: every value in the managed
+// $MEMORY/env, plus process-env values whose names look like credentials (this covers a
+// stale pre-rotation copy too). Applied to tool results before they reach the transcript or
+// the model, so a command that prints a secret does not leak it.
+func ScrubSecrets(s string) string {
+	if len(s) < minScrubLen {
+		return s
+	}
+	r := secretReplacer()
+	if r == nil {
+		return s
+	}
+	return r.Replace(s)
+}
+
+func secretReplacer() *strings.Replacer {
+	overlay := loadEnvOverlay()
+	scrubMu.Lock()
+	defer scrubMu.Unlock()
+	// loadEnvOverlay returns the same map until its TTL refresh, so identity is a cheap
+	// change check (process env does not change after start).
+	if scrubReplacer != nil && sameMap(scrubFor, overlay) {
+		return scrubReplacer
+	}
+	vals := map[string]string{} // value → name
+	for k, v := range overlay {
+		if len(strings.TrimSpace(v)) >= minScrubLen {
+			vals[v] = k
+		}
+	}
+	for _, kv := range os.Environ() {
+		i := strings.IndexByte(kv, '=')
+		if i <= 0 {
+			continue
+		}
+		k, v := kv[:i], kv[i+1:]
+		if len(strings.TrimSpace(v)) < minScrubLen {
+			continue
+		}
+		if _, managed := overlay[k]; managed || secretishNameRE.MatchString(k) {
+			if _, seen := vals[v]; !seen {
+				vals[v] = k
+			}
+		}
+	}
+	scrubFor = overlay
+	if len(vals) == 0 {
+		scrubReplacer = nil
+		return nil
+	}
+	// Longest first so a secret containing another is masked whole.
+	keys := make([]string, 0, len(vals))
+	for v := range vals {
+		keys = append(keys, v)
+	}
+	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+	pairs := make([]string, 0, 2*len(keys))
+	for _, v := range keys {
+		pairs = append(pairs, v, "[secret:"+vals[v]+"]")
+	}
+	scrubReplacer = strings.NewReplacer(pairs...)
+	return scrubReplacer
+}
+
+func sameMap(a, b map[string]string) bool {
+	if len(a) != len(b) || a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}

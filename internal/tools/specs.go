@@ -94,7 +94,7 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"edits"},
 			}),
-		spec("shell_execute", "Run a shell command on THIS HARNESS HOST, in the workspace (policy-enforced). Does NOT run on any bound computer_* peer — a peer path like C:\\Users\\... means nothing here. For a command on the bound peer machine, use computer_exec. Default timeout 60s, max 300s.",
+		spec("shell_execute", "Run a shell command on THIS HARNESS HOST, in the workspace (policy-enforced). Does NOT run on any bound computer_* peer — a peer path like C:\\Users\\... means nothing here. For a command on the bound peer machine, use computer_exec. Default timeout 60s, max 300s (use start_background_task for longer jobs). Settings → Secrets are in the environment as $NAME; values are masked in output.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -104,7 +104,7 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"command"},
 			}),
-		spec("start_background_task", "Start a long-running command; returns task_id.",
+		spec("start_background_task", "Start a long-running command on this harness host (no 300s cap); returns task_id. Settings → Secrets are in its environment as $NAME.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

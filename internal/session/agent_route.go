@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rendicott/marble/internal/agentproc"
+	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/model"
 )
@@ -227,6 +228,8 @@ func (r *Runner) finishRoutedTurn(s *Session, preset *db.AgentPresetRow, ws stri
 }
 
 func (r *Runner) emitRoutedAssistant(s *Session, content string) {
+	// Routed output is the child's own text, not a tool result: mask secrets here too.
+	content = config.ScrubSecrets(content)
 	s.mu.Lock()
 	aid := s.nextID("m")
 	am := Message{

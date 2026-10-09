@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/rendicott/marble/internal/config"
 )
 
 // stdioSession is an MCP server over stdio.
@@ -28,13 +30,8 @@ func ConnectStdio(ctx context.Context, name string, sc ServerConfig, timeout tim
 	if sc.Cwd != "" {
 		cmd.Dir = sc.Cwd
 	}
-	// minimal env: optional PATH etc from parent + listed keys
-	env := os.Environ()
-	// filter? keep parent for node/npx; overlay sc.Env
-	for k, v := range sc.Env {
-		env = append(env, k+"="+v)
-	}
-	cmd.Env = env
+	// Parent env (node/npx need PATH etc.) + live Settings → Secrets + server-listed keys.
+	cmd.Env = config.ChildEnv(sc.Env)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

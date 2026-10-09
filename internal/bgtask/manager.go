@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/memory"
 	"github.com/rendicott/marble/internal/shellpolicy"
 )
@@ -99,6 +100,7 @@ func (m *Manager) Start(sessionID, command, cwdRel, label string) (*Task, error)
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, bin, flag, command)
 	cmd.Dir = cwd
+	cmd.Env = config.ChildEnv(nil) // Settings → Secrets as $NAME, live
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{buf: &stdout, max: m.maxOut}

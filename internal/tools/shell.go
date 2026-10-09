@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/shellpolicy"
 )
 
@@ -66,6 +67,7 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 	// on cancel so descendants die and the pipes close.
 	cmd := exec.Command(bin, flag, a.Command)
 	cmd.Dir = cwd
+	cmd.Env = config.ChildEnv(nil) // Settings → Secrets as $NAME, live
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stdout, stderr bytes.Buffer
 	maxOut := pol.MaxOutput

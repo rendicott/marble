@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rendicott/marble/internal/config"
 	"github.com/rendicott/marble/internal/memory"
 )
 
@@ -682,12 +683,9 @@ func (m *Manager) Done(id string) <-chan struct{} {
 	return nil
 }
 
+// mergeEnv is the child env: harness env + live Settings → Secrets + driver extras.
 func mergeEnv(extra map[string]string) []string {
-	env := os.Environ()
-	for k, v := range extra {
-		env = append(env, k+"="+v)
-	}
-	return env
+	return config.ChildEnv(extra)
 }
 
 func jailJoin(root, rel string) (string, error) {
