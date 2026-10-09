@@ -688,6 +688,12 @@ func mergeEnv(extra map[string]string) []string {
 	return config.ChildEnv(extra)
 }
 
+// JoinUnderWorkspace resolves rel under root. Empty or "." returns root.
+// An absolute rel is kept only when it stays inside root.
+func JoinUnderWorkspace(root, rel string) (string, error) {
+	return jailJoin(root, rel)
+}
+
 func jailJoin(root, rel string) (string, error) {
 	if rel == "" || rel == "." {
 		return root, nil

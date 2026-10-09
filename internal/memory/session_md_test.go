@@ -68,6 +68,28 @@ func TestSinkOverridesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentCWDRoundTrip(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	doc := &SessionDoc{
+		SessionMeta: SessionMeta{
+			ID: "cwd01abc", Title: "s", CreatedAt: now, UpdatedAt: now, Status: "active",
+			AgentCWD: "projects/app",
+		},
+		Messages: []TranscriptMessage{{ID: "m1", Role: "user", Content: "hi", CreatedAt: now}},
+	}
+	raw := EncodeSession(doc)
+	if !strings.Contains(raw, `agent_cwd: "projects/app"`) {
+		t.Fatalf("missing agent_cwd:\n%s", raw)
+	}
+	got, err := DecodeSession(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentCWD != "projects/app" {
+		t.Fatalf("%q", got.AgentCWD)
+	}
+}
+
 func TestNewSessionID(t *testing.T) {
 	id := NewSessionID()
 	if len(id) != 10 {
@@ -202,7 +224,7 @@ func TestEncodeDecodeRoundTripContentHeadings(t *testing.T) {
 		Messages: []TranscriptMessage{
 			{
 				ID: "t1", Role: "tool", ToolName: "file_read", ToolCallID: "c1",
-				Content: "file_read → # x\n\n## Pre-reqs\n\nhello\n\n" + fakeHdr + "\nsmuggle",
+				Content:   "file_read → # x\n\n## Pre-reqs\n\nhello\n\n" + fakeHdr + "\nsmuggle",
 				CreatedAt: now,
 			},
 		},

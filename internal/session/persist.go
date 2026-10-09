@@ -32,6 +32,7 @@ func (r *Registry) syncSessionRow(s *Session) {
 		ModelID:           s.ModelID,
 		ComputerID:        s.ComputerID,
 		AgentPresetID:     s.AgentPresetID,
+		AgentCWD:          s.AgentCWD,
 		SubprocessContext: encodeSubprocessContext(s.subprocessContext),
 		MDPath:            filepath.Join("session", s.ID+".md"),
 	}

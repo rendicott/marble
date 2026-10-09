@@ -25,11 +25,14 @@ type Event struct {
 	ModelID       string                 `json:"model_id,omitempty"`
 	Model         string                 `json:"model,omitempty"`
 	AgentPresetID string                 `json:"agent_preset_id,omitempty"`
-	ModelEff      map[string]interface{} `json:"model_effective,omitempty"`
-	Title         string                 `json:"title,omitempty"` // session_meta title refresh
-	TitleCustom   bool                   `json:"title_custom,omitempty"`
-	ImageLimit    *ImageLimitInfo        `json:"image_limit,omitempty"` // session_meta image cap refresh
-	At            time.Time              `json:"at"`
+	// AgentCWD is set when the session project directory changes. A non-nil pointer
+	// distinguishes "cleared" from "this event is not about the directory".
+	AgentCWD    *string                `json:"agent_cwd,omitempty"`
+	ModelEff    map[string]interface{} `json:"model_effective,omitempty"`
+	Title       string                 `json:"title,omitempty"` // session_meta title refresh
+	TitleCustom bool                   `json:"title_custom,omitempty"`
+	ImageLimit  *ImageLimitInfo        `json:"image_limit,omitempty"` // session_meta image cap refresh
+	At          time.Time              `json:"at"`
 }
 
 // AttachmentInfo is a UI attachment (attach_file tool).
@@ -104,6 +107,9 @@ type Summary struct {
 	Model   string `json:"model,omitempty"` // last effective provider string
 	// AgentPresetID is subprocess session lock (ADR-0030); exclusive with ModelID.
 	AgentPresetID string `json:"agent_preset_id,omitempty"`
+	// AgentCWD is the routed-agent project directory, relative to the workspace.
+	// Empty means the workspace root.
+	AgentCWD string `json:"agent_cwd,omitempty"`
 	// SubprocessContext is the session override for ADR-0031 context injection.
 	SubprocessContext *agentproc.ContextSpec `json:"subprocess_context,omitempty"`
 	// Computer bind (ADR-0020)
@@ -146,6 +152,9 @@ type Session struct {
 	ProviderModel string
 	// AgentPresetID locks user turns to a subprocess preset (ADR-0030). Exclusive with ModelID.
 	AgentPresetID string
+	// AgentCWD is the project directory for routed subprocess turns, relative to the workspace.
+	// Empty means the workspace root.
+	AgentCWD string
 	// subprocessContext is the ADR-0031 session override (Set=false → inherit).
 	subprocessContext agentproc.ContextSpec
 	// ComputerID is bound desktop peer slug (ADR-0020); "" = unbound.
@@ -255,7 +264,7 @@ Tools: filesystem (file_read/write, list_files, grep, glob, codebase_summary), s
 Cron: use cron_list/get/create/update/delete/run for durable recurring schedules (SQLite, survive restarts). schedule_continuation is one-shot delay or wait-for-background-task only. Prefer interval ≥ 60s; target a session_id for a known thread, or omit session_id so the first fire creates a session. Keep cron prompts short.
 Sinks: use manage_sinks to list/create/update/delete/test turn sinks (Orb, Slack, ntfy, Discord, webhook, stdout) that mirror finished turns. secret_env is an env-var NAME only — never the secret; operator stores KEY=secret in $MEMORY/env (Settings → Secrets). action=set_override (inherit|on|off) / pause_all / resume_all apply to THIS session only; create/update/delete change the global sinks.json.
 Secrets: every name in Settings → Secrets ($MEMORY/env) is exported, with its current value, into each shell_execute, start_background_task, call_agent_process and MCP stdio process on this harness host. Use them as "$NAME" in commands and scripts you write (e.g. curl -H "Authorization: Bearer $FOO_TOKEN"); never source or read $MEMORY/env (blocked), never ask the user to paste a secret, never copy one into a file. Check presence with [ -n "$NAME" ]. Values are masked as [secret:NAME] in tool output. Peers (computer_exec) are other machines and do not get them.
-Subprocess presets: agent_preset_list / agent_preset_get / session_set_agent_preset lock this session to a local harness (grok/claude/opencode) so user turns skip the Marble model. Create/edit presets in Settings → Agents. call_agent_process remains for one-off tool calls. Subprocess context defaults to full+memory (transcript + memory hits); session_set_subprocess_context or call_agent_process context=[] / none for an isolated throwaway run.
+Subprocess presets: agent_preset_list / agent_preset_get / session_set_agent_preset lock this session to a local harness (grok/claude/opencode) so user turns skip the Marble model. Create/edit presets in Settings → Agents. call_agent_process remains for one-off tool calls. Subprocess context defaults to full+memory (transcript + memory hits); session_set_subprocess_context or call_agent_process context=[] / none for an isolated throwaway run. Routed turns run in the session project directory (a path relative to the workspace; empty means the workspace root). If none is set and the workspace is not a git repository, the agent is not started. The composer shows that field while an agent is selected.
 mpub_publish / mpub_list / mpub_get / mpub_unpublish / mpub_set_visibility: publish human-facing pages under $MEMORY/mpub, served at /mpub/{slug}. Default visibility is private (allowlisted admins only when OAuth is on). Set visibility=public only when the user explicitly asks to share openly. Use mpub_set_visibility to promote/demote without rewriting the body. Primary content_type text/html; markdown also supported. Images: pass workspace paths in mpub_publish assets and reference them by bare file name (never base64); use content_path for a body already on disk; read the result's warnings before reporting success. Use for research notes and shareable results — not for project source files (use workspace tools) and not for agent memory_write knowledge.
 MCP tools (if configured in mcp.json) appear as mcp_<server>_<tool> plus resource/prompt helpers — use them for web search (e.g. Tavily MCP) and other integrations.
 
@@ -299,6 +308,7 @@ func (s *Session) summaryLocked(loaded bool) Summary {
 		ModelID:           s.ModelID,
 		Model:             s.ProviderModel,
 		AgentPresetID:     s.AgentPresetID,
+		AgentCWD:          s.AgentCWD,
 		ComputerID:        s.ComputerID,
 		SubprocessContext: specPtr(s.subprocessContext),
 		ReasoningEffort:   s.ReasoningEffort,
@@ -531,6 +541,7 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 			Model:             model,
 			ModelID:           s.ModelID,
 			AgentPresetID:     s.AgentPresetID,
+			AgentCWD:          s.AgentCWD,
 			SubprocessContext: encodeSubprocessContext(s.subprocessContext),
 			ReasoningEffort:   s.ReasoningEffort,
 			SinkOverrides:     copySinkOverrides(s.SinkOverrides),
@@ -576,6 +587,7 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	s.ModelID = doc.ModelID
 	s.ProviderModel = doc.Model
 	s.AgentPresetID = doc.AgentPresetID
+	s.AgentCWD = doc.AgentCWD
 	s.subprocessContext = decodeSubprocessContext(doc.SubprocessContext)
 	s.ReasoningEffort = model.NormalizeReasoningEffort(doc.ReasoningEffort)
 	s.SinkOverrides = copySinkOverrides(doc.SinkOverrides)

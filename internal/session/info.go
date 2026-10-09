@@ -41,6 +41,8 @@ type InfoSession struct {
 	CronJobs []string `json:"cron_jobs,omitempty"`
 	// SubprocessContext is the ADR-0031 session override (null = inherit default).
 	SubprocessContext *agentproc.ContextSpec `json:"subprocess_context,omitempty"`
+	// AgentCWD is the routed-agent project directory, relative to the workspace.
+	AgentCWD string `json:"agent_cwd,omitempty"`
 }
 
 // InfoTTSArtifact is one session audio attachment produced by TTS (ADR-0027).
@@ -180,6 +182,7 @@ func (r *Registry) Info(id string) (*InfoResponse, error) {
 			MDPathAbs:         mdAbs,
 			LastPeerAction:    sum.LastPeerAction,
 			SubprocessContext: sum.SubprocessContext,
+			AgentCWD:          sum.AgentCWD,
 		}
 		if sum.LastPeerActionAt != nil {
 			t := sum.LastPeerActionAt.UTC().Format(time.RFC3339)

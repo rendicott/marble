@@ -4,7 +4,21 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.19
+## What's new in v0.4.20
+
+Highlights since **[v0.4.19](https://github.com/rendicott/marble/releases/tag/v0.4.19)** (schema **v13**, additive: `sessions.agent_cwd`):
+
+### A project directory for grok, claude, and opencode
+Picking an agent from the route menu used to start it in the harness workspace. When that workspace is a home directory, and the session is new, the agent has no transcript and no repo, and it can spend minutes returning nothing.
+
+- While an agent is selected, the composer shows **Project directory**, a path relative to the workspace (for example `projects/your-repo`).
+- A folder open in the file explorer is filled in as a suggestion. It is saved when you press Enter in the field or when you send.
+- If the field is empty and the workspace is not inside a git repository, the agent is not started. The reply names the directory and asks you to set one.
+- The first turn tells the agent there is no earlier transcript, names the working directory, and names the git root when there is one.
+
+Session info shows the same path. `PATCH /api/sessions/{id}` accepts `agent_cwd`.
+
+### Earlier — v0.4.19
 
 Highlights since **[v0.4.18](https://github.com/rendicott/marble/releases/tag/v0.4.18)** (no schema change):
 
@@ -407,7 +421,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Titles** — auto from last user message unless operator **renames** (`title_custom`)
 - **Markdown-first** transcripts under `$MEMORY/session/<id>.md` (including attachment sentinels)
 - **SQLite dual-write** (`marble.db`) for index, events, settings, cron, **model catalog**, **attachments**, **computers**, **clerk**, daemon state
-- **Schema** — binary supports **v9** (v3 catalog · v4 attachments · v5 computers · v6 clerk · v7 clerk snooze · v8 agent presets · v9 subprocess context); stepwise migrate on open
+- **Schema** — binary supports **v13** (v3 catalog · v4 attachments · v5 computers · v6 clerk · v7 clerk snooze · v8 agent presets · v9 subprocess context · v10 model kind · v11 max images · v12 computer grants · v13 session project directory); stepwise migrate on open
 - **Limp mode** if the DB schema is unreadable/mismatched (chat + MD still work)
 - **Daemon** — periodic flush, prune closed sessions, blob/attachment GC, daily compaction
 - **Session info** panel — tokens, tool histogram, recent events
@@ -814,7 +828,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.19](https://github.com/rendicott/marble/releases/tag/v0.4.19)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.20](https://github.com/rendicott/marble/releases/tag/v0.4.20)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 

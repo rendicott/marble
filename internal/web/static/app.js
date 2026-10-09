@@ -34,6 +34,9 @@
     tpRollup: document.getElementById("tp-rollup"),
     tpDetail: document.getElementById("tp-detail"),
     sessionModel: document.getElementById("session-model"),
+    agentCwdRow: document.getElementById("agent-cwd-row"),
+    agentCwd: document.getElementById("agent-cwd"),
+    agentCwdHint: document.getElementById("agent-cwd-hint"),
     toggleTools: document.getElementById("btn-toggle-tools"),
     sessionSettingsPopover: document.getElementById("session-settings-popover"),
     ssImgLimit: document.getElementById("ss-img-limit"),
@@ -614,6 +617,9 @@
   let catalogPresets = [];
   let modelPickerBusy = false;
   let pendingRoutePreset = "";
+  /** Saved session project directory (relative). Empty means the workspace root. */
+  let savedAgentCWD = "";
+  let agentCwdSave = null;
   let routePopoverOpen = false;
 
   async function loadCatalogModels() {
@@ -693,6 +699,97 @@
     els.sessionModel.value = v;
     els.sessionModel.disabled = !!disabled;
     modelPickerBusy = false;
+    syncAgentCwdRow();
+  }
+
+  function agentRouteSelected() {
+    if (pendingRoutePreset) return true;
+    return !!(els.sessionModel && (els.sessionModel.value || "").startsWith("agent:"));
+  }
+
+  // Explorer cwd is a browse location, not the agent's directory, until the operator sends or edits.
+  function explorerRelPath() {
+    let p = "";
+    try {
+      p = sessionStorage.getItem("marble.explorer.path") || "";
+    } catch {
+      return "";
+    }
+    p = p.replace(/\\/g, "/").trim();
+    if (!p || p === "." || p === "/" || p.startsWith("~") || p.startsWith("/")) return "";
+    p = p.replace(/\/+$/g, "");
+    const parts = p.split("/");
+    if (parts.some((seg) => seg === ".." || seg === "")) return "";
+    return parts.join("/");
+  }
+
+  function setAgentCwdHint(kind) {
+    if (!els.agentCwdHint) return;
+    if (kind === "saved") {
+      els.agentCwdHint.textContent = "The agent runs in this directory, under the workspace.";
+    } else if (kind === "suggest") {
+      els.agentCwdHint.textContent = "From the file explorer. Send to use it, or edit it.";
+    } else if (kind === "draft") {
+      els.agentCwdHint.textContent = "Not saved yet. Send, or press Enter in the field.";
+    } else {
+      els.agentCwdHint.textContent = "Relative to the workspace. Required when the workspace is not a git repository.";
+    }
+  }
+
+  function syncAgentCwdRow() {
+    if (!els.agentCwdRow || !els.agentCwd) return;
+    const show = agentRouteSelected() && !!activeId;
+    els.agentCwdRow.hidden = !show;
+    const closed = sessions.find((x) => x.id === activeId)?.status === "closed";
+    els.agentCwd.disabled = !activeId || !!closed || !!busy;
+    if (!show || document.activeElement === els.agentCwd) return;
+    if (savedAgentCWD) {
+      els.agentCwd.value = savedAgentCWD;
+      els.agentCwd.dataset.suggested = "";
+      setAgentCwdHint("saved");
+      return;
+    }
+    if (els.agentCwd.dataset.suggested !== "1" && (els.agentCwd.value || "").trim() !== "") {
+      setAgentCwdHint("draft");
+      return;
+    }
+    const sug = explorerRelPath();
+    els.agentCwd.value = sug;
+    els.agentCwd.dataset.suggested = sug ? "1" : "";
+    setAgentCwdHint(sug ? "suggest" : "empty");
+  }
+
+  function persistAgentCwd(opts) {
+    if (agentCwdSave) return agentCwdSave;
+    agentCwdSave = persistAgentCwdNow(opts).finally(() => {
+      agentCwdSave = null;
+    });
+    return agentCwdSave;
+  }
+
+  async function persistAgentCwdNow(opts) {
+    if (!els.agentCwd || !activeId) return;
+    const includeSug = !!(opts && opts.includeSuggestion);
+    if (els.agentCwd.dataset.suggested === "1" && !includeSug) return;
+    let v = (els.agentCwd.value || "").trim().replace(/\\/g, "/");
+    if (v.startsWith("~") || v.startsWith("/")) {
+      throw new Error("Project directory must be relative to the workspace (for example projects/your-repo).");
+    }
+    v = v.replace(/^\/+|\/+$/g, "");
+    if (v === ".") v = "";
+    if (v === savedAgentCWD) {
+      els.agentCwd.dataset.suggested = "";
+      syncAgentCwdRow();
+      return;
+    }
+    const res = await api(`/api/sessions/${encodeURIComponent(activeId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ agent_cwd: v }),
+    });
+    const sum = (res && res.session) || {};
+    savedAgentCWD = sum.agent_cwd || "";
+    els.agentCwd.dataset.suggested = "";
+    syncAgentCwdRow();
   }
 
   function setComposerEnabled(on) {
@@ -711,6 +808,9 @@
     }
     if (els.sessionModel) {
       els.sessionModel.disabled = !activeId || !!closed || !!busy;
+    }
+    if (els.agentCwd) {
+      els.agentCwd.disabled = !activeId || !!closed || !!busy;
     }
   }
 
@@ -2328,6 +2428,10 @@
       } else if (data.type === "pending") {
         if (window.MarblePending) window.MarblePending.refresh(id);
       } else if (data.type === "session_meta") {
+        if (typeof data.agent_cwd === "string" && (!data.session_id || data.session_id === activeId)) {
+          savedAgentCWD = data.agent_cwd;
+          syncAgentCwdRow();
+        }
         if (data.model_id !== undefined && data.model_id !== null || data.agent_preset_id !== undefined) {
           setSessionModelPicker(data.model_id || "", busy, data.agent_preset_id || "");
         }
@@ -2427,6 +2531,12 @@
       liveThinkSeg = null;
     }
     activeId = id;
+    savedAgentCWD = "";
+    if (els.agentCwd) {
+      els.agentCwd.value = "";
+      els.agentCwd.dataset.suggested = "";
+    }
+    if (els.agentCwdRow) els.agentCwdRow.hidden = true;
     if (window.MarblePending) window.MarblePending.setSession(id);
     setBusyPoll(false);
     pendingConfirms = {};
@@ -2470,6 +2580,7 @@
     activeCapImages = !!(me.capabilities && me.capabilities.images);
     updateAttachWarn();
     renderTranscript({ forceScroll: true });
+    savedAgentCWD = sum.agent_cwd || "";
     setSessionModelPicker(sum.model_id || "", sum.status === "closed" || busy, sum.agent_preset_id || "");
     setComposerEnabled(sum.status !== "closed");
     paintDensityToggles();
@@ -2683,12 +2794,14 @@
           body: JSON.stringify(body),
         });
         const sum = res.session || {};
+        savedAgentCWD = sum.agent_cwd || "";
         setSessionModelPicker(sum.model_id || "", false, sum.agent_preset_id || "");
       } catch (e) {
         alert(e.message || String(e));
         try {
           const data = await api(`/api/sessions/${encodeURIComponent(activeId)}`);
           const sum = (data && data.session) || {};
+          savedAgentCWD = sum.agent_cwd || "";
           setSessionModelPicker(sum.model_id || "", busy, sum.agent_preset_id || "");
         } catch {
           /* ignore */
@@ -3171,6 +3284,7 @@
   }
 
   function paintRouteChip() {
+    syncAgentCwdRow();
     if (!els.send) return;
     if (pendingRoutePreset) {
       els.send.textContent = "Send → " + pendingRoutePreset;
@@ -3265,9 +3379,34 @@
     hideRoutePopover();
   });
 
+  if (els.agentCwd) {
+    els.agentCwd.addEventListener("input", () => {
+      els.agentCwd.dataset.suggested = "";
+      setAgentCwdHint("draft");
+    });
+    els.agentCwd.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      e.stopPropagation();
+      els.agentCwd.dataset.suggested = "";
+      persistAgentCwd().catch((err) => alert(err.message || String(err)));
+    });
+    els.agentCwd.addEventListener("blur", () => {
+      persistAgentCwd().catch((err) => alert(err.message || String(err)));
+    });
+  }
+
   els.form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!activeId || busy || attachUploading > 0) return;
+    if (agentRouteSelected()) {
+      try {
+        await persistAgentCwd({ includeSuggestion: true });
+      } catch (err) {
+        alert(err.message || String(err));
+        return;
+      }
+    }
     const content = els.input.value.trim();
     if (!content && !stagedAttachments.length) return;
     const ids = stagedAttachments.map((a) => a.id);

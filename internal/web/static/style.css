@@ -2487,6 +2487,38 @@ button.tip {
   background: color-mix(in srgb, var(--accent-2) 18%, transparent);
 }
 
+/* Project directory for a session locked to a subprocess agent. */
+.agent-cwd-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  min-width: 0;
+}
+.agent-cwd-row[hidden] { display: none; }
+.agent-cwd-row label {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+#agent-cwd {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 0.45rem 0.7rem;
+  font: inherit;
+  font-family: var(--mono);
+}
+#agent-cwd:disabled { opacity: 0.55; }
+.agent-cwd-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 /* Composer: textarea full width; attach + send on the row below (no horizontal spill) */
 .composer-row {
   display: flex;

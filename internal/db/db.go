@@ -25,7 +25,8 @@ import (
 // v10: model_catalog.kind (chat|image)
 // v11: model_catalog.max_images (per-request image cap)
 // v12: computer_grants (ADR-0036 peer auto-enrollment)
-const CurrentSchemaVersion = 12
+// v13: sessions.agent_cwd (project directory for routed subprocess turns)
+const CurrentSchemaVersion = 13
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -179,6 +180,10 @@ func (d *DB) upgradeSchema(fromVer int) error {
 			}
 		case 11:
 			if err := d.migrateV11toV12(); err != nil {
+				return err
+			}
+		case 12:
+			if err := d.migrateV12toV13(); err != nil {
 				return err
 			}
 		default:

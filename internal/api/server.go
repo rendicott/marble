@@ -480,6 +480,7 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 	var body struct {
 		ModelID         *string           `json:"model_id"`
 		AgentPresetID   *string           `json:"agent_preset_id"`
+		AgentCWD        *string           `json:"agent_cwd"`
 		Title           *string           `json:"title"`
 		ReasoningEffort *string           `json:"reasoning_effort"`
 		SinkOverrides   map[string]string `json:"sink_overrides"`
@@ -490,8 +491,8 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if body.ModelID == nil && body.AgentPresetID == nil && body.Title == nil && body.ReasoningEffort == nil && body.SinkOverrides == nil && len(body.ImageLimit) == 0 {
-		http.Error(w, "model_id, agent_preset_id, title, reasoning_effort, sink_overrides, or image_limit required", http.StatusBadRequest)
+	if body.ModelID == nil && body.AgentPresetID == nil && body.AgentCWD == nil && body.Title == nil && body.ReasoningEffort == nil && body.SinkOverrides == nil && len(body.ImageLimit) == 0 {
+		http.Error(w, "model_id, agent_preset_id, agent_cwd, title, reasoning_effort, sink_overrides, or image_limit required", http.StatusBadRequest)
 		return
 	}
 
@@ -543,6 +544,19 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, id s
 			return
 		}
 		auth.LogAction("session_set_agent_preset", "session="+id+" preset="+*body.AgentPresetID, u)
+	}
+
+	if body.AgentCWD != nil {
+		sess, err = s.Registry.SetSessionAgentCWD(id, *body.AgentCWD)
+		if err != nil {
+			if session.IsBusy(err) {
+				http.Error(w, "session busy", http.StatusConflict)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		auth.LogAction("session_set_agent_cwd", "session="+id+" cwd="+*body.AgentCWD, u)
 	}
 
 	if body.ReasoningEffort != nil {

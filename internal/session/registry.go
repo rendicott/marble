@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -342,6 +343,7 @@ func (r *Registry) List() []Summary {
 			Busy:         false,
 			Loaded:       false,
 			Dirty:        false,
+			AgentCWD:     m.AgentCWD,
 		})
 	}
 	// Prefer DB list when writable for closed flags accuracy
@@ -374,6 +376,8 @@ func (r *Registry) List() []Summary {
 					ls := liveSess.Summary()
 					sum.Busy = ls.Busy
 					sum.Loaded = true
+				} else if sum.AgentCWD == "" {
+					sum.AgentCWD = row.AgentCWD
 				}
 				byID[row.ID] = sum
 			}
@@ -643,6 +647,56 @@ func (r *Registry) setSessionAgentPreset(id, presetID string, allowBusy bool) (*
 		ModelID:       "",
 		AgentPresetID: stored,
 	})
+	return s, nil
+}
+
+// SetSessionAgentCWD sets the project directory for routed subprocess turns.
+// rel is relative to the workspace; empty means the workspace root.
+// The directory must already exist. Rejects while the session is busy.
+func (r *Registry) SetSessionAgentCWD(id, rel string) (*Session, error) {
+	s, err := r.EnsureLoaded(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.Status == "closed" {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("session is closed")
+	}
+	if s.busy {
+		s.mu.Unlock()
+		return nil, errBusy
+	}
+	s.mu.Unlock()
+
+	rel, err = NormalizeAgentCWD(rel)
+	if err != nil {
+		return nil, err
+	}
+	if rel != "" {
+		abs, jerr := agentproc.JoinUnderWorkspace(r.workspace, rel)
+		if jerr != nil {
+			return nil, jerr
+		}
+		st, serr := os.Stat(abs)
+		if serr != nil {
+			return nil, fmt.Errorf("project directory %q: %w", rel, serr)
+		}
+		if !st.IsDir() {
+			return nil, fmt.Errorf("project directory %q is not a directory", rel)
+		}
+	}
+
+	s.mu.Lock()
+	s.AgentCWD = rel
+	s.dirty = true
+	s.UpdatedAt = time.Now()
+	stored := s.AgentCWD
+	s.mu.Unlock()
+
+	r.syncSessionRow(s)
+	_ = r.PersistSession(s)
+	s.publish(Event{Type: "session_meta", AgentCWD: &stored})
 	return s, nil
 }
 

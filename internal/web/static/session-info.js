@@ -311,6 +311,7 @@
             : ""
         }
         ${row("Workspace", `<code class="si-path">${esc(s.workspace || "—")}</code>`)}
+        ${row("Project directory", `<code class="si-path">${esc(s.agent_cwd || "(workspace root)")}</code>`)}
         ${row(
           "Markdown",
           `<code class="si-path">${esc(s.md_path || "—")}</code>`,

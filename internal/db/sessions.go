@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -21,7 +22,35 @@ type SessionRow struct {
 	ComputerID        string // bound peer computer slug (ADR-0020)
 	AgentPresetID     string // subprocess session lock (ADR-0030); exclusive with ModelID
 	SubprocessContext string // JSON {context,max_chars}; empty = inherit (ADR-0031)
-	MDPath            string
+	// AgentCWD is a project directory relative to the workspace. Empty means the workspace root.
+	AgentCWD string
+	MDPath   string
+}
+
+// migrateV12toV13 adds sessions.agent_cwd. Fresh databases reach v13 through
+// upgradeSchema, so a second run (column already present) is a no-op.
+func (d *DB) migrateV12toV13() error {
+	if d.SQL == nil {
+		return fmt.Errorf("no database")
+	}
+	tx, err := d.SQL.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'agent_cwd'`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v13: %w", err)
+	}
+	if n == 0 {
+		if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN agent_cwd TEXT NOT NULL DEFAULT ''`); err != nil && !sqliteDuplicateColumn(err) {
+			return fmt.Errorf("migrate v13: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_meta SET schema_version = 13, updated_at = ? WHERE id = 1`, UTCNow()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpsertSession inserts or updates a session index row.
@@ -41,8 +70,8 @@ func (d *DB) UpsertSession(s SessionRow) error {
 		closed = s.ClosedAt.String
 	}
 	_, err := d.SQL.Exec(`
-		INSERT INTO sessions (id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, computer_id, agent_preset_id, subprocess_context)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, computer_id, agent_preset_id, subprocess_context, agent_cwd)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title,
 			status=excluded.status,
@@ -56,8 +85,9 @@ func (d *DB) UpsertSession(s SessionRow) error {
 			md_path=excluded.md_path,
 			computer_id=excluded.computer_id,
 			agent_preset_id=excluded.agent_preset_id,
-			subprocess_context=excluded.subprocess_context
-	`, s.ID, s.Title, s.Status, s.CreatedAt, s.UpdatedAt, closed, s.MessageCount, dirty, s.Workspace, s.Model, s.ModelID, s.MDPath, s.ComputerID, s.AgentPresetID, s.SubprocessContext)
+			subprocess_context=excluded.subprocess_context,
+			agent_cwd=excluded.agent_cwd
+	`, s.ID, s.Title, s.Status, s.CreatedAt, s.UpdatedAt, closed, s.MessageCount, dirty, s.Workspace, s.Model, s.ModelID, s.MDPath, s.ComputerID, s.AgentPresetID, s.SubprocessContext, s.AgentCWD)
 	return err
 }
 
@@ -67,7 +97,7 @@ func (d *DB) ListSessions(includeClosed bool) ([]SessionRow, error) {
 	if !d.Writable() {
 		return nil, nil
 	}
-	q := `SELECT id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, COALESCE(computer_id,''), COALESCE(agent_preset_id,''), COALESCE(subprocess_context,'')
+	q := `SELECT id, title, status, created_at, updated_at, closed_at, message_count, dirty, workspace, model, model_id, md_path, COALESCE(computer_id,''), COALESCE(agent_preset_id,''), COALESCE(subprocess_context,''), COALESCE(agent_cwd,'')
 		FROM sessions`
 	if !includeClosed {
 		q += ` WHERE status != 'closed'`
@@ -83,7 +113,7 @@ func (d *DB) ListSessions(includeClosed bool) ([]SessionRow, error) {
 		var s SessionRow
 		var dirty int
 		if err := rows.Scan(&s.ID, &s.Title, &s.Status, &s.CreatedAt, &s.UpdatedAt, &s.ClosedAt,
-			&s.MessageCount, &dirty, &s.Workspace, &s.Model, &s.ModelID, &s.MDPath, &s.ComputerID, &s.AgentPresetID, &s.SubprocessContext); err != nil {
+			&s.MessageCount, &dirty, &s.Workspace, &s.Model, &s.ModelID, &s.MDPath, &s.ComputerID, &s.AgentPresetID, &s.SubprocessContext, &s.AgentCWD); err != nil {
 			return nil, err
 		}
 		s.Dirty = dirty != 0

@@ -348,6 +348,11 @@
         </button>
       </div>
       <form id="composer">
+        <div id="agent-cwd-row" class="agent-cwd-row" hidden>
+          <label for="agent-cwd">Project directory <span class="muted">relative to workspace</span></label>
+          <input id="agent-cwd" type="text" placeholder="projects/your-repo" autocomplete="off" spellcheck="false" enterkeyhint="done" aria-describedby="agent-cwd-hint" />
+          <p id="agent-cwd-hint" class="agent-cwd-hint"></p>
+        </div>
         <!-- Continuations / background tasks this session is waiting on (pending.js) -->
         <div id="pending-bar" class="pending-bar" hidden aria-live="polite"></div>
         <div id="attach-stage" class="attach-stage" hidden></div>

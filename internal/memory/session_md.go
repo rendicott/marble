@@ -25,6 +25,8 @@ type SessionMeta struct {
 	ModelID           string     `json:"model_id,omitempty"`           // catalog slug (ADR-0018)
 	AgentPresetID     string     `json:"agent_preset_id,omitempty"`    // ADR-0030 session lock
 	SubprocessContext string     `json:"subprocess_context,omitempty"` // ADR-0031 JSON
+	// AgentCWD is the routed-agent project directory, relative to the workspace.
+	AgentCWD string `json:"agent_cwd,omitempty"`
 	// ReasoningEffort is none|low|medium|high (thinking models); empty = provider default.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// TitleCustom is true when the operator set an explicit name (do not auto-title from messages).
@@ -119,6 +121,9 @@ func EncodeSession(doc *SessionDoc) string {
 	}
 	if doc.AgentPresetID != "" {
 		fmt.Fprintf(&b, "agent_preset_id: %q\n", doc.AgentPresetID)
+	}
+	if doc.AgentCWD != "" {
+		fmt.Fprintf(&b, "agent_cwd: %q\n", doc.AgentCWD)
 	}
 	if strings.TrimSpace(doc.SubprocessContext) != "" {
 		fmt.Fprintf(&b, "subprocess_context: %s\n", doc.SubprocessContext)
@@ -296,6 +301,8 @@ func parseFrontMatter(fm string) (SessionMeta, error) {
 			m.ModelID = val
 		case "agent_preset_id":
 			m.AgentPresetID = val
+		case "agent_cwd":
+			m.AgentCWD = val
 		case "subprocess_context":
 			m.SubprocessContext = val
 		case "reasoning_effort":

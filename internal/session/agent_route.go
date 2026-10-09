@@ -12,6 +12,15 @@ import (
 	"github.com/rendicott/marble/internal/model"
 )
 
+// routedPromptOpts is the preamble wrapped around a routed subprocess prompt.
+type routedPromptOpts struct {
+	SessionID string
+	CWD       string
+	GitTop    string
+	FirstTurn bool
+	UserText  string
+}
+
 const agentPresetPrefix = "agent:"
 
 // ResolveAgentPresetID returns the preset to route this turn to, or "" to use the Marble model.
@@ -55,18 +64,29 @@ func (r *Runner) ResolveAgentPresetID(s *Session, opts TurnOpts) (presetID, advi
 	return row.ID, ""
 }
 
-func wrapRoutedPrompt(sessionID, workspace, userText string) string {
+func wrapRoutedPrompt(o routedPromptOpts) string {
 	var b strings.Builder
 	b.WriteString("You are operating in Marble session ")
-	b.WriteString(sessionID)
+	b.WriteString(o.SessionID)
 	b.WriteString(" as an external coding agent.\n")
-	if workspace != "" {
-		b.WriteString("Workspace (cwd): ")
-		b.WriteString(workspace)
+	if o.CWD != "" {
+		b.WriteString("Working directory: ")
+		b.WriteString(o.CWD)
 		b.WriteString("\n")
 	}
-	b.WriteString("Reply with your result. Do not ask the Marble operator to paste this back.\n\n")
-	b.WriteString(userText)
+	if o.GitTop != "" {
+		b.WriteString("Git repository: ")
+		b.WriteString(o.GitTop)
+		b.WriteString("\n")
+	} else if o.CWD != "" {
+		b.WriteString("This directory is not inside a git work tree.\n")
+	}
+	if o.FirstTurn {
+		b.WriteString("\nThis is the first turn of this session. There is no earlier transcript.\n")
+		b.WriteString("Work only in the working directory above. If it is the wrong repository, stop and say so. Do not search parent directories for another project.\n")
+	}
+	b.WriteString("\nReply with your result. Do not ask the Marble operator to paste this back.\n\n")
+	b.WriteString(o.UserText)
 	return b.String()
 }
 
@@ -110,14 +130,31 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 		r.advisory(s, "[harness] continuation not routed to subprocess")
 		return
 	}
-	ws := r.Cfg.Workspace
-	prompt := wrapRoutedPrompt(s.ID, ws, userText)
+	s.mu.Lock()
+	rel := s.AgentCWD
+	s.mu.Unlock()
+	abs, gitTop, refusal, err := resolveRoutedDir(r.Cfg.Workspace, rel)
+	if err != nil {
+		r.failRouted(s, preset.ID, err.Error())
+		return
+	}
+	if refusal != "" {
+		r.failRouted(s, preset.ID, refusal)
+		return
+	}
+	prompt := wrapRoutedPrompt(routedPromptOpts{
+		SessionID: s.ID,
+		CWD:       abs,
+		GitTop:    gitTop,
+		FirstTurn: routedFirstTurn(s),
+		UserText:  userText,
+	})
 	s.setPhase("running_tool")
-	s.appendStep(TurnStep{Kind: "starting", Detail: "routing → " + preset.ID + " (" + preset.Driver + ")"})
+	s.appendStep(TurnStep{Kind: "starting", Detail: "routing → " + preset.ID + " (" + preset.Driver + ") cwd " + abs})
 	s.publishTurnProgress()
 
 	if r.Tools == nil || r.Tools.Agents == nil {
-		r.emitRoutedAssistant(s, "[subprocess: "+preset.ID+" · error]\nagent process manager unavailable")
+		r.failRouted(s, preset.ID, "agent process manager unavailable")
 		return
 	}
 	m := r.Tools.Agents
@@ -130,7 +167,7 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 	req := agentproc.Request{
 		Format:              preset.Driver,
 		Prompt:              prompt,
-		CWD:                 ws,
+		CWD:                 abs,
 		Model:               preset.Model,
 		TimeoutSec:          timeout,
 		OutputFormat:        "json",
@@ -142,7 +179,8 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 	}
 	t, err := m.StartBackground(s.ID, req)
 	if err != nil {
-		r.emitRoutedAssistant(s, formatRoutedResult(preset.ID, agentproc.Result{OK: false, Error: err.Error(), CWD: ws}))
+		r.emitRoutedAssistant(s, formatRoutedResult(preset.ID, agentproc.Result{OK: false, Error: err.Error(), CWD: abs}))
+		s.finalizeTurnProgress("error", "subprocess")
 		return
 	}
 	// Block on exit; refresh progress on a slow tick. The step list gets one live
@@ -166,7 +204,7 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 				return
 			}
 			if task.Status != agentproc.StatusRunning {
-				r.finishRoutedTurn(s, preset, ws, task)
+				r.finishRoutedTurn(s, preset, abs, task)
 				return
 			}
 			if p := task.Progress; p != nil {
@@ -184,10 +222,15 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 				s.finalizeTurnProgress("error", "task lost")
 				return
 			}
-			r.finishRoutedTurn(s, preset, ws, task)
+			r.finishRoutedTurn(s, preset, abs, task)
 			return
 		}
 	}
+}
+
+func (r *Runner) failRouted(s *Session, presetID, msg string) {
+	r.emitRoutedAssistant(s, "[subprocess: "+presetID+" · error]\n"+strings.TrimSpace(msg))
+	s.finalizeTurnProgress("error", "not started")
 }
 
 // routedProgressEvery is how often a routed subprocess turn refreshes its heartbeat.

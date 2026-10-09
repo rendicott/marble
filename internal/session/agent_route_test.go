@@ -9,9 +9,34 @@ import (
 )
 
 func TestWrapRoutedPrompt(t *testing.T) {
-	s := wrapRoutedPrompt("abc", "/ws", "do the thing")
-	if !strings.Contains(s, "session abc") || !strings.Contains(s, "/ws") || !strings.HasSuffix(strings.TrimSpace(s), "do the thing") {
+	s := wrapRoutedPrompt(routedPromptOpts{SessionID: "abc", CWD: "/ws", GitTop: "/ws", UserText: "do the thing"})
+	if !strings.Contains(s, "session abc") || !strings.Contains(s, "Working directory: /ws") || !strings.Contains(s, "Git repository: /ws") {
 		t.Fatal(s)
+	}
+	if strings.Contains(s, "first turn") {
+		t.Fatal(s)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(s), "do the thing") {
+		t.Fatal(s)
+	}
+}
+
+func TestWrapRoutedPromptFirstTurn(t *testing.T) {
+	s := wrapRoutedPrompt(routedPromptOpts{
+		SessionID: "abc", CWD: "/ws/projects/app", GitTop: "/ws/projects/app",
+		FirstTurn: true, UserText: "fix the bug",
+	})
+	for _, want := range []string{
+		"first turn of this session",
+		"no earlier transcript",
+		"Work only in the working directory",
+		"wrong repository",
+		"Working directory: /ws/projects/app",
+		"Git repository: /ws/projects/app",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q\n%s", want, s)
+		}
 	}
 }
 
