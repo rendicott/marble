@@ -4,7 +4,18 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.18
+## What's new in v0.4.19
+
+Highlights since **[v0.4.18](https://github.com/rendicott/marble/releases/tag/v0.4.18)** (no schema change):
+
+### Secrets just work in the agent's shells
+Settings → Secrets were loaded into the harness only at startup, so a key added later never reached `shell_execute`. Agents then tried to source `$MEMORY/env` (blocked) and suggested pasting the key into chat or copying it into the repo.
+
+- **Live:** shells, background tasks, agent subprocesses and MCP servers get the current Settings → Secrets as environment variables each time they start. Adding or rotating a key needs no restart.
+- **Masked:** secret values in any tool result (and in routed grok / claude output) are replaced with `[secret:NAME]` before they reach the transcript or the model. Agents can write scripts that use `$FOO_TOKEN` freely.
+- **Guided:** the system prompt and tool descriptions say to use `"$NAME"`. Sourcing `$MEMORY/env` is still blocked, and the error now lists the available names (never values).
+
+### Earlier — v0.4.18
 
 Highlights since **[v0.4.17](https://github.com/rendicott/marble/releases/tag/v0.4.17)** (schema **v12**, additive). Pairs with **[marble-desktop-peer v0.2.3](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.3)**.
 
@@ -803,7 +814,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.18](https://github.com/rendicott/marble/releases/tag/v0.4.18)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.19](https://github.com/rendicott/marble/releases/tag/v0.4.19)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 
