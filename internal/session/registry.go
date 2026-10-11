@@ -151,6 +151,14 @@ func (r *Registry) create(title, kind, parentID string) *Session {
 		s.Kind = "user"
 	}
 	s.ParentID = parentID
+	// New user sessions start on the saved catalog default when that model
+	// can still take a chat turn. Otherwise ModelID stays empty and the
+	// harness launch model is used. System sessions stay on the launch model.
+	if s.Kind == "user" {
+		if id := r.availableDefaultModelID(); id != "" {
+			s.ModelID = id
+		}
+	}
 	// Explicit create titles (system agents, cron-named sessions) stay pinned.
 	if s.Kind == "system" {
 		s.TitleCustom = true
@@ -165,6 +173,18 @@ func (r *Registry) create(title, kind, parentID string) *Session {
 	r.syncSessionRow(s)
 	r.notifyOpen(s)
 	return s
+}
+
+// availableDefaultModelID is the catalog slug to pin, or "" for the launch model.
+func (r *Registry) availableDefaultModelID() string {
+	if r == nil || r.sqldb == nil || !r.sqldb.Writable() {
+		return ""
+	}
+	id, err := r.sqldb.AvailableDefaultModelID()
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 func (r *Registry) notifyOpen(s *Session) {

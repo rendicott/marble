@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -8,6 +9,11 @@ import (
 
 	"github.com/rendicott/marble/internal/shellpolicy"
 )
+
+// SettingDefaultModelID is the catalog slug new sessions start on.
+// Empty means the harness launch model (--model). Not part of KnownSettings:
+// the Models screen writes it, and a section reset must not clear it.
+const SettingDefaultModelID = "default_model_id"
 
 // KnownSettings is the allow-list for PUT /api/settings (ADR-0007 Q10).
 var KnownSettings = map[string]bool{
@@ -153,6 +159,97 @@ func (d *DB) ResetSection(section string) error {
 		up[k] = defs[k]
 	}
 	return d.SetSettings(up)
+}
+
+// GetDefaultModelID returns the stored catalog slug, or "" when unset.
+// A non-empty value may still be unusable (deleted, disabled, or kind=image).
+func (d *DB) GetDefaultModelID() (string, error) {
+	if d == nil || d.SQL == nil {
+		return "", nil
+	}
+	v, _, err := d.getSettingRaw(SettingDefaultModelID)
+	return strings.TrimSpace(v), err
+}
+
+// SetDefaultModelID stores the catalog model new sessions should use.
+// Empty or "process" clears it so new sessions use the harness launch model.
+// The id must name an enabled chat model.
+func (d *DB) SetDefaultModelID(id string) error {
+	if d == nil || !d.Writable() {
+		return fmt.Errorf("database not writable")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" || id == "process" {
+		return d.setSettingRaw(SettingDefaultModelID, "")
+	}
+	if !modelIDRe.MatchString(id) {
+		return fmt.Errorf("invalid model id")
+	}
+	row, err := d.GetModelCatalog(id)
+	if err != nil || row == nil {
+		return fmt.Errorf("model %q is not in the catalog", id)
+	}
+	if !row.Enabled {
+		return fmt.Errorf("model %q is disabled", id)
+	}
+	if NormalizeModelKind(row.Kind) == "image" {
+		return fmt.Errorf("model %q is an image-generation model and cannot be the default session model", id)
+	}
+	return d.setSettingRaw(SettingDefaultModelID, row.ID)
+}
+
+// AvailableDefaultModelID is the catalog id to pin on a new session.
+// "" means the saved choice is missing or cannot take a chat turn, so the
+// caller uses the harness launch model.
+func (d *DB) AvailableDefaultModelID() (string, error) {
+	id, err := d.GetDefaultModelID()
+	if err != nil || id == "" || id == "process" {
+		return "", err
+	}
+	row, err := d.GetModelCatalog(id)
+	if err != nil || row == nil || !row.Enabled || NormalizeModelKind(row.Kind) == "image" {
+		return "", nil
+	}
+	return row.ID, nil
+}
+
+func (d *DB) getSettingRaw(key string) (string, bool, error) {
+	if d == nil || d.SQL == nil {
+		return "", false, nil
+	}
+	var v string
+	err := d.SQL.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
+func (d *DB) setSettingRaw(key, value string) error {
+	if d == nil || !d.Writable() {
+		return fmt.Errorf("database not writable")
+	}
+	_, err := d.SQL.Exec(`
+		INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+	`, key, value, UTCNow())
+	return err
+}
+
+// clearDefaultModelIf drops the saved default when it names id.
+func (d *DB) clearDefaultModelIf(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" || d == nil || !d.Writable() {
+		return
+	}
+	cur, err := d.GetDefaultModelID()
+	if err != nil || cur != id {
+		return
+	}
+	_ = d.setSettingRaw(SettingDefaultModelID, "")
 }
 
 // ValidateSetting checks a single key/value.

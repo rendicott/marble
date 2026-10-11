@@ -390,6 +390,9 @@ WHERE id=?`,
 	if n == 0 {
 		return fmt.Errorf("model not found")
 	}
+	if !r.Enabled || NormalizeModelKind(r.Kind) == "image" {
+		d.clearDefaultModelIf(r.ID)
+	}
 	return nil
 }
 
@@ -406,6 +409,7 @@ func (d *DB) DeleteModelCatalog(id string) error {
 	if n == 0 {
 		return fmt.Errorf("model not found")
 	}
+	d.clearDefaultModelIf(strings.TrimSpace(id))
 	return nil
 }
 

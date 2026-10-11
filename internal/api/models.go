@@ -27,6 +27,10 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if path == "default" {
+		s.handleDefaultModel(w, r)
+		return
+	}
 	parts := strings.Split(path, "/")
 	id := parts[0]
 	if len(parts) == 2 && parts[1] == "health" {
@@ -66,9 +70,65 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	saved, effective := s.defaultModelIDs()
+	for _, m := range out {
+		id, _ := m["id"].(string)
+		m["is_default"] = id == effective
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"models":         out,
-		"env_file_paths": config.EnvFilePaths(),
+		"models":              out,
+		"env_file_paths":      config.EnvFilePaths(),
+		"default_model_id":    effective,
+		"default_model_saved": saved,
+	})
+}
+
+// defaultModelIDs returns the stored catalog slug and the id new sessions
+// will actually use. effective is "process" when the saved choice is empty
+// or cannot take a chat turn.
+func (s *Server) defaultModelIDs() (saved, effective string) {
+	effective = session.ProcessCatalogID
+	d := s.db()
+	if d == nil || !d.Writable() {
+		return "", effective
+	}
+	if v, err := d.GetDefaultModelID(); err == nil {
+		saved = v
+	}
+	if id, err := d.AvailableDefaultModelID(); err == nil && id != "" {
+		effective = id
+	}
+	return saved, effective
+}
+
+func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut && r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	d := s.db()
+	if d == nil || !d.Writable() {
+		http.Error(w, "database not writable", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method == http.MethodPut {
+		var body struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if err := d.SetDefaultModelID(body.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		auth.LogAction("model_default", "id="+strings.TrimSpace(body.ID), auth.UserFromContext(r.Context()))
+	}
+	saved, effective := s.defaultModelIDs()
+	writeJSON(w, http.StatusOK, map[string]string{
+		"default_model_id":    effective,
+		"default_model_saved": saved,
 	})
 }
 

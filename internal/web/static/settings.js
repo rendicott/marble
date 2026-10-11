@@ -1598,6 +1598,12 @@
         envPaths.length > 0
           ? envPaths.map((p) => `<code class="mono">${escapeHtml(p)}</code>`).join(" or ")
           : `<code class="mono">$MEMORY/env</code>`;
+      const staleDefault =
+        res.default_model_saved &&
+        res.default_model_id === "process" &&
+        res.default_model_saved !== "process"
+          ? `<p class="hint">Saved default <code class="mono">${escapeHtml(res.default_model_saved)}</code> is unavailable, so new sessions use the process default.</p>`
+          : "";
       const rows = models
         .map((m) => {
           const id = m.id || "";
@@ -1635,10 +1641,24 @@
             m.auth_hint && !m.api_key_configured
               ? `<div class="model-row-auth-hint muted">${escapeHtml(m.auth_hint)}</div>`
               : "";
+          const isDefault = !!m.is_default;
+          const imageKind = m.kind === "image";
+          const canDefault = editable && !imageKind && m.enabled !== false;
+          const defaultTitle = imageKind
+            ? "Image models are not used as the session model"
+            : m.enabled === false
+              ? "Enable this model before making it the default"
+              : isDefault
+                ? "New sessions start on this model"
+                : "Start new sessions on this model";
           return `<div class="settings-group model-row" data-id="${escapeAttr(id)}">
             <div class="model-row-head">
               <div class="model-row-title">
                 <span class="model-row-name">${escapeHtml(m.display_name || id)}</span>
+                <label class="model-default${isDefault ? " on" : ""}" title="${escapeAttr(defaultTitle)}">
+                  <input type="checkbox" class="model-default-cb" data-id="${escapeAttr(id)}"${isDefault ? " checked" : ""}${canDefault ? "" : " disabled"} />
+                  Default
+                </label>
                 <span class="settings-chip">${escapeHtml(badge)}</span>
                 ${m.kind === "image" ? `<span class="settings-chip">image</span>` : ""}
                 ${keyChip}
@@ -1664,7 +1684,8 @@
         .join("");
       els.pane.innerHTML = `
         <h3>Models</h3>
-        <p class="hint">Process default is always available (CLI — restart to change). Catalog entries are selectable per session and optional on cron. Cost fields are stored for a future spend ADR — Marble does not bill. Max 32 entries.</p>
+        <p class="hint">Check <strong>Default</strong> on one model. New sessions start on it. If that model is missing, disabled, or an image model, new sessions use the process default (the model from harness launch). Cost fields are stored for a future spend ADR — Marble does not bill. Max 32 entries.</p>
+        ${staleDefault}
         <p class="hint">API keys never go in the catalog — only <strong>env var names</strong>. Put <code class="mono">NAME=secret</code> in ${envPathsHint}. Files are re-read automatically (no harness restart for catalog models). Process env (systemd) is checked first.</p>
         ${rows || "<p class='hint'>No catalog entries yet.</p>"}
         <div class="model-list-actions">
@@ -1987,6 +2008,19 @@
           if (!confirm("Delete model “" + id + "”?")) return;
           await api("/api/models/" + encodeURIComponent(id), { method: "DELETE" });
           renderModelsSection(editable);
+        };
+      });
+      els.pane.querySelectorAll(".model-default-cb").forEach((cb) => {
+        cb.onchange = async () => {
+          const id = cb.checked ? cb.getAttribute("data-id") || "process" : "process";
+          cb.disabled = true;
+          try {
+            await api("/api/models/default", { method: "PUT", body: JSON.stringify({ id }) });
+            await renderModelsSection(editable);
+          } catch (e) {
+            alert(e.message || String(e));
+            await renderModelsSection(editable);
+          }
         };
       });
       els.pane.querySelectorAll(".model-test").forEach((btn) => {

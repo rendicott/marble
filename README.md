@@ -4,7 +4,18 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.21
+## What's new in v0.4.22
+
+Highlights since **[v0.4.21](https://github.com/rendicott/marble/releases/tag/v0.4.21)** (no schema change):
+
+### A default model for new sessions
+Settings → Models has a **Default** checkbox beside each model. The choice is stored in the database.
+
+- A new session starts on that catalog model when it is enabled and is a chat model.
+- If the saved model is missing, disabled, or an image model, the new session uses the process default from harness launch.
+- Existing sessions keep the model they already have. Image models cannot be the default.
+
+### Earlier — v0.4.21
 
 Highlights since **[v0.4.20](https://github.com/rendicott/marble/releases/tag/v0.4.20)** (no schema change):
 
@@ -416,7 +427,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Cron (ADR-0015)** — durable recurring schedules: `cron_list` / `cron_get` / `cron_create` / `cron_update` / `cron_delete` / `cron_run` (optional `model_id`)
 - **Turn sinks (ADR-0028)** — mirror finished turns to Orb / Slack / ntfy / Discord / webhook / stdout (`$MEMORY/sinks.json`). Settings → Sinks plus `manage_sinks` (list/create/update/delete/test; per-session `set_override`). Secrets by env-var **name** only.
 - **Agent presets (ADR-0030 / ADR-0031)** — Settings → Agents catalog of grok/claude/opencode CLIs with host detection; session **route** picker locks a session to a subprocess; right-click/long-press Send routes one turn. Subprocess **context** defaults to `full+memory` (opt out with `context=none`). Tools: `agent_preset_list` / `agent_preset_get` / `session_set_agent_preset` / `session_set_subprocess_context`.
-- **Models (ADR-0018 / ADR-0033)** — `model_list` / `model_get` / **`model_add`** / **`model_update`** / `session_set_model` (catalog writes store env **names** only; agent can research base_url & limits via web tools). Rows carry **`kind`**: `chat` (default) or **`image`** for Images-API models called through **`generate_image`**
+- **Models (ADR-0018 / ADR-0033)** — `model_list` / `model_get` / **`model_add`** / **`model_update`** / `session_set_model` (catalog writes store env **names** only; agent can research base_url & limits via web tools). Rows carry **`kind`**: `chat` (default) or **`image`** for Images-API models called through **`generate_image`**. Settings → Models **Default** checkbox stores the catalog model new sessions start on (`settings.default_model_id`); an unavailable choice falls back to the harness launch model
 - **Computer use (ADR-0020)** — `computer_*` tools against a paired **[marble-peer](https://github.com/rendicott/marble-desktop-peer)** (browser CDP + desktop + confirm). Confirm cards in the session UI and a Tailscale-reachable `/confirm/{id}` page.
 - **Web** — `web_fetch` (HTTP(S) → markdown/JSON); prefer after MCP search when available; image URLs go through `attach_from_url`
 - **External agents (ADR-0014)** — `call_agent_process` (`format=grok|claude`) with optional `workdir`, high timeouts, `background` mode
@@ -840,7 +851,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.21](https://github.com/rendicott/marble/releases/tag/v0.4.21)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.22](https://github.com/rendicott/marble/releases/tag/v0.4.22)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 

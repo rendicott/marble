@@ -2036,6 +2036,27 @@ button.tip {
   font-size: 0.9rem;
   color: var(--text);
 }
+.model-default {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.model-default input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.model-default input:disabled {
+  cursor: not-allowed;
+}
+.model-default.on {
+  color: var(--text);
+}
 .model-row-actions {
   display: flex;
   gap: 0.3rem;
