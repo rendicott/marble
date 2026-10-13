@@ -4,7 +4,19 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.22
+## What's new in v0.4.23
+
+Highlights since **[v0.4.22](https://github.com/rendicott/marble/releases/tag/v0.4.22)** (no schema change):
+
+### Complex work fans out by default
+The system prompt now tells the agent when to delegate, so a complex task no longer needs an explicit "use subagents" instruction.
+
+- A simple question or a single small edit is still answered in the turn. That work is not fanned out.
+- Several independent investigations, a multi-file build, or a long job starts its pieces together (`call_agent_process` in the background, or `start_background_task`) and schedules a `wait_for_task` continuation for each result the next step needs.
+- A continuation prompt must say what to verify and what not to trust, not merely whether the task finished.
+- The turn reports what it started and what it is waiting on, instead of blocking on polls.
+
+### Earlier — v0.4.22
 
 Highlights since **[v0.4.21](https://github.com/rendicott/marble/releases/tag/v0.4.21)** (no schema change):
 
@@ -851,7 +863,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.22](https://github.com/rendicott/marble/releases/tag/v0.4.22)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.23](https://github.com/rendicott/marble/releases/tag/v0.4.23)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 

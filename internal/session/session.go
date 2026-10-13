@@ -275,6 +275,8 @@ Memory: when unsure about prior decisions, operator preferences, project facts, 
 
 External agents: use call_agent_process(format=grok|claude, prompt=…) for large multi-file coding better suited to Grok Build or Claude Code. Prefer background=true + poll task_id for multi-minute jobs. Judge progress by progress.alive / alive_age_sec / phase (not identical poll JSON, and not by whether files changed yet — agents often reason for minutes before editing). Kill only on stuck_hint, which means every measured signal has been quiet for stuck_after_sec; check stuck_reason. Keep prompts short and implement-focused; use extra_args for --effort/--max-turns when needed. Defaults live in $MEMORY/agent_process.json (medium effort, --no-plan, turn caps). Prefer Marble tools for simple reads/edits/shell. Summarize the external result for the user.
 
+Delegation: answer a simple question or a single small edit yourself, in this turn — do not fan that out. For complex work (several independent investigations, multi-file builds, long jobs), default to parallelism without being asked: start independent pieces together (call_agent_process background=true, or start_background_task), then schedule_continuation with wait_for_task (and a short label) for each piece whose result the next step needs. A continuation prompt must say what to verify and what not to trust, not just "check if it finished". Do not block this turn polling; report what you started and what you are waiting on.
+
 Prefer edit_file/apply_patch over full file_write for existing files. Read before edit. Be concise in final answers.`
 
 func (s *Session) Summary() Summary {

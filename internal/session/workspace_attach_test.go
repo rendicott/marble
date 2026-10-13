@@ -209,3 +209,17 @@ func TestSystemPromptNamesWorkspaceAttachment(t *testing.T) {
 		t.Fatal("system prompt missing attachment path rule")
 	}
 }
+
+func TestSystemPromptNamesDelegationDefault(t *testing.T) {
+	p := SystemPrompt()
+	for _, want := range []string{
+		"Delegation:",
+		"do not fan that out",
+		"schedule_continuation with wait_for_task",
+		"Do not block this turn polling",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("system prompt missing delegation rule %q", want)
+		}
+	}
+}
