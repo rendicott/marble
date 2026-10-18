@@ -273,4 +273,7 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release upload "$TAG" "dist/Marble-Harness-${TAG}-macOS-arm64.dmg" --clobber
+          # This job downloads an artifact instead of checking out the repo, so gh
+          # has no .git to discover the remote from.
+          gh release upload "$TAG" "dist/Marble-Harness-${TAG}-macOS-arm64.dmg" \
+            --repo rendicott/marble --clobber
