@@ -4,12 +4,15 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.23
+## What's new in v0.4.24
 
-Highlights since **[v0.4.22](https://github.com/rendicott/marble/releases/tag/v0.4.22)** (no schema change):
+Highlights since **[v0.4.23](https://github.com/rendicott/marble/releases/tag/v0.4.23)** (no schema change):
 
 ### Complex work fans out by default
 The system prompt now tells the agent when to delegate, so a complex task no longer needs an explicit "use subagents" instruction.
+
+### Signed macOS DMG (workflow only, needs secrets)
+The release workflow can now sign the Darwin binary with a stable Developer ID, notarize it, and attach a stapled DMG to the release. It skips that job until the Apple secrets below are set, so current releases are unchanged.
 
 - A simple question or a single small edit is still answered in the turn. That work is not fanned out.
 - Several independent investigations, a multi-file build, or a long job starts its pieces together (`call_agent_process` in the background, or `start_background_task`) and schedules a `wait_for_task` continuation for each result the next step needs.
@@ -863,7 +866,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.23](https://github.com/rendicott/marble/releases/tag/v0.4.23)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.24](https://github.com/rendicott/marble/releases/tag/v0.4.24)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 
@@ -872,8 +875,26 @@ Desktop peer binaries are published from the peer repo: **[marble-desktop-peer r
 | `marble-harness-linux-amd64` | Linux x86_64 |
 | `marble-harness-linux-arm64` | Linux aarch64 |
 | `marble-harness-darwin-arm64` | macOS Apple Silicon |
+| `Marble-Harness-<tag>-macOS-arm64.dmg` | macOS Apple Silicon, signed + notarized (only when Apple secrets are set) |
 
 Also attached: `SHA256SUMS`.
+
+### Signed macOS DMG
+
+The Linux binaries are cross-compiled and unsigned. The macOS DMG is a separate job (`macos-dmg` in `.github/workflows/release.yml`) that runs on a `macos-14` runner. It signs `marble-harness` with a fixed identifier, `com.rendicott.marble-harness`, wraps it in a DMG, notarizes with `notarytool`, staples the ticket, and uploads the DMG onto the same release. A stable Developer ID is what keeps macOS Files-and-Folders grants alive across upgrades — an ad-hoc signature gets a new cdhash every build and macOS treats it as a different app, which is why the Downloads prompt returns after every bump.
+
+The job checks for its secrets first and skips cleanly when any are missing, so a release still publishes the unsigned binaries. Add these under **Settings → Secrets and variables → Actions** (never commit them):
+
+| Secret | What it is |
+|--------|------------|
+| `APPLE_CERTIFICATE_P12_BASE64` | Base64 of the Developer ID Application `.p12` (`base64 -i cert.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for that `.p12` |
+| `APPLE_SIGNING_IDENTITY` | Exact identity string, e.g. `Developer ID Application: Name (TEAMID)` |
+| `APPLE_API_ISSUER` | App Store Connect API issuer ID (UUID) |
+| `APPLE_API_KEY_ID` | App Store Connect API key ID |
+| `APPLE_API_KEY_BASE64` | Base64 of the API key `.p8` |
+
+The certificate must be **Developer ID Application**, not a development or distribution cert, and the API key needs the Developer role so `notarytool` can submit. Once the secrets are present, the next tag builds the DMG with no further changes.
 
 ```bash
 # After downloading from https://github.com/rendicott/marble/releases
