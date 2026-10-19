@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0037</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0037</span>
+      <span class="status proposed">Proposed</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0037-search-sessions.md">Markdown</a>
+      <a href="0037-review.html">Review</a>
+      <a href="0036-doc.html">← 0036</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0037-search-sessions">ADR-0037: Search Sessions</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Proposed</strong></td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-10-18</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>ui, search, sessions, sqlite, privacy</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0002 (session memory), ADR-0007 (settings UI), ADR-0013 (system prompt &amp; soul), ADR-0023 (clerk)</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>Field request: the operator wants to type &ldquo;android&rdquo; and land on the sessions where that work happened, instead of scrolling the sidebar. The eye icon that opens the system prompt is in the way of the button that should do it.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>The sidebar lists sessions by title and recency. Finding old work means remembering which session it was, or opening them one by one. Titles are a weak signal: <code>deriveAutoTitle</code> copies the latest user message, so a long session about an Android app may be titled with whatever was asked last.</p>
+<p>The button the operator wants for search is already occupied. <code>internal/web/static/index.html</code> line 249:</p>
+<pre><code class="language-html">&lt;button id=&quot;btn-prompt&quot; class=&quot;icon-btn&quot; type=&quot;button&quot;
+        title=&quot;System prompt &amp;amp; every-turn context&quot; …&gt;👁&lt;/button&gt;
+</code></pre>
+<p><code>prompt.js</code> binds it and opens <code>#prompt-modal</code> (<code>index.html</code> lines 68–96), which shows the immutable system prompt and edits <code>soul.md</code> through <code>/api/prompt</code>. That viewer is used rarely. Search would be used constantly. The eye has to move, not share the spot.</p>
+<p>Sessions live in two places. The canonical transcript is <code>$MEMORY/session/&lt;id&gt;.md</code>, written by <code>Registry.PersistSession</code> (<code>internal/session/registry.go</code>). A live session sits in the registry until then: <code>Session.endTurn</code> (<code>internal/session/session.go</code>) marks it dirty, and the daemon flushes dirty sessions on its sweep, so a session can be minutes old and still absent from disk. Any index built only from disk misses the session the operator is in right now.</p>
+<p><code>marble.db</code> is at schema v13 (<code>CurrentSchemaVersion</code> in <code>internal/db/db.go</code>), migrated stepwise by <code>upgradeSchema</code>. FTS5 is compiled into the <code>modernc.org/sqlite</code> build already in <code>go.mod</code>, so a full-text table needs no new dependency. <code>config.ScrubSecrets</code> (<code>internal/config/env_file.go</code>) already strips known secret values from tool output before it is shown.</p>
+<h2 id="decision">Decision</h2>
+<p>A magnifying glass replaces the eye. It opens a small modal that searches sessions as the operator types, and lists each hit as a session id plus a short description. Clicking a hit calls <code>selectSession(id)</code> and closes the modal.</p>
+<h3 id="locked">Locked</h3>
+<ol>
+<li><strong>The eye does not remain.</strong> <code>#btn-prompt</code> becomes the search button (magnifying glass, <code>aria-label="Search sessions"</code>). <code>#prompt-modal</code> is removed from the top bar.</li>
+<li><strong>The system prompt moves into Settings as its own tab.</strong> Settings tabs are not registered by a function: <code>index.html</code> lines 188–200 are <code>&lt;button data-sec="…"&gt;</code> elements, and <code>settings.js</code> <code>render()</code> (line 2248) branches on the <code>section</code> value set by the click handler at line 2801. Add <code>&lt;button data-sec="prompt"&gt;</code> and a branch. The branch reuses the <code>/api/prompt</code> load and save that <code>prompt.js</code> already performs, and it must set the settings <code>dirty</code> flag so a half-edited soul survives switching tabs.</li>
+<li><strong>Search covers this harness only.</strong> One memory directory, both user and system sessions, including closed ones. No cross-harness search, no peer search.</li>
+<li><strong>No embeddings, no third-party search engine, no new dependency.</strong> &ldquo;Basic semantic&rdquo; is defined below, and that definition is the whole of it.</li>
+</ol>
+<h3 id="what-basic-semantic-means">What &ldquo;basic semantic&rdquo; means</h3>
+<p>Tokenize on non-alphanumeric boundaries, lowercase, drop tokens shorter than three characters, strip one trailing <code>s</code>. Then expand through a small alias table compiled into the binary, applied at query time:</p>
+<pre><code>android → apk, gradle, adb, aapt
+ios     → xcode, swift, ipa
+dmg     → hdiutil, notarize, codesign
+</code></pre>
+<p>So the query &ldquo;android&rdquo; matches a session whose transcript never says &ldquo;android&rdquo; but does say &ldquo;apk&rdquo; and &ldquo;gradle&rdquo;. The table is bidirectional and hand-maintained; growing it is a code change, not a model update.</p>
+<p>It does <strong>not</strong> mean embeddings, a vector index, an external service, or LLM query rewriting. A query for &ldquo;the mobile build&rdquo; will not find an Android session unless a token or an alias overlaps. That gap is accepted for v1.</p>
+<h3 id="index">Index</h3>
+<p>Schema v14, in the existing <code>marble.db</code>, through <code>upgradeSchema</code> like every prior bump. Two tables:</p>
+<ul>
+<li><code>session_search(session_id PRIMARY KEY, title, description, updated_at, source_hash)</code> — what the modal renders, plus a hash so a sweep can skip unchanged transcripts.</li>
+<li><code>session_search_terms(session_id, term, count, PRIMARY KEY(session_id, term))</code> with an index on <code>term</code>.</li>
+</ul>
+<p>A per-session term list with counts, not positional postings and not an FTS5 copy of the transcript. The markdown file stays the only full copy. Counts are enough to score &ldquo;does this session mention apk, and how much&rdquo;; phrase search is out of scope for a modal that returns sessions rather than lines. FTS5 remains available later without a dependency change if phrase search is ever wanted.</p>
+<p>Updates:</p>
+<ul>
+<li><strong>On message append</strong>, the live session&rsquo;s term set is updated in memory. This is what makes a not-yet-flushed session searchable.</li>
+<li><strong>On <code>endTurn</code></strong>, that term set merges into SQLite, even though the markdown flush may still be minutes away.</li>
+<li><strong>On the daemon sweep</strong>, sessions whose <code>source_hash</code> differs from the file on disk are reindexed from <code>memory.DecodeSession</code>. This also catches transcripts written out of band.</li>
+</ul>
+<p>A query unions the SQLite rows with the in-memory term sets, so the session open right now is always included. If <code>marble.db</code> is not writable, the endpoint returns 503 and the modal says search is unavailable. No second index file is built for limp mode.</p>
+<h3 id="privacy">Privacy</h3>
+<p>Indexed: user and assistant message text, and tool results after <code>config.ScrubSecrets</code>, clipped (see Q5).</p>
+<p>Not indexed: <code>$MEMORY/env</code> and soul text, attachment bytes, the system prompt, <code>tool_args_json</code> from <code>session_events</code> (it can carry secrets the model passed and is not the transcript), thinking and harness messages (see Q5).</p>
+<p><code>GET /api/sessions/search?q=</code> is operator-auth only. It must not be added to <code>isPublicPath</code>. Device tokens, enroll, and the peer websocket cannot call it. The response is <code>{id, description, updated_at}</code> — no matching snippet, because a snippet of tool output is exactly where a secret would leak. The description itself is operator-authored or clerk-authored text, which the operator already sees in the sidebar.</p>
+<h2 id="open-questions">Open questions</h2>
+<p>These are posed, with recommendations, in <code>0037-review.html</code>. They are not decided here.</p>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q1 Short description</td>
+<td>Clerk summary when one exists, else the session title. No generated blurb.</td>
+</tr>
+<tr>
+<td>Q2 Postings vs term list</td>
+<td>Per-session term list with counts, as designed above.</td>
+</tr>
+<tr>
+<td>Q3 Live sessions</td>
+<td>Incremental in-memory term set updated on message append, not a transcript scan per keystroke.</td>
+</tr>
+<tr>
+<td>Q4 Cap and ranking</td>
+<td>20 results. Match strength first, recency as the tiebreak.</td>
+</tr>
+<tr>
+<td>Q5 What gets indexed</td>
+<td>User and assistant in full (capped), tool results scrubbed and clipped to 2 KiB, thinking excluded.</td>
+</tr>
+<tr>
+<td>Q6 Debounce and minimum length</td>
+<td>150 ms debounce, 2 character minimum.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li>One schema bump, v13 → v14, following <code>upgradeSchema</code>. An older harness opening the bumped database goes read-only, as it does today for any newer schema.</li>
+<li>The first run after upgrade indexes every <code>$MEMORY/session/*.md</code>. That is a background sweep, not a blocker for startup.</li>
+<li>The alias table will be wrong sometimes and silently. A session about Apache Groovy matches &ldquo;gradle&rdquo; only if the table says so. This is the cost of refusing an embeddings service, and it is the right cost for v1.</li>
+<li>Removing <code>#prompt-modal</code> deletes the only UI for <code>soul.md</code> unless the Settings tab lands in the same change. They ship together.</li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0037-search-sessions.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

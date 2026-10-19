@@ -196,6 +196,12 @@
   let draft = {};
   let mcpDraft = null;
   let mcpDirty = false;
+  // Prompt tab (ADR-0037). promptDirty is the settings dirty flag for soul.md.
+  // The draft is kept across tab switches so a half-edited soul is still there
+  // when the operator comes back. Closing Settings still asks before discard.
+  let promptLoaded = null;
+  let promptDraft = "";
+  let promptDirty = false;
   let uiPrefs = loadUIPrefs();
 
   function loadUIPrefs() {
@@ -2224,6 +2230,8 @@
       section === "sinks"
     )
       els.save.disabled = true;
+    // Soul is $MEMORY/soul.md, not marble.db, so limp mode can still save it.
+    if (section === "prompt") els.save.disabled = !promptDirty;
   }
 
   function val(key) {
@@ -2398,6 +2406,9 @@
       };
       a.addEventListener("change", mark);
       b.addEventListener("change", mark);
+    } else if (section === "prompt") {
+      els.pane.innerHTML = `<h3>System prompt</h3><p class="hint">Loading…</p>`;
+      renderPromptSection();
     } else if (section === "about") {
       const mcp = data.mcp || {};
       els.pane.innerHTML = `
@@ -2653,7 +2664,90 @@
     return Object.keys(updates).some((k) => k.startsWith("shell_"));
   }
 
+  async function renderPromptSection() {
+    try {
+      if (!promptLoaded) {
+        const body = await api("/api/prompt");
+        promptLoaded = {
+          system: body.system_prompt || "",
+          soul: body.soul != null ? String(body.soul) : "",
+          max: body.soul_max_chars || 65536,
+          path: body.soul_path_abs || body.soul_path || "soul.md",
+        };
+        if (!promptDirty) promptDraft = promptLoaded.soul;
+      }
+    } catch (e) {
+      if (section === "prompt") {
+        els.pane.innerHTML = `<h3>System prompt</h3><p class="hint">${escapeHtml(e.message || String(e))}</p>`;
+      }
+      return;
+    }
+    if (section !== "prompt" || !promptLoaded) return;
+    const max = promptLoaded.max || 65536;
+    const soul = promptDirty ? promptDraft : promptLoaded.soul;
+    const n = soul.length;
+    els.pane.innerHTML = `
+      <h3>System prompt &amp; every-turn context</h3>
+      <p class="hint">The system prompt is built into Marble and cannot be edited. Every-turn context (soul) is optional text injected after it on user sessions. Saved as <code>${escapeHtml(promptLoaded.path)}</code>. Not part of the chat transcript.</p>
+      <div class="prompt-sec">
+        <h3>System prompt <span class="muted">(immutable)</span></h3>
+        <pre id="settings-prompt-system" class="prompt-system" tabindex="0"></pre>
+      </div>
+      <div class="prompt-sec">
+        <div class="prompt-soul-head">
+          <h3>Every-turn context <span class="muted">(soul)</span></h3>
+          <span id="settings-prompt-count" class="muted prompt-count ${n > max ? "over" : ""}">${n} / ${max}</span>
+        </div>
+        <textarea id="settings-prompt-soul" class="prompt-soul" spellcheck="true" placeholder="Optional standing context for every turn…"></textarea>
+      </div>
+    `;
+    const pre = document.getElementById("settings-prompt-system");
+    if (pre) pre.textContent = promptLoaded.system;
+    const ta = document.getElementById("settings-prompt-soul");
+    if (!ta) return;
+    ta.value = soul;
+    const countEl = document.getElementById("settings-prompt-count");
+    const updateCount = () => {
+      const len = ta.value.length;
+      if (!countEl) return;
+      countEl.textContent = `${len} / ${max}`;
+      countEl.classList.toggle("over", len > max);
+    };
+    ta.addEventListener("input", () => {
+      promptDraft = ta.value;
+      promptDirty = ta.value !== promptLoaded.soul;
+      dirty = promptDirty;
+      setDirty(promptDirty);
+      updateCount();
+    });
+    setDirty(promptDirty);
+  }
+
+  async function savePrompt() {
+    if (!promptLoaded) return;
+    const max = promptLoaded.max || 65536;
+    const ta = document.getElementById("settings-prompt-soul");
+    const soul = ta ? ta.value : promptDraft;
+    if (soul.length > max) {
+      alert(`Soul exceeds max size (${max} characters).`);
+      return;
+    }
+    await api("/api/prompt", {
+      method: "PUT",
+      body: JSON.stringify({ soul }),
+    });
+    promptLoaded.soul = soul;
+    promptDraft = soul;
+    promptDirty = false;
+    dirty = false;
+    setDirty(false);
+  }
+
   async function save() {
+    if (section === "prompt") {
+      await savePrompt();
+      return;
+    }
     if (section === "ui") {
       const a = document.getElementById("pref-show-closed");
       const b = document.getElementById("pref-dotfiles");
@@ -2748,6 +2842,9 @@
     draft = {};
     mcpDraft = null;
     mcpDirty = false;
+    promptLoaded = null;
+    promptDraft = "";
+    promptDirty = false;
     dirty = false;
     setDirty(false);
     els.nav.querySelectorAll("button").forEach((b) => {
@@ -2762,12 +2859,15 @@
   }
 
   function closeModal() {
-    if (dirty || mcpDirty) {
+    if (dirty || mcpDirty || promptDirty) {
       if (!confirm("Discard unsaved settings changes?")) return;
     }
     els.modal.hidden = true;
     draft = {};
     mcpDirty = false;
+    promptLoaded = null;
+    promptDraft = "";
+    promptDirty = false;
     dirty = false;
   }
 
@@ -2791,7 +2891,9 @@
   );
   els.nav.querySelectorAll("button").forEach((b) => {
     b.addEventListener("click", async () => {
-      if (dirty || mcpDirty) {
+      // Soul edits set promptDirty and are kept across tabs. Other sections
+      // still confirm before their own draft is dropped.
+      if (section !== "prompt" && (dirty || mcpDirty)) {
         if (!confirm("Switch section and discard unsaved edits in this form?"))
           return;
         draft = {};
@@ -2802,7 +2904,8 @@
       els.nav
         .querySelectorAll("button")
         .forEach((x) => x.classList.toggle("sel", x === b));
-      setDirty(false);
+      if (section === "prompt") setDirty(promptDirty);
+      else setDirty(false);
       if (section === "mcp") await renderMCP();
       else render();
     });

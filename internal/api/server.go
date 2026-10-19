@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -259,6 +260,44 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleSessionSearch serves GET /api/sessions/search?q= (ADR-0037).
+// Operator auth only: the route is not in isPublicPath. A non-writable
+// marble.db is 503. The body is id, description, and updated_at — no snippet.
+func (s *Server) handleSessionSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.Registry == nil || s.Registry.DB() == nil || !s.Registry.DB().Writable() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "search unavailable"})
+		return
+	}
+	hits, err := s.Registry.SearchSessions(r.URL.Query().Get("q"))
+	if err != nil {
+		if errors.Is(err, session.ErrSearchUnavailable) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "search unavailable"})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := make([]sessionSearchHit, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, sessionSearchHit{
+			ID:          h.ID,
+			Description: h.Description,
+			UpdatedAt:   h.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"hits": out})
+}
+
+type sessionSearchHit struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 // markCronSessions sets Summary.Cron / CronJobs for list rows (ADR-0015 UI badge).
 func (s *Server) markCronSessions(list []session.Summary) {
 	bound := map[string][]string{}
@@ -301,6 +340,12 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 	path = strings.Trim(path, "/")
 	if path == "" {
 		http.NotFound(w, r)
+		return
+	}
+	// ADR-0037. Not a session id — generated ids are 10 characters, and this
+	// must stay off isPublicPath so only an operator session can call it.
+	if path == "search" {
+		s.handleSessionSearch(w, r)
 		return
 	}
 	parts := strings.Split(path, "/")

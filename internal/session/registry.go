@@ -166,6 +166,7 @@ func (r *Registry) create(title, kind, parentID string) *Session {
 		s.TitleCustom = true
 	}
 	s.dirty = true
+	s.searchFlush = r.flushSearch
 	r.mu.Lock()
 	r.sessions[id] = s
 	r.mu.Unlock()
@@ -303,6 +304,7 @@ func (r *Registry) EnsureLoaded(id string) (*Session, error) {
 	}
 	s := newSession(doc.ID, doc.Title)
 	s.LoadFromDoc(doc)
+	s.searchFlush = r.flushSearch
 	if r.sqldb != nil && r.sqldb.Writable() {
 		if cid, err := r.sqldb.GetSessionComputerID(id); err == nil {
 			s.ComputerID = cid

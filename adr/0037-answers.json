@@ -1,0 +1,17 @@
+{
+  "adr": "0037",
+  "title": "Search sessions",
+  "saved_at": "2026-10-18T21:51:42.443Z",
+  "answers": [
+    {"qid": "L1", "status": "locked", "choice": "rec", "decision": "Magnifying glass replaces #btn-prompt. #prompt-modal is removed."},
+    {"qid": "L2", "status": "locked", "choice": "rec", "decision": "New data-sec=prompt button plus a render() branch. Ships in the same change as removing the modal."},
+    {"qid": "L3", "status": "locked", "choice": "rec", "decision": "No cross-harness or peer search."},
+    {"qid": "L4", "status": "locked", "choice": "rec", "decision": "Alias table only. android→apk,gradle,adb,aapt and a few siblings."},
+    {"qid": "Q1", "status": "answered", "choice": "rec", "decision": "Clerk summary when one exists, otherwise the session title. No generated blurb."},
+    {"qid": "Q2", "status": "answered", "choice": "rec", "decision": "Per-session term list with counts. Not positional postings, not an FTS5 copy of the transcript."},
+    {"qid": "Q3", "status": "answered", "choice": "rec", "decision": "Incremental in-memory term set, updated as messages arrive. Never scan the transcript on a keystroke."},
+    {"qid": "Q4", "status": "answered", "choice": "rec", "decision": "Cap at 20. Rank by match strength, break ties by recency."},
+    {"qid": "Q5", "status": "answered", "choice": "rec", "decision": "Index user and assistant text in full (capped at 8 KiB), tool results only after ScrubSecrets and clipped to 2 KiB, and exclude thinking and harness messages."},
+    {"qid": "Q6", "status": "answered", "choice": "rec", "decision": "150 ms debounce, 2 character minimum."}
+  ]
+}

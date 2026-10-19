@@ -1115,6 +1115,108 @@
     }
   }
 
+  // Sanitized markdown HTML, keyed sessionId:messageId:contentHash.
+  // Invalidation is key change only. contentHash covers role, content, attachment
+  // ids, and the expanded flag, so an edit misses and another session id never hits.
+  // Entries are not rewritten in place. Past MD_CACHE_MAX the oldest insertion is
+  // dropped so a long-lived tab cannot grow without bound. Values are the string
+  // returned by renderMarkdown, which has already run DOMPurify.
+  const MD_CACHE_MAX = 2000;
+  const MD_DEFER_MIN = 40;
+  const mdHtmlCache = new Map();
+  /** @type {WeakMap<HTMLElement, {content: string, key: string}>} */
+  const mdPending = new WeakMap();
+  let mdUpgradeGen = 0;
+  let paintedTranscriptSig = "";
+
+  function hashMix(h1, h2, str) {
+    h1 = ((h1 << 5) + h1) ^ 0;
+    h2 = ((h2 << 5) + h2) ^ 0;
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charCodeAt(i);
+      h1 = ((h1 << 5) + h1) ^ c;
+      h2 = ((h2 << 5) + h2) ^ c;
+    }
+    return [h1, h2];
+  }
+
+  function hashParts(parts) {
+    let h1 = 5381;
+    let h2 = 52711;
+    for (let p = 0; p < parts.length; p++) {
+      const mixed = hashMix(h1, h2, parts[p] == null ? "" : String(parts[p]));
+      h1 = mixed[0];
+      h2 = mixed[1];
+    }
+    return (h1 >>> 0).toString(36) + "." + (h2 >>> 0).toString(36);
+  }
+
+  function attachmentIds(m) {
+    const atts = m && m.attachments;
+    if (!atts || !atts.length) return "";
+    let s = "";
+    for (let i = 0; i < atts.length; i++) {
+      if (i) s += ",";
+      s += atts[i] && atts[i].id ? atts[i].id : "";
+    }
+    return s;
+  }
+
+  function mdContentHash(m) {
+    return hashParts([
+      (m && m.role) || "",
+      (m && m.content) || "",
+      attachmentIds(m),
+      m && m._expanded ? "1" : "0",
+    ]);
+  }
+
+  function mdCacheKey(m) {
+    return (activeId || "") + ":" + ((m && m.id) || "") + ":" + mdContentHash(m);
+  }
+
+  function mdCacheGet(key) {
+    return mdHtmlCache.has(key) ? mdHtmlCache.get(key) : null;
+  }
+
+  function mdCacheSet(key, html) {
+    if (mdHtmlCache.has(key)) mdHtmlCache.delete(key);
+    mdHtmlCache.set(key, html);
+    while (mdHtmlCache.size > MD_CACHE_MAX) {
+      const oldest = mdHtmlCache.keys().next().value;
+      mdHtmlCache.delete(oldest);
+    }
+  }
+
+  function transcriptPaintSig() {
+    let s = (activeId || "") + "#" + messages.length + "#";
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      s += (m.id || "") + ":" + mdContentHash(m) + ";";
+    }
+    return s;
+  }
+
+  function sameMessageList(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const x = a[i];
+      const y = b[i];
+      if ((x.id || "") !== (y.id || "")) return false;
+      if ((x.role || "") !== (y.role || "")) return false;
+      if ((x.content || "") !== (y.content || "")) return false;
+      if (!!x._expanded !== !!y._expanded) return false;
+      if (attachmentIds(x) !== attachmentIds(y)) return false;
+    }
+    return true;
+  }
+
+  function transcriptDomMatchesPaint() {
+    if (!els.transcript || !paintedTranscriptSig) return false;
+    if (paintedTranscriptSig !== transcriptPaintSig()) return false;
+    return els.transcript.querySelectorAll(".bubble").length === messages.length;
+  }
+
   /**
    * @param {{ forceScroll?: boolean }} [opts]
    * forceScroll: jump to bottom (session open / send). Otherwise keep place if user scrolled up.
@@ -1122,18 +1224,29 @@
   function renderTranscript(opts) {
     const forceScroll = !!(opts && opts.forceScroll);
     const pinBefore = transcriptPinnedToBottom;
+    // Unchanged list (including a sync that only re-fetched): leave the DOM.
+    if (transcriptDomMatchesPaint()) {
+      if (forceScroll || pinBefore) scrollTranscriptToBottom(true);
+      return;
+    }
+
     const prevTop = els.transcript ? els.transcript.scrollTop : 0;
     const prevHeight = els.transcript ? els.transcript.scrollHeight : 0;
+
+    mdUpgradeGen++;
+    const gen = mdUpgradeGen;
 
     // Preserve turn card node across transcript rebuilds
     detachTurnCard();
     lastPlacedTurnStart = null;
     els.transcript.innerHTML = "";
+    paintedTranscriptSig = "";
     if (!activeId) {
       const d = document.createElement("div");
       d.className = "empty";
       d.textContent = "Create a session to start chatting with the local model.";
       els.transcript.appendChild(d);
+      paintedTranscriptSig = transcriptPaintSig();
       return;
     }
     if (!messages.length) {
@@ -1141,11 +1254,21 @@
       d.className = "empty";
       d.textContent = "Send a message. History is included on every turn (within context budget).";
       els.transcript.appendChild(d);
+      paintedTranscriptSig = transcriptPaintSig();
       return;
     }
+
+    // Long transcripts: paint plain text first, then upgrade markdown from the tail.
+    // Short ones stay synchronous. Cache hits paint HTML on this pass either way.
+    const defer = messages.length > MD_DEFER_MIN;
+    const frag = document.createDocumentFragment();
+    const pending = [];
     for (const m of messages) {
-      els.transcript.appendChild(bubbleEl(m));
+      frag.appendChild(bubbleEl(m, defer ? { deferMarkdown: true, pending } : null));
     }
+    els.transcript.appendChild(frag);
+    paintedTranscriptSig = transcriptPaintSig();
+
     // Re-inject progress after the latest user turn (tools/assistant already below when live)
     if (turnProgress && hasTurnContent(turnProgress)) {
       renderTurnCard(turnProgress);
@@ -1160,6 +1283,52 @@
       els.transcript.scrollTop = Math.max(0, prevTop + Math.max(0, delta));
       transcriptPinnedToBottom = false;
     }
+
+    if (pending.length) scheduleMarkdownUpgrade(pending, gen);
+  }
+
+  function scheduleMarkdownUpgrade(pending, gen) {
+    let index = pending.length - 1;
+    let frames = 0;
+    const pump = (deadline) => {
+      if (gen !== mdUpgradeGen) return;
+      const t0 = performance.now();
+      let budget = 12;
+      if (deadline && typeof deadline.timeRemaining === "function") {
+        const rem = deadline.timeRemaining();
+        if (rem > 0) budget = Math.min(24, Math.max(8, rem));
+      }
+      while (index >= 0) {
+        upgradeMarkdownBody(pending[index]);
+        index--;
+        if (performance.now() - t0 >= budget) break;
+      }
+      if (index < 0 || gen !== mdUpgradeGen) return;
+      frames++;
+      // First frames cover the tail the operator is looking at. The rest yields.
+      if (frames < 3) {
+        requestAnimationFrame(() => pump(null));
+        return;
+      }
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(pump, { timeout: 100 });
+      } else {
+        requestAnimationFrame(() => pump(null));
+      }
+    };
+    requestAnimationFrame(() => pump(null));
+  }
+
+  function upgradeMarkdownBody(body) {
+    const job = mdPending.get(body);
+    if (!job || !body.isConnected || !body.classList.contains("md-pending")) return;
+    mdPending.delete(body);
+    let html = mdCacheGet(job.key);
+    if (html == null) {
+      html = renderMarkdown(job.content);
+      mdCacheSet(job.key, html);
+    }
+    applyMarkdownHtml(body, html);
   }
 
   function configureMarkdown() {
@@ -1247,6 +1416,26 @@
       });
       wrap.appendChild(btn);
     });
+  }
+
+  function bindExternalLinks(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll("a[href]").forEach((a) => {
+      const href = a.getAttribute("href") || "";
+      if (/^https?:\/\//i.test(href)) {
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+      }
+    });
+  }
+
+  /** Insert sanitized markdown and attach copy buttons. html is already safe. */
+  function applyMarkdownHtml(body, html) {
+    body.classList.remove("md-pending");
+    body.style.whiteSpace = "";
+    body.innerHTML = html || "";
+    decorateCodeBlocks(body);
+    bindExternalLinks(body);
   }
 
   function roleUsesMarkdown(role) {
@@ -1722,7 +1911,7 @@
     return div;
   }
 
-  function bubbleEl(m) {
+  function bubbleEl(m, opts) {
     const role = m.role || "assistant";
     if (role === "tool" || role === "thinking") {
       return collapsibleBubble(m, role);
@@ -1764,16 +1953,22 @@
     const content = m.content || "";
     if (roleUsesMarkdown(role)) {
       body.classList.add("md");
-      body.innerHTML = renderMarkdown(content);
-      // Session log: give every fenced/indented code block a copy button.
-      decorateCodeBlocks(body);
-      body.querySelectorAll("a[href]").forEach((a) => {
-        const href = a.getAttribute("href") || "";
-        if (/^https?:\/\//i.test(href)) {
-          a.setAttribute("target", "_blank");
-          a.setAttribute("rel", "noopener noreferrer");
-        }
-      });
+      const key = mdCacheKey(m);
+      const cached = mdCacheGet(key);
+      if (cached != null) {
+        applyMarkdownHtml(body, cached);
+      } else if (opts && opts.deferMarkdown) {
+        // Escaped text first (textContent). pre-wrap keeps newlines until upgrade.
+        body.classList.add("md-pending");
+        body.style.whiteSpace = "pre-wrap";
+        body.textContent = content;
+        mdPending.set(body, { content, key });
+        if (opts.pending) opts.pending.push(body);
+      } else {
+        const html = renderMarkdown(content);
+        mdCacheSet(key, html);
+        applyMarkdownHtml(body, html);
+      }
     } else {
       body.classList.add("plain");
       body.textContent = content;
@@ -2104,6 +2299,7 @@
     if (empty) empty.remove();
     if (m.role === "user") lastPlacedTurnStart = null;
     els.transcript.appendChild(bubbleEl(m));
+    paintedTranscriptSig = transcriptPaintSig();
     // While a turn is live, keep progress + live thinking under tools/harness.
     if (
       turnProgress &&
@@ -2153,8 +2349,13 @@
             (m) => !isSyntheticStatusThinking(m),
           );
         }
-        messages = mergeThinkingMessages(serverMsgs);
-        renderTranscript({ forceScroll: false });
+        const merged = mergeThinkingMessages(serverMsgs);
+        // Local thinking rows make the server payload look shorter even when
+        // the painted list is unchanged. Don't wipe the transcript then.
+        if (!sameMessageList(messages, merged)) {
+          messages = merged;
+          renderTranscript({ forceScroll: false });
+        }
       }
 
       const wasBusy = busy;

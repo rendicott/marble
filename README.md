@@ -4,7 +4,19 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.24
+## What's new in v0.4.25
+
+Highlights since **[v0.4.24](https://github.com/rendicott/marble/releases/tag/v0.4.24)** (schema **v14**):
+
+### Search sessions
+A magnifying glass replaces the eye in the top bar. Typing in the modal finds sessions by what was said in them, not just the title: "android" matches a session that only says "apk" and "gradle", through a small compiled alias table. No embeddings, no new dependency.
+
+- Closed and system sessions are included. Results are capped at 20, ranked by match strength, with recency as the tiebreak.
+- Sessions not yet flushed to disk stay searchable through an in-memory term set. A background sweep indexes the on-disk history and skips files that have not changed.
+- Tool output is indexed only after secrets are scrubbed, and clipped. Thinking text is not indexed.
+- The system prompt moved into Settings as its own tab. The eye and its modal are gone.
+
+### Earlier — v0.4.24
 
 Highlights since **[v0.4.23](https://github.com/rendicott/marble/releases/tag/v0.4.23)** (no schema change):
 
@@ -863,10 +875,11 @@ Notable ADRs:
 | 0034 | `computer_exec`, peer state legibility, type-class thrash guard |
 | 0035 | Subprocess liveness signals (multi-signal stuck detection) |
 | 0036 | Peer auto-enrollment via single-use grants |
+| 0037 | Search sessions (magnifying glass, term index, schema v14) |
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.24](https://github.com/rendicott/marble/releases/tag/v0.4.24)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.25](https://github.com/rendicott/marble/releases/tag/v0.4.25)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 

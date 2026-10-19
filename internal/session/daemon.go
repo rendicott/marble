@@ -87,6 +87,12 @@ func (d *Daemon) tick() {
 	if err != nil {
 		failed = 1
 	}
+	// ADR-0037: reindex transcripts whose bytes changed. Same sweep as the
+	// markdown flush — no second timer. Dirty live sessions are skipped inside
+	// ReindexSearch so an older file cannot clobber terms just merged on endTurn.
+	if serr := d.reg.ReindexSearch(); serr != nil && err == nil {
+		err = serr
+	}
 	pruned, blobs, merr := d.reg.RunMaintenance()
 	if merr != nil && err == nil {
 		err = merr

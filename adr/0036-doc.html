@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0036</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0036</span>
+      <span class="status accepted">Accepted</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0036-peer-enrollment-grants.md">Markdown</a>
+      <a href="0035-doc.html">← 0035</a>
+      <a href="0037-doc.html">0037 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0036-peer-auto-enrollment-via-single-use-grants">ADR-0036: Peer Auto-Enrollment via Single-Use Grants</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (implemented in harness v0.4.18, peer v0.2.3)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-10-09</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>peer-protocol, computers, provisioning, automation</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0020 (computers + pairing), ADR-0021 (desktop peer)</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>Field request &ldquo;Peer Auto-Enrollment via Grants&rdquo;: a Windows Server 2022 EC2 instance for Orb client tests installed and ran the peer fine, but pairing could not complete unattended.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Pairing (ADR-0020) is a mutual handshake: the operator mints an H-code, carries it to the
+machine, the peer joins and shows a P-code, the operator types it back and confirms, the peer
+polls for its token. Two operator round-trips and a secret typed across a boundary. Fine for a
+laptop once; a blocker for &ldquo;terraform apply brings up a VM, it appears as a controllable
+computer, tear it down after&rdquo;.</p>
+<p>The trust relationship is not symmetric. The harness drives the peer (screenshots, clicks,
+exec); the peer has no tool surface into the harness. The only real question is &ldquo;should this
+harness accept this machine?&rdquo;, which belongs on the harness side and can be answered in advance.</p>
+<h2 id="decision">Decision</h2>
+<p>The operator (or automation) mints a <strong>grant</strong>: a single-use, short-lived, pre-authorized
+expectation that a machine is about to appear. The secret is delivered out-of-band by any
+channel; the machine redeems it with one request and receives an ordinary device token.</p>
+<ul>
+<li><code>POST /api/computers/grants</code> (operator) → <code>grant_id</code>, <code>grant_secret</code> (shown once), <code>expires_at</code>.
+  Only <code>sha256(secret)</code> is stored (table <code>computer_grants</code>, schema v12).</li>
+<li><code>POST /api/computers/enroll</code> (public; the secret is the credential) → <code>computer_id</code>,
+  <code>device_id</code>, <code>device_token</code>. One request, one response.</li>
+<li><code>GET /api/computers/grants</code>, <code>DELETE /api/computers/grants/{id}</code>; Settings → Computers lists
+  grants beside computers, so an expected machine that never called home is visible.</li>
+<li>Peer: <code>marble-peer enroll</code> reads the grant from <code>--grant</code>, <code>MARBLE_GRANT</code>, or
+  <code>~/.marble-peer/grant</code>; <code>marble-peer run</code> enrolls from the env/file on start.</li>
+</ul>
+<p>Locked decisions from the request:</p>
+<ol>
+<li><strong><code>device_name</code> is a hint.</strong> The machine&rsquo;s self-reported name wins (EC2 picks
+   <code>EC2AMAZ-…</code>); a cosmetic mismatch must not fail provisioning. Collisions get <code>-2</code>, <code>-3</code>….</li>
+<li><strong>No reusable grants.</strong> Always single-use; fleets mint N grants, which also gives
+   per-machine attribution.</li>
+<li><strong>Name: grant</strong> — the harness grants permission; trust flows from it.</li>
+</ol>
+<p>Resolved open questions:</p>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Resolution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Claim rate limiting</td>
+<td>Per source address: 10 failed claims in 10 minutes → 429. Secrets carry 192 random bits, so this limits noise and abuse rather than guessing.</td>
+</tr>
+<tr>
+<td>IP allowlist per grant</td>
+<td>Optional <code>allow_cidrs</code> (IPs or CIDRs); claims from elsewhere get 403.</td>
+</tr>
+<tr>
+<td>Expired grants: tombstone or vanish</td>
+<td>Tombstone: claimed, expired and revoked grants stay listed (with claim audit) for 7 days, then are deleted.</td>
+</tr>
+<tr>
+<td>Idempotent enroll</td>
+<td>Peer-side: if the peer already holds a token for that harness, <code>enroll</code> exits 0 without spending the grant (<code>--force</code> overrides). The harness never re-issues a token for a claimed grant.</td>
+</tr>
+</tbody>
+</table>
+<p>Other rules:</p>
+<ul>
+<li><strong>Default off</strong>: <code>/api/computers/enroll</code> returns 404 unless a pending, unexpired grant exists.</li>
+<li><strong>TTL</strong> 24h default, 60s–7d.</li>
+<li><strong>Scope</strong>: a claim can only create (or re-key) one computer row. It cannot read sessions,
+  memory or secrets, or touch other peers.</li>
+<li><strong>Recovery</strong>: a <code>device_id</code> already registered (even revoked) keeps its computer id and gets
+  a fresh token, so a peer that lost credentials re-enrolls without a console visit.</li>
+<li><strong>Limit</strong>: the existing cap of 8 active computers applies; a claim over the cap is rolled
+  back and the grant stays claimable.</li>
+<li><strong>Audit</strong>: creation (name, os, note, allowlist, expiry) and every claim or rejection (source
+  address, reported name, peer version, resulting computer) are logged; claim fields are kept
+  on the grant row.</li>
+<li>The claim is a conditional <code>UPDATE … WHERE state='pending'</code> inside the same transaction as
+  the computer insert, so two racing claims cannot both win.</li>
+</ul>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li>Unattended provisioning works: deliver <code>MARBLE_HARNESS</code> + <code>MARBLE_GRANT</code> (or drop the grant
+  file) and start the peer.</li>
+<li>The H-code / P-code flow is unchanged and remains the interactive path.</li>
+<li>Schema v12 is additive. An older harness opening a v12 database treats it as newer than
+  itself (read-only), as with every schema bump.</li>
+<li><code>enroll</code> returns the device token over whatever transport the harness URL uses; the peer&rsquo;s
+  existing rule applies (cleartext only for loopback / tailnet or with <code>--allow-http</code>).</li>
+</ul>
+<h2 id="not-done">Not done</h2>
+<ul>
+<li>A model tool for minting grants from a session (automation currently calls the HTTP API).</li>
+<li>A reference Terraform / user-data module for the Orb test rig.</li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0036-peer-enrollment-grants.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

@@ -2883,7 +2883,69 @@ button.tip {
 .pill.stopping { color: var(--danger-text); border-color: var(--danger-edge); background: var(--danger-fill); }
 .pill.complete { color: var(--ok); }
 
-/* Prompt / soul modal (ADR-0013) */
+/* Session search modal (ADR-0037) */
+.search-dialog {
+  width: min(520px, 100%);
+  height: auto;
+  max-height: min(640px, 92vh);
+}
+.search-body {
+  padding: 0.85rem 1rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-height: 0;
+}
+.search-body input[type="search"] {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--text);
+  font: inherit;
+  padding: 0.55rem 0.7rem;
+}
+.search-body input[type="search"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.search-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  max-height: 420px;
+}
+.search-hits li { margin: 0; }
+.search-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 0.5rem 0.35rem;
+  cursor: pointer;
+  border-radius: 8px;
+}
+.search-hit:hover,
+.search-hit:focus {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: none;
+}
+.search-hit-desc { display: block; font-size: 0.88rem; }
+.search-hit-meta {
+  display: block;
+  margin-top: 0.15rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* Prompt / soul (ADR-0013), shown on the Settings Prompt tab */
 .prompt-dialog {
   height: min(780px, 94vh);
   width: min(720px, 100%);

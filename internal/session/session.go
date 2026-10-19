@@ -9,6 +9,7 @@ import (
 	"github.com/rendicott/marble/internal/agentproc"
 	"github.com/rendicott/marble/internal/memory"
 	"github.com/rendicott/marble/internal/model"
+	"github.com/rendicott/marble/internal/search"
 )
 
 // Event is a streamable update for the UI.
@@ -188,6 +189,13 @@ type Session struct {
 
 	lastPeerAction   string
 	lastPeerActionAt time.Time
+
+	// searchTerms is the full live term index for this session (ADR-0037).
+	// It is updated as messages are appended and merged into SQLite on endTurn.
+	// A nil map means the session has not built an index yet.
+	searchTerms map[string]int
+	// searchFlush merges searchTerms into SQLite. The registry sets it.
+	searchFlush func(*Session)
 }
 
 // SetLastPeerAction records a short computer_* blurb for session info (in-memory).
@@ -245,8 +253,9 @@ func newSession(id, title string) *Session {
 		history: []model.Message{
 			{Role: "system", Content: model.ContentFromText(defaultSystemPrompt)},
 		},
-		ui:   nil,
-		subs: make(map[chan Event]struct{}),
+		ui:          nil,
+		subs:        make(map[chan Event]struct{}),
+		searchTerms: map[string]int{},
 	}
 }
 
@@ -433,6 +442,29 @@ func (s *Session) appendUI(m Message) {
 	s.ui = append(s.ui, m)
 	s.UpdatedAt = time.Now()
 	s.dirty = true
+	s.addSearchLocked(m)
+}
+
+// addSearchLocked folds one message into the live term set. Caller holds s.mu.
+// This is incremental: a search never walks the transcript.
+func (s *Session) addSearchLocked(m Message) {
+	if s.searchTerms == nil {
+		s.searchTerms = map[string]int{}
+	}
+	text := search.IndexText(m.Role, m.Content)
+	if text == "" {
+		return
+	}
+	for term, n := range search.Tokens(text) {
+		s.searchTerms[term] += n
+	}
+}
+
+func (s *Session) rebuildSearchLocked() {
+	s.searchTerms = map[string]int{}
+	for i := range s.ui {
+		s.addSearchLocked(s.ui[i])
+	}
 }
 
 func (s *Session) markDirty() {
@@ -484,8 +516,14 @@ func (s *Session) endTurn() {
 	s.dirty = true
 	s.turn.cancel = nil
 	s.turn.opts = TurnOpts{} // clear cron pin / turn-scoped opts (KD11)
+	flush := s.searchFlush
 	s.mu.Unlock()
 	s.publish(Event{Type: "status", Status: "idle"})
+	// Merge the live term set into SQLite even though the markdown flush may
+	// still be minutes away (ADR-0037).
+	if flush != nil {
+		flush(s)
+	}
 }
 
 // SnapshotDoc builds a memory.SessionDoc under lock.
@@ -655,6 +693,7 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	}
 	s.dirty = false
 	s.busy = false
+	s.rebuildSearchLocked()
 }
 
 // historyContentFromUIMessage rebuilds model Content from a reloaded UI message:

@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+func TestSearchPathStaysOperatorAuth(t *testing.T) {
+	if isPublicPath("/api/sessions/search") {
+		t.Fatal("GET /api/sessions/search must not be a public path")
+	}
+}
+
 func TestSafeNext(t *testing.T) {
 	if SafeNext("") != "/" {
 		t.Fatal("empty")
