@@ -76,6 +76,9 @@ type ChatRequest struct {
 type ChatOpts struct {
 	// ReasoningEffort: none | low | medium | high (empty = omit / provider default).
 	ReasoningEffort string
+	// MaxTokens, when > 0, is this call's completion cap.
+	// Zero sends Client.MaxTokens.
+	MaxTokens int
 }
 
 // Usage is token usage from the provider when present.
@@ -190,11 +193,11 @@ func (c *Client) ChatWithOpts(ctx context.Context, messages []Message, tools []T
 		if i > 0 && !looksLikeReasoningNoneRejected(lastErr) {
 			break
 		}
-		res, err := c.chatOnce(ctx, messages, tools, effort)
+		res, err := c.chatOnce(ctx, messages, tools, effort, opts.MaxTokens)
 		totalLatency += res.LatencyMs
 		if err != nil && !c.omitTemperature.Load() && looksLikeTemperatureRejected(err) {
 			c.omitTemperature.Store(true)
-			res, err = c.chatOnce(ctx, messages, tools, effort)
+			res, err = c.chatOnce(ctx, messages, tools, effort, opts.MaxTokens)
 			totalLatency += res.LatencyMs
 		}
 		if err == nil {
@@ -215,12 +218,15 @@ func (c *Client) ChatWithOpts(ctx context.Context, messages []Message, tools []T
 	return ChatResult{LatencyMs: totalLatency}, lastErr
 }
 
-func (c *Client) chatOnce(ctx context.Context, messages []Message, tools []ToolSpec, effort string) (ChatResult, error) {
+func (c *Client) chatOnce(ctx context.Context, messages []Message, tools []ToolSpec, effort string, maxTokens int) (ChatResult, error) {
+	if maxTokens <= 0 {
+		maxTokens = c.MaxTokens
+	}
 	reqBody := ChatRequest{
 		Model:     c.Model,
 		Messages:  messages,
 		Tools:     tools,
-		MaxTokens: c.MaxTokens,
+		MaxTokens: maxTokens,
 		Stream:    false,
 	}
 	if len(tools) > 0 {

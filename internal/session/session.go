@@ -173,6 +173,10 @@ type Session struct {
 	// (learned from a provider error); "" when the operator set it.
 	ImageLimitBy string
 
+	// lastContextLimit is the most recent parsed context-length 400.
+	// In-memory only; rescue reads it to scale the estimator.
+	lastContextLimit *ContextLimitObservation
+
 	// Client sticky advertise (ADR-0025). In-memory for M1; createSession sets default,
 	// each postMessage may override (last post wins for enrichment).
 	ClientName     string

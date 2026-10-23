@@ -35,6 +35,11 @@ type Runner struct {
 	// Covers the process model (no catalog row) and survives until restart.
 	imageMaxMu      sync.Mutex
 	learnedImageMax map[string]int
+
+	// promptSkew: base_url+model → cumulative provider/estimate prompt tokens.
+	// Feeds the adaptive preflight margin. Process-lifetime only.
+	skewMu     sync.Mutex
+	promptSkew map[string]promptSkewAccum
 }
 
 // PostUserMessage appends a user message and runs the agent loop in a new goroutine.
@@ -331,6 +336,7 @@ func (r *Runner) runTurn(s *Session) {
 	}
 
 	imageTrimNoted := false // one transcript note per turn when images are trimmed
+	clampNoted := false     // one note per turn when max_tokens is below max_output
 	for iter := 0; iter < hard; iter++ {
 		if err := ctx.Err(); err != nil {
 			stopNote = stopMessage(err, s)
@@ -340,7 +346,7 @@ func (r *Runner) runTurn(s *Session) {
 				return
 			}
 			// Always leave a visible assistant end-turn so the UI does not look "stuck mid-tool".
-			r.forceEndAssistant(s, stopNote)
+			r.forceEndAssistant(s, stopNote, "continue")
 			s.finalizeTurnProgress(phaseForErr(err, s), stopNote)
 			if errors.Is(err, context.Canceled) || s.Progress().StopRequested {
 				s.publish(Event{Type: "harness", Status: stopNote})
@@ -537,10 +543,29 @@ func (r *Runner) runTurn(s *Session) {
 		// A catalog edit mid-turn can flip a selected row to kind=image. Never
 		// send that to /chat/completions (it 404s on gpt-image-*).
 		if em.Kind == "image" {
-			r.forceEndAssistant(s, fmt.Sprintf("[harness] model_id %q is an image-generation model (kind=image) and cannot be the session model. Use the generate_image tool.", em.CatalogID))
+			r.forceEndAssistant(s, fmt.Sprintf("[harness] model_id %q is an image-generation model (kind=image) and cannot be the session model. Use the generate_image tool.", em.CatalogID), "continue")
 			return
 		}
-		result, err := client.ChatWithOpts(ctx, outbound, toolSpecs, model.ChatOpts{ReasoningEffort: effort})
+		clampEst := estimateAll(outbound)
+		if len(toolSpecs) > 0 {
+			clampEst += toolEst
+		}
+		cl := ClampMaxTokens(em.ContextLimit, em.MaxOutput, clampEst, r.obsRatio(em))
+		if !cl.OK {
+			reason := fmt.Sprintf("estimated prompt does not fit %s (est %d, window %d, margin %d)", em.Model, clampEst, em.ContextLimit, cl.Margin)
+			r.finishContextOverage(s, reason)
+			return
+		}
+		if em.MaxOutput > 0 && cl.MaxTokens < em.MaxOutput && !clampNoted {
+			clampNoted = true
+			r.advisory(s, fmt.Sprintf("[harness] output budget clamped to %d", cl.MaxTokens))
+		}
+		chatOpts := model.ChatOpts{ReasoningEffort: effort, MaxTokens: cl.MaxTokens}
+		result, err := client.ChatWithOpts(ctx, outbound, toolSpecs, chatOpts)
+		if retryMax, ok := r.contextRetry(s, em, clampEst, cl, err); ok {
+			chatOpts.MaxTokens = retryMax
+			result, err = client.ChatWithOpts(ctx, outbound, toolSpecs, chatOpts)
+		}
 		// Provider rejected the image count: learn its cap, trim, retry once.
 		if err != nil && em.CapImages {
 			sent := countImageParts(prompt)
@@ -553,7 +578,7 @@ func (r *Runner) runTurn(s *Session) {
 				prompt, _ = applyImageLimit(prompt, limit)
 				imageTrimNoted = true // learnImageLimit already explained the trim
 				outbound = r.buildOutbound(s, prompt)
-				result, err = client.ChatWithOpts(ctx, outbound, toolSpecs, model.ChatOpts{ReasoningEffort: effort})
+				result, err = client.ChatWithOpts(ctx, outbound, toolSpecs, chatOpts)
 			}
 		}
 		if err != nil {
@@ -569,8 +594,15 @@ func (r *Runner) runTurn(s *Session) {
 				r.autoStopAndContinueTC(s, stopNote, "auto:hard-wall", tc)
 				return
 			}
-			r.forceEndAssistant(s, stopNote)
+			kind := "continue"
 			phase := phaseForErr(err, s)
+			if contextOverageText(err) {
+				kind = "context_overage"
+				phase = "context_overage"
+			} else if tokenHTTP400(err) {
+				kind = "plain"
+			}
+			r.forceEndAssistant(s, stopNote, kind)
 			s.finalizeTurnProgress(phase, stopNote)
 			if phase == "stopping" || errors.Is(err, context.Canceled) {
 				s.publish(Event{Type: "harness", Status: stopNote})
@@ -592,6 +624,9 @@ func (r *Runner) runTurn(s *Session) {
 			tin = intPtr(result.Usage.PromptTokens)
 			tout = intPtr(result.Usage.CompletionTokens)
 			lastReportedIn, lastReportedOut = tin, tout
+			if result.Usage.PromptTokens > 0 && clampEst > 0 {
+				r.observePromptSkew(em, clampEst, result.Usage.PromptTokens)
+			}
 		}
 		estOut := estimateTokens(msg.Content.PlainText())
 		lat := result.LatencyMs
@@ -643,7 +678,7 @@ func (r *Runner) runTurn(s *Session) {
 						r.autoStopAndContinueTC(s, stopNote, "auto:hard-wall", tc)
 						return
 					}
-					r.forceEndAssistant(s, stopNote)
+					r.forceEndAssistant(s, stopNote, "continue")
 					s.finalizeTurnProgress(phaseForErr(err, s), stopNote)
 					s.publish(Event{Type: "harness", Status: stopNote})
 					if r.Reg != nil {
@@ -763,7 +798,7 @@ func (r *Runner) runTurn(s *Session) {
 		r.autoStopAndContinueTC(s, msg, "auto:max-iters-exceeded", tc)
 		return
 	}
-	r.forceEndAssistant(s, msg+" — send another message to resume, or raise --max-tool-iters")
+	r.forceEndAssistant(s, msg+" — send another message to resume, or raise --max-tool-iters", "continue")
 	s.finalizeTurnProgress("error", msg)
 	s.publish(Event{Type: "error", Error: msg})
 	if r.Reg != nil {
@@ -844,7 +879,7 @@ func (r *Runner) autoStopAndContinueTC(s *Session, reason, label string, tc *too
 		msg += "\n\nCould not schedule auto-continuation — send “continue” to resume."
 	}
 
-	r.forceEndAssistant(s, msg)
+	r.forceEndAssistant(s, msg, "auto")
 	// "complete" (not error): progress kept, UI idle, continuation will re-busy the session.
 	s.finalizeTurnProgress("complete", reason)
 	s.publish(Event{Type: "harness", Status: msg})
@@ -854,15 +889,32 @@ func (r *Runner) autoStopAndContinueTC(s *Session, reason, label string, tc *too
 	}
 }
 
+// finishContextOverage ends the turn without a model call. The bubble offers rescue
+// and does not tell the operator to send "continue".
+func (r *Runner) finishContextOverage(s *Session, reason string) {
+	r.forceEndAssistant(s, reason, "context_overage")
+	s.finalizeTurnProgress("context_overage", reason)
+	s.publish(Event{Type: "error", Error: reason})
+	if r.Reg != nil {
+		r.Reg.logEvent(s, "error", "", reason, "", "", "", nil, nil, nil, nil, nil, "", reason)
+	}
+}
+
 // forceEndAssistant appends a short assistant message when a turn is cut off by
 // hard wall / max iters / operator stop so the session does not die mid-tool with no reply.
-func (r *Runner) forceEndAssistant(s *Session, reason string) {
+// kind is "continue" (offer another message), "auto" (continuation already explained),
+// "plain" (no resume sentence), or "context_overage" (offer rescue, not continue).
+func (r *Runner) forceEndAssistant(s *Session, reason, kind string) {
 	if s == nil || strings.TrimSpace(reason) == "" {
 		return
 	}
 	content := "⚠️ **Turn interrupted** (harness limit)\n\n" + reason +
 		"\n\nProgress so far is kept in this session."
-	if !strings.Contains(reason, "Auto-continuation") && !strings.Contains(reason, "auto-continuation") {
+	switch kind {
+	case "auto", "plain":
+	case "context_overage":
+		content += " The next message cannot include this history plus the model's output reservation. Use Rescue context. Sending “continue” will fail the same way."
+	default:
 		content += " Send another message (e.g. “continue”) to resume."
 	}
 	s.mu.Lock()
