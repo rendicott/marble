@@ -139,11 +139,11 @@ func TestContextOverageNoRetryWhenPromptExceedsWindow(t *testing.T) {
 			bubble = m.Content
 		}
 	}
-	if !strings.Contains(bubble, "Use Rescue context.") {
+	if !strings.Contains(bubble, "Use Rescue context.") || !strings.Contains(bubble, "Context overage") {
 		t.Fatalf("bubble %q", bubble)
 	}
-	if strings.Contains(bubble, "Send another message") {
-		t.Fatalf("bubble still offers continue: %s", bubble)
+	if strings.Contains(bubble, "Send another message") || strings.Contains(bubble, "harness limit") {
+		t.Fatalf("bubble still offers continue or the harness-limit header: %s", bubble)
 	}
 }
 

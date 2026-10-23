@@ -9,6 +9,8 @@
     transcript: document.getElementById("transcript"),
     input: document.getElementById("input"),
     send: document.getElementById("btn-send"),
+    overageRescue: document.getElementById("btn-overage-rescue"),
+    overageRescueErr: document.getElementById("overage-rescue-err"),
     routePop: document.getElementById("route-popover"),
     routePopList: document.getElementById("route-pop-list"),
     form: document.getElementById("composer"),
@@ -110,6 +112,10 @@
   // Collapsed by default (mobile-friendly); only open when user expanded this browser tab.
   let sysExpanded = sessionStorage.getItem("marble-sys-agents-open") === "1";
   let turnProgress = null;
+  // Set after a successful rescue so hydrateProgress (phase still context_overage)
+  // does not immediately show the button again. Cleared on session switch.
+  let overageRescueHidden = false;
+  let overageRescueInFlight = false;
   let turnExpanded = false;
   // While a turn is live: user can "roll up" the card to free vertical space (esp. mobile).
   // Expanded by default; only reset when turn_started_at changes (new turn).
@@ -136,6 +142,12 @@
   }
 
   function setStatus(s) {
+    // A finished context-overage turn is not active, but the pill and Rescue
+    // button must survive the idle/error status that follows the turn event.
+    if (turnProgress && turnProgress.phase === "context_overage" && s !== "closed") {
+      applyTurnPill(turnProgress);
+      return;
+    }
     // Prefer enriched pill from turn progress when busy
     if (turnProgress && turnProgress.active && s !== "idle" && s !== "closed" && s !== "error") {
       applyTurnPill(turnProgress);
@@ -143,6 +155,7 @@
     }
     els.status.textContent = s || "idle";
     els.status.className = "pill " + (s || "idle");
+    syncOverageRescueButton();
   }
 
   function fmtDur(ms) {
@@ -160,6 +173,13 @@
     if (!p) {
       els.status.textContent = "idle";
       els.status.className = "pill idle";
+      syncOverageRescueButton();
+      return;
+    }
+    if (p.phase === "context_overage") {
+      els.status.textContent = "context full";
+      els.status.className = "pill error";
+      syncOverageRescueButton();
       return;
     }
     const phaseMs = p.phase_started_at
@@ -192,6 +212,25 @@
     }
     els.status.textContent = text;
     els.status.className = "pill " + cls;
+    syncOverageRescueButton();
+  }
+
+  function syncOverageRescueButton() {
+    const phase = turnProgress && turnProgress.phase;
+    if (phase !== "context_overage") overageRescueHidden = false;
+    const closed = sessions.find((x) => x.id === activeId)?.status === "closed";
+    const show = phase === "context_overage" && !overageRescueHidden && !closed && !!activeId;
+    if (els.overageRescue) {
+      els.overageRescue.hidden = !show;
+      els.overageRescue.disabled = !!overageRescueInFlight;
+    }
+  }
+
+  function setOverageError(text) {
+    if (!els.overageRescueErr) return;
+    const t = text || "";
+    els.overageRescueErr.textContent = t;
+    els.overageRescueErr.hidden = !t;
   }
 
   function isZeroTime(ts) {
@@ -453,6 +492,7 @@
       turnRolledUp = false;
       turnRollKey = "";
       applyTurnRollUI();
+      if (p && p.phase === "context_overage") applyTurnPill(p);
       return;
     }
 
@@ -554,7 +594,7 @@
 
     applyTurnRollUI();
 
-    if (p.active) applyTurnPill(p);
+    if (p && (p.phase === "context_overage" || p.active)) applyTurnPill(p);
     else if (!busy) applyTurnPill(null);
   }
 
@@ -1831,6 +1871,7 @@
     const div = document.createElement("div");
     div.className =
       "bubble collapsible collapsed " + (role === "thinking" ? "thinking" : "tool");
+    if (m.model_omit) div.classList.add("model-omit");
     if (m.id) div.dataset.msgId = m.id;
 
     const head = document.createElement("div");
@@ -1929,6 +1970,7 @@
             : role === "attachment"
               ? "attachment"
               : "assistant");
+    if (m.model_omit) div.classList.add("model-omit");
     if (m.id) div.dataset.msgId = m.id;
 
     const meta = document.createElement("div");
@@ -2732,6 +2774,8 @@
       liveThinkSeg = null;
     }
     activeId = id;
+    if (!(opts && opts.keepOverageHidden)) overageRescueHidden = false;
+    setOverageError("");
     savedAgentCWD = "";
     if (els.agentCwd) {
       els.agentCwd.value = "";
@@ -3571,6 +3615,41 @@
         ev.preventDefault();
         ev.stopPropagation();
         lpFired = false;
+      }
+    });
+  }
+
+  if (els.overageRescue) {
+    els.overageRescue.addEventListener("click", async () => {
+      if (!activeId || overageRescueInFlight) return;
+      overageRescueInFlight = true;
+      setOverageError("");
+      syncOverageRescueButton();
+      try {
+        const res = await api(
+          `/api/sessions/${encodeURIComponent(activeId)}/overage-rescue`,
+          { method: "POST", body: "{}" }
+        );
+        const action = res && res.action;
+        if (action === "rescued" || action === "noop") {
+          overageRescueHidden = true;
+          syncOverageRescueButton();
+          await selectSession(activeId, { skipURL: true, keepOverageHidden: true });
+          setComposerEnabled(true);
+        } else {
+          setOverageError((res && res.error) || "Context cannot be rescued.");
+        }
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        // 409: session is busy. Leave the button; this is not unrecoverable.
+        if (String(msg).toLowerCase().includes("session busy")) {
+          setOverageError("");
+        } else {
+          setOverageError(msg);
+        }
+      } finally {
+        overageRescueInFlight = false;
+        syncOverageRescueButton();
       }
     });
   }

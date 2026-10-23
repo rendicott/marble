@@ -353,6 +353,7 @@
                 accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,text/plain,text/markdown,text/csv,application/json,text/html,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,.svg,.html,.log" />
             </label>
             <div class="send-wrap">
+              <button type="button" id="btn-overage-rescue" hidden>Rescue context</button>
               <button id="btn-send" type="submit" disabled title="Send · right-click / long-press to route this turn to a subprocess">Send</button>
               <div id="route-popover" class="route-popover" hidden role="dialog" aria-label="Route this turn">
                 <div class="route-pop-title">Route this turn</div>
@@ -362,6 +363,7 @@
             </div>
           </div>
         </div>
+        <p id="overage-rescue-err" class="hint" hidden></p>
       </form>
     </main>
   </div>

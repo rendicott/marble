@@ -842,6 +842,7 @@ a.icon-btn {
   min-height: 0;
 }
 
+.bubble.model-omit { opacity: 0.55; }
 .bubble {
   max-width: min(780px, 100%);
   box-sizing: border-box;

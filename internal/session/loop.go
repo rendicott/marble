@@ -913,7 +913,10 @@ func (r *Runner) forceEndAssistant(s *Session, reason, kind string) {
 	switch kind {
 	case "auto", "plain":
 	case "context_overage":
-		content += " The next message cannot include this history plus the model's output reservation. Use Rescue context. Sending “continue” will fail the same way."
+		// "harness limit" is the wall-clock / iter cutoff. This bubble is a
+		// context-window failure, so the header must not say that.
+		content = "⚠️ **Context overage**\n\n" + reason +
+			"\n\nProgress so far is kept in this session. The next message cannot include this history plus the model's output reservation. Use Rescue context. Sending “continue” will fail the same way."
 	default:
 		content += " Send another message (e.g. “continue”) to resume."
 	}
