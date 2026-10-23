@@ -10,6 +10,7 @@ import (
 
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/memory"
+	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/token"
 )
 
@@ -162,11 +163,22 @@ func (r *Registry) rescueParams(s *Session, msgs []memory.TranscriptMessage) (li
 	margin = rescueMargin(limit)
 	minOut = retryMinOut
 	overhead = rescueOverhead(r, s, em, msgs)
-	scale = 1.25
-	if obs, ok := s.LastContextLimit(); ok && obs.Messages > 0 && obs.Est > 0 {
-		scale = float64(obs.Messages) / float64(obs.Est)
-	}
+	obs, ok := s.LastContextLimit()
+	scale = rescueScale(obs, ok)
 	return limit, margin, minOut, overhead, scale, nil
+}
+
+// rescueDefaultScale is the provider/estimate ratio when this process has not
+// seen a context-length 400. It matches the pre-observation CLI and HTTP paths.
+const rescueDefaultScale = 1.25
+
+// rescueScale is Messages/Est after a parsed context-length 400, otherwise
+// rescueDefaultScale. ok is false when the process has no observation.
+func rescueScale(obs ContextLimitObservation, ok bool) float64 {
+	if ok && obs.Messages > 0 && obs.Est > 0 {
+		return float64(obs.Messages) / float64(obs.Est)
+	}
+	return rescueDefaultScale
 }
 
 func rescueMargin(limit int) int {
@@ -178,26 +190,42 @@ func rescueMargin(limit int) int {
 }
 
 func rescueOverhead(r *Registry, s *Session, em EffectiveModel, msgs []memory.TranscriptMessage) int {
+	s.mu.Lock()
+	kind := s.Kind
+	s.mu.Unlock()
+	var soul string
+	if kind != "system" && r.store != nil {
+		if text, err := r.store.ReadSoul(); err == nil {
+			soul = text
+		}
+	}
+	wonder := false
+	if kind != "system" {
+		name, proto := s.ClientAdvertiseSnapshot()
+		wonder = IsWonderstandProtocol(name, proto)
+	}
+	var specs []model.ToolSpec
+	if em.CapTools && r.runner != nil && r.runner.Tools != nil {
+		specs = r.runner.Tools.Specs()
+	}
+	return rescueOverheadParts(kind, soul, wonder, specs, msgs)
+}
+
+// rescueOverheadParts is the system prompt, newest harness marker, soul,
+// Wonderstand pack, and tool schemas. History messages are not included.
+func rescueOverheadParts(kind, soul string, wonderstand bool, toolSpecs []model.ToolSpec, msgs []memory.TranscriptMessage) int {
 	n := token.Estimate(defaultSystemPrompt)
 	if marker := newestHarnessMarker(msgs); marker != "" {
 		n += token.Estimate("\n\n" + marker)
 	}
-	s.mu.Lock()
-	kind := s.Kind
-	s.mu.Unlock()
-	if kind != "system" && r.store != nil {
-		if soul, err := r.store.ReadSoul(); err == nil && strings.TrimSpace(soul) != "" {
-			n += token.Estimate(strings.TrimSpace(soul))
-		}
+	if kind != "system" && strings.TrimSpace(soul) != "" {
+		n += token.Estimate(strings.TrimSpace(soul))
 	}
-	if kind != "system" {
-		name, proto := s.ClientAdvertiseSnapshot()
-		if IsWonderstandProtocol(name, proto) {
-			n += token.Estimate(WonderstandPromptPack)
-		}
+	if kind != "system" && wonderstand {
+		n += token.Estimate(WonderstandPromptPack)
 	}
-	if em.CapTools && r.runner != nil && r.runner.Tools != nil {
-		n += estimateTools(r.runner.Tools.Specs())
+	if len(toolSpecs) > 0 {
+		n += estimateTools(toolSpecs)
 	}
 	return n
 }

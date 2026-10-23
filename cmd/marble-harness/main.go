@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -55,6 +56,9 @@ func main() {
 
 	if len(os.Args) > 1 && os.Args[1] == "repair-sessions" {
 		os.Exit(runRepairSessions(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "overage-rescue" {
+		os.Exit(runOverageRescue(os.Args[2:]))
 	}
 
 	cfg, err := config.ParseFlags(os.Args[1:])
@@ -871,6 +875,137 @@ func (a *atomicBool) get() bool { return atomic.LoadInt32(&a.v) == 1 }
 
 // runRepairSessions: marble-harness repair-sessions [-memory DIR] [-apply]
 // Fixes session Markdown damaged by the pre-v0.4.11 loader (see sessionrepair).
+// runOverageRescue: marble-harness overage-rescue [-memory DIR] [-session ID] [-apply] [ID]
+// Dry run is the default. -apply copies the markdown aside, then rewrites it.
+// No session_events row: this process has no live DB session to append to.
+func runOverageRescue(args []string) int {
+	fs := flag.NewFlagSet("overage-rescue", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	home, _ := os.UserHomeDir()
+	mem := fs.String("memory", filepath.Join(home, ".marble"), "Marble data home")
+	sessionID := fs.String("session", "", "Session id (or pass the id as the only positional argument)")
+	apply := fs.Bool("apply", false, "write the rescue (default: dry run). Refuses while a live harness holds marble.lock")
+	contextLimit := fs.Int("context-limit", 0, "Context window when the session model is not in the catalog")
+	maxOutput := fs.Int("max-output", 0, "Max completion tokens; required with -context-limit when the catalog has no row")
+	contextReserve := fs.Int("context-reserve", 0, "Context reserve paired with -context-limit (0 is legal; the planner uses the same margin as the HTTP rescue)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: marble-harness overage-rescue [-memory DIR] [-session ID] [-apply] [ID]\n")
+		fs.PrintDefaults()
+	}
+	flagArgs, pos, err := splitOverageArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 2
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if extra := fs.Args(); len(extra) > 0 {
+		pos = append(pos, extra...)
+	}
+	id := strings.TrimSpace(*sessionID)
+	if len(pos) > 1 {
+		fmt.Fprintf(os.Stderr, "error: one session id only (got %q)\n", pos)
+		return 2
+	}
+	if len(pos) == 1 {
+		if id != "" && id != strings.TrimSpace(pos[0]) {
+			fmt.Fprintf(os.Stderr, "error: -session %q and positional %q disagree\n", id, pos[0])
+			return 2
+		}
+		id = strings.TrimSpace(pos[0])
+	}
+	if id == "" {
+		fmt.Fprintf(os.Stderr, "error: session id required (-session ID or overage-rescue ID); refusing to scan every session\n")
+		return 2
+	}
+	var sawLimit, sawMax, sawReserve bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "context-limit":
+			sawLimit = true
+		case "max-output":
+			sawMax = true
+		case "context-reserve":
+			sawReserve = true
+		}
+	})
+	req := session.FileRescueRequest{
+		MemoryDir: *mem,
+		ID:        id,
+		Apply:     *apply,
+	}
+	if sawLimit || sawMax || sawReserve {
+		if !sawLimit || !sawMax || !sawReserve || *contextLimit <= 0 || *maxOutput <= 0 || *contextReserve < 0 {
+			fmt.Fprintf(os.Stderr, "error: -context-limit, -max-output, and -context-reserve must be set together (positive limit and max-output; reserve >= 0)\n")
+			return 2
+		}
+		req.Explicit = true
+		req.ContextLimit = *contextLimit
+		req.MaxOutput = *maxOutput
+		req.ContextReserve = *contextReserve
+	}
+	res, err := session.RescueFile(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		if strings.Contains(err.Error(), "session id required") {
+			return 2
+		}
+		return 1
+	}
+	enc, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	fmt.Println(string(enc))
+	// Dry run reports the plan and exits 0, including action=unrecoverable.
+	// -apply exits 1 when nothing could be made to fit.
+	if *apply && res.Action == "unrecoverable" {
+		return 1
+	}
+	return 0
+}
+
+// splitOverageArgs lets the session id sit before or after flags.
+// The standard flag parser would otherwise treat later flags as positionals.
+func splitOverageArgs(args []string) (flags, pos []string, err error) {
+	takesValue := map[string]bool{
+		"-memory": true, "--memory": true,
+		"-session": true, "--session": true,
+		"-context-limit": true, "--context-limit": true,
+		"-max-output": true, "--max-output": true,
+		"-context-reserve": true, "--context-reserve": true,
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			pos = append(pos, a)
+			continue
+		}
+		flags = append(flags, a)
+		name := a
+		if eq := strings.IndexByte(a, '='); eq >= 0 {
+			name = a[:eq]
+		}
+		if takesValue[name] && !strings.Contains(a, "=") {
+			if i+1 >= len(args) {
+				return nil, nil, fmt.Errorf("flag needs an argument: %s", name)
+			}
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return flags, pos, nil
+}
+
 func runRepairSessions(args []string) int {
 	fs := flag.NewFlagSet("repair-sessions", flag.ContinueOnError)
 	home, _ := os.UserHomeDir()
