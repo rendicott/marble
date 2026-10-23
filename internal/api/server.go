@@ -426,6 +426,8 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 		s.handleEvents(w, r, sess)
 	case "computer":
 		s.handleSessionComputer(w, r, id)
+	case "overage-rescue":
+		s.handleOverageRescue(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}

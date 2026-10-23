@@ -490,6 +490,19 @@ func (s *Session) tryBeginTurn() bool {
 	return true
 }
 
+// BeginExclusive takes the turn lock without starting a turn.
+// It returns false when a turn is already running or the session is closed.
+func (s *Session) BeginExclusive() bool {
+	return s.tryBeginTurn()
+}
+
+// EndExclusive releases a lock taken by BeginExclusive.
+func (s *Session) EndExclusive() {
+	s.mu.Lock()
+	s.busy = false
+	s.mu.Unlock()
+}
+
 // IsBusy reports whether a turn is in progress.
 func (s *Session) IsBusy() bool {
 	s.mu.Lock()
@@ -620,6 +633,13 @@ func (s *Session) clearDirty() {
 func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.loadFromDocLocked(doc)
+}
+
+// loadFromDocLocked is LoadFromDoc. Caller holds s.mu.
+// busy and dirty are cleared; a caller that already holds the turn lock
+// (overage rescue) restores busy after this returns.
+func (s *Session) loadFromDocLocked(doc *memory.SessionDoc) {
 	s.ID = doc.ID
 	s.Title = doc.Title
 	s.TitleCustom = doc.TitleCustom
