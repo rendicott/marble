@@ -4,7 +4,21 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.25
+## What's new in v0.4.26
+
+Highlights since **[v0.4.25](https://github.com/rendicott/marble/releases/tag/v0.4.25)** (no schema change). Design: [ADR-0038](adr/0038-context-overage-rescue.md).
+
+### A context-full session is no longer a dead end
+A 1M-token window was unusable because every request reserved the catalog's full `max_output` on top of the prompt, and because the token estimate is blind to image weight. Both faults are addressed, and a session stuck over the window can now be saved without a model call.
+
+- **Output budget is clamped before every call.** `max_tokens` is `limit − estimate − margin`, so output can no longer crowd out the prompt. A fixed `limit/64` margin was measured and is not enough on a real transcript; the margin now scales with the observed provider-vs-estimate skew (1.10 until samples exist).
+- **One typed retry.** A context-length 400 is parsed into `ContextLimitError` carrying the provider's own message count, and the request is retried once with `max_tokens` clamped to fit. A second 400 escalates instead of looping. A provider window larger than the catalog is recorded, not written back.
+- **`overage-rescue`: deterministic, no model call.** When the prompt itself will not fit, `PlanRescue` hides whole rounds from the *model projection* only — images first, tool clusters kept paired, a monster message tail-stubbed — and leaves the transcript untouched. The keep-bit rides in the markdown (`<!-- model_omit: … -->`), so it survives a reload; a history-only trim does not. An unrecoverable case (fixed overhead alone exceeds the window) changes nothing and says so.
+- **Reachable three ways.** `POST /api/sessions/{id}/overage-rescue` (409 while busy, archives before mutating, never starts a turn), `marble-harness overage-rescue` (dry run by default, refuses `-apply` while a live harness holds the lock), and a **Rescue context** button that appears in the composer only when the window is full.
+- **Honest errors.** A context stop no longer says "send another message to resume". The bubble reads `Context overage`, the pill reads `context full`, and only wall-clock/iteration stops keep the old sentence.
+- Every rescue archives the pre-image to `<memory>/backups/overage/<id>/<timestamp>.md`; a second run reports `noop` and writes no second archive.
+
+### Earlier — v0.4.25
 
 Highlights since **[v0.4.24](https://github.com/rendicott/marble/releases/tag/v0.4.24)** (schema **v14**):
 
@@ -876,10 +890,11 @@ Notable ADRs:
 | 0035 | Subprocess liveness signals (multi-signal stuck detection) |
 | 0036 | Peer auto-enrollment via single-use grants |
 | 0037 | Search sessions (magnifying glass, term index, schema v14) |
+| 0038 | Context overage: clamp, typed retry, model-free rescue |
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.25](https://github.com/rendicott/marble/releases/tag/v0.4.25)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.26](https://github.com/rendicott/marble/releases/tag/v0.4.26)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 
