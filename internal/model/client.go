@@ -256,7 +256,11 @@ func (c *Client) chatOnce(ctx context.Context, messages []Message, tools []ToolS
 	}
 	latency := int(time.Since(start).Milliseconds())
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ChatResult{LatencyMs: latency}, fmt.Errorf("model HTTP %d: %s", resp.StatusCode, truncate(string(body), 800))
+		raw := truncate(string(body), 800)
+		if cle := ParseContextLimit(resp.StatusCode, raw); cle != nil {
+			return ChatResult{LatencyMs: latency}, cle
+		}
+		return ChatResult{LatencyMs: latency}, fmt.Errorf("model HTTP %d: %s", resp.StatusCode, raw)
 	}
 
 	var cr ChatResponse
