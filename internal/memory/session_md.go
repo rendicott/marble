@@ -60,6 +60,10 @@ type TranscriptMessage struct {
 	// Refs name the continuation / background task / agent task a tool call created,
 	// so the UI can show a live chip after a reload. Stored as a base64 JSON comment.
 	Refs []TranscriptRef `json:"refs,omitempty"`
+	// ModelOmit, when set (overage-rescue), keeps the text in the transcript but
+	// out of the model projection. ModelStub replaces the model-visible body.
+	ModelOmit string `json:"model_omit,omitempty"`
+	ModelStub string `json:"model_stub,omitempty"`
 }
 
 // TranscriptRef points a transcript row at a continuation or task by id.
@@ -190,10 +194,20 @@ func EncodeSession(doc *SessionDoc) string {
 			}
 			writeAttachmentsMeta(&b, m.Attachments)
 		}
+		writeProjectionMeta(&b, m)
 		writeMessageContent(&b, m.Content)
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+func writeProjectionMeta(b *strings.Builder, m TranscriptMessage) {
+	if m.ModelOmit != "" {
+		fmt.Fprintf(b, "<!-- model_omit: %s -->\n", m.ModelOmit)
+	}
+	if m.ModelStub != "" {
+		fmt.Fprintf(b, "<!-- model_stub_b64: %s -->\n", stdb64.StdEncoding.EncodeToString([]byte(m.ModelStub)))
+	}
 }
 
 func writeAttachmentsMeta(b *strings.Builder, atts []TranscriptAttachment) {
@@ -455,6 +469,12 @@ func applyHTMLMeta(cur *TranscriptMessage, trim string) {
 			var refs []TranscriptRef
 			if raw := decodePresentationB64(val); raw != "" && json.Unmarshal([]byte(raw), &refs) == nil {
 				cur.Refs = refs
+			}
+		case "model_omit":
+			cur.ModelOmit = val
+		case "model_stub_b64":
+			if raw := decodePresentationB64(val); raw != "" {
+				cur.ModelStub = raw
 			}
 		}
 	}

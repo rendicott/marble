@@ -75,6 +75,10 @@ type Message struct {
 	Presentation *Presentation `json:"presentation,omitempty"`
 	// Refs: continuation / task ids this tool call created (live UI chips).
 	Refs []TaskRef `json:"refs,omitempty"`
+	// ModelOmit hides this row from the model projection (overage-rescue).
+	// ModelStub is the model-visible body when the raw content stays in the UI.
+	ModelOmit string `json:"model_omit,omitempty"`
+	ModelStub string `json:"model_stub,omitempty"`
 }
 
 // Actor is optional identity for a human-authored message.
@@ -550,6 +554,8 @@ func (s *Session) snapshotDocLocked(workspace, modelName string) *memory.Session
 			UserEmail:  m.UserEmail,
 			UserName:   m.UserName,
 			UserSub:    m.UserSub,
+			ModelOmit:  m.ModelOmit,
+			ModelStub:  m.ModelStub,
 		}
 		if m.Presentation != nil {
 			tm.PresentationJSON = MarshalPresentationCompact(m.Presentation)
@@ -652,6 +658,8 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 			UserEmail:  m.UserEmail,
 			UserName:   m.UserName,
 			UserSub:    m.UserSub,
+			ModelOmit:  m.ModelOmit,
+			ModelStub:  m.ModelStub,
 		}
 		um.Attachments = uiAttachmentsFromTranscript(m.Attachments)
 		um.Refs = uiRefsFromTranscript(m.Refs)
@@ -671,22 +679,34 @@ func (s *Session) LoadFromDoc(doc *memory.SessionDoc) {
 		s.ui = append(s.ui, um)
 		// Reload image references into multimodal history (ADR-0019); the
 		// per-request image limit decides how many are actually sent.
-		histContent := historyContentFromUIMessage(um)
-		switch m.Role {
-		case "user":
-			// Model history: content only (ADR-0017 Q13)
-			s.history = append(s.history, model.Message{Role: "user", Content: histContent})
-		case "assistant":
-			s.history = append(s.history, model.Message{Role: "assistant", Content: histContent})
-		case "tool":
-			s.history = append(s.history, model.Message{
-				Role:       "tool",
-				Content:    histContent,
-				Name:       m.ToolName,
-				ToolCallID: m.ToolCallID,
-			})
+		// overage-rescue: a pure omit stays in the UI only. A stub replaces the body.
+		if projectsToHistory(m.Role) && !(m.ModelOmit != "" && m.ModelStub == "") {
+			histContent := historyContentFromUIMessage(um)
+			if m.ModelStub != "" {
+				histContent = model.ContentFromText(m.ModelStub)
+			}
+			switch m.Role {
+			case "user":
+				// Model history: content only (ADR-0017 Q13)
+				s.history = append(s.history, model.Message{Role: "user", Content: histContent})
+			case "assistant":
+				s.history = append(s.history, model.Message{Role: "assistant", Content: histContent})
+			case "tool":
+				s.history = append(s.history, model.Message{
+					Role:       "tool",
+					Content:    histContent,
+					Name:       m.ToolName,
+					ToolCallID: m.ToolCallID,
+				})
+			}
 		}
 		s.seq++
+	}
+	if marker := newestHarnessMarker(doc.Messages); marker != "" {
+		if len(s.history) > 0 && s.history[0].Role == "system" {
+			base := strings.TrimSpace(s.history[0].Content.PlainText())
+			s.history[0].Content = model.ContentFromText(base + "\n\n" + marker)
+		}
 	}
 	// New ids must not collide with loaded ones: seed from the highest numeric
 	// suffix, not the message count (they differ once anything was dropped).
