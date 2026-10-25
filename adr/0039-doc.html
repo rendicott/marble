@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0039</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0039</span>
+      <span class="status proposed">Proposed</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0039-harness-state-portability.md">Markdown</a>
+      <a href="0039-review.html">Review</a>
+      <a href="0038-doc.html">← 0038</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0039-harness-state-portability-exportimport-and-warm-standby">ADR-0039: Harness State Portability, Export/Import, and Warm Standby</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Proposed</strong></td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-10-24</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>portability, backup, standby, sqlite, memory, secrets, ops, failover</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0002 (session memory), ADR-0003 (SQLite + lock + limp), ADR-0009 (mpub), ADR-0013 (soul), ADR-0015 (cron), ADR-0016 (secrets by env name), ADR-0017 (OAuth), ADR-0018 (model catalog), ADR-0019 (attachments), ADR-0020/0021 (computers + peer), ADR-0027 (TTS), ADR-0028 (sinks), ADR-0030 (agent presets), ADR-0036 (grants)</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>Host <code>rinux</code> (this Ubuntu box) lost its onboard Wi-Fi adapter and was unreachable for days. It is back on a USB dongle (<code>enx00e04c68039e</code>, <code>192.168.86.81</code>) as the only NIC. All harness state lives on one disk on one machine. The next hardware fault costs the same days unless state can move.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>The live rinux harness (systemd user unit <code>marble-harness.service</code>, recipe also in <code>~/restart-harness-qwen38.sh</code>):</p>
+<pre><code class="language-text">/home/russell/projects/marble/bin/marble-harness
+  --workspace  /home/russell
+  --memory     /home/russell/.marble
+  --base-url   http://spark-37a9-280.tail6f1a62.ts.net:8000/v1
+  --model      qwen3.8-27b
+  --addr       :8080
+  --public-url http://rinux.tail6f1a62.ts.net:8080
+</code></pre>
+<p><code>EnvironmentFile=-/home/russell/.marble/env</code>. Tailscale identity: hostname <code>rinux</code>, MagicDNS <code>rinux.tail6f1a62.ts.net</code>, <code>100.96.73.27</code>. The model itself is already off-box (<code>spark-37a9-280</code>); a rinux death does not take the weights with it. A peer (<code>marble-peer.service</code> → <code>~/.marble-peer</code>) and the operator workspace (<code>/home/russell</code>, including <code>projects/</code>, skills, launch scripts) share the same disk — and that disk is tight: <code>/dev/nvme0n1p5</code> is <strong>108 G with 92 G used (90%, ~11 G free)</strong>. There is no <code>crontab</code>, no restic/borg/rclone, and no backup job of any kind; <code>rsync</code> is the only copy tool installed. So a bundle destination on the same filesystem is not a backup, and the first full bundle has to leave the box (tailnet host or USB disk). Long-session <code>session</code> Markdown plus <code>attachments/</code>, <code>blobs/</code>, and <code>mpub/</code> assets are the likely heavy parts; <code>--stats</code> exists to answer that before anything is scheduled.</p>
+<p><code>db.Open</code> (<code>internal/db/db.go</code>) takes <code>marble.lock</code> (PID + <code>flock</code>, <code>internal/db/lock.go</code>) and opens <code>$MEMORY/marble.db</code> with <code>modernc.org/sqlite</code>, <code>PRAGMA journal_mode=WAL</code>, <code>busy_timeout=5000</code>, <code>SetMaxOpenConns(1)</code>. Schema is v14 (<code>CurrentSchemaVersion</code>). A newer schema on an older binary goes <strong>limp</strong> (files still work, DB writes stop). There is no export, no backup API, no replica role. <code>overage-rescue</code> and <code>repair-sessions</code> are the only existing subcommands; both refuse <code>-apply</code> while the lock is held.</p>
+<p><code>$MEMORY</code> contents were not listed from this session: the shell policy blocks <code>/home/russell/.marble</code>. Layout below is from code (<code>memory.Store</code>, <code>db.Open</code>, <code>cmd/marble-harness/main.go</code>, README “Memory layout”). Sizes are unknown until Phase 1 grows a <code>--stats</code> dry run.</p>
+<h3 id="inventory">Inventory</h3>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Where</th>
+<th>Change rate</th>
+<th>Machine-coupled</th>
+<th>Sensitivity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SQLite</td>
+<td><code>$MEMORY/marble.db</code> (+ <code>-wal</code>/<code>-shm</code>)</td>
+<td>Every event, persist, sweep</td>
+<td>Paths in <code>sessions.workspace</code>, <code>sessions.md_path</code>; <code>model_catalog.base_url</code>; <code>computers.endpoint_hint</code></td>
+<td>High — transcripts, events, token hashes, pairing plaintext while a handshake is open (<code>computer_pairings.device_token_plain</code>)</td>
+</tr>
+<tr>
+<td>Markdown memory</td>
+<td><code>$MEMORY/session/&lt;id&gt;.md</code>, <code>daily/YYYY-MM-DD.md</code></td>
+<td>Persist interval 5m + end of turn; daily compact on activity</td>
+<td>Absolute workspace paths inside transcripts</td>
+<td>Medium — the transcript of record (ADR-0002/0003 dual-write)</td>
+</tr>
+<tr>
+<td>Knowledge / soul / skills</td>
+<td><code>$MEMORY/knowledge/*.md</code>, <code>soul.md</code>, <code>$MEMORY/skills/</code>; also <code>$WORKSPACE/.marble/skills</code></td>
+<td>Rare, operator/agent authored</td>
+<td>Skill bodies may hard-code <code>/home/russell/...</code></td>
+<td>Medium; soul is every-turn context (64 KiB cap)</td>
+</tr>
+<tr>
+<td>mpub</td>
+<td><code>$MEMORY/mpub/&lt;slug&gt;/</code> (<code>meta.json</code> + content + assets)</td>
+<td>Per publish</td>
+<td>Public pages inherit <code>--public-url</code>; visibility public|private</td>
+<td>Medium (private pages assume OAuth allowlist)</td>
+</tr>
+<tr>
+<td>Attachments / blobs</td>
+<td><code>$MEMORY/attachments/</code>, <code>$MEMORY/blobs/</code>; <code>session_attachments.path</code> and <code>blobs.path</code> are <strong>relative</strong></td>
+<td>Uploads; blobs age out (<code>blob_max_age_days</code> default 4)</td>
+<td>Workspace copies at <code>$WORKSPACE/.attachments/&lt;session&gt;/…</code> (<code>session/workspace_attach.go</code>)</td>
+<td>Medium; bytes live under memory, workspace copies are a convenience</td>
+</tr>
+<tr>
+<td>Config JSON</td>
+<td><code>$MEMORY/mcp.json</code>, <code>tts.json</code>, <code>sinks.json</code>, <code>agent_process.json</code> (0600 for the last three writers)</td>
+<td>Rare</td>
+<td><code>mcp.json</code> <code>command</code>/<code>cwd</code>; <code>sinks.json</code> <code>deep_link_base</code>; agent driver paths</td>
+<td>Medium; <code>secret_env</code> / <code>api_key_env</code> names only</td>
+</tr>
+<tr>
+<td>Secrets</td>
+<td><code>$MEMORY/env</code> mode <strong>0600</strong> (<code>config.RelMemoryEnv</code>); never in SQLite</td>
+<td>Rare; Settings → Secrets live-rereads ~2s</td>
+<td>systemd <code>EnvironmentFile=</code> path</td>
+<td><strong>Critical</strong> — model keys, OAuth client secret, sink tokens, TTS keys</td>
+</tr>
+<tr>
+<td>TTS cache</td>
+<td><code>$MEMORY/tts-cache/</code></td>
+<td>Rebuildable</td>
+<td>None</td>
+<td>Low; omit from bundles</td>
+</tr>
+<tr>
+<td>Backups</td>
+<td><code>$MEMORY/backups/overage/</code>, <code>backups/session-pre-repair-*</code></td>
+<td>On rescue/repair</td>
+<td>None</td>
+<td>Medium; pre-images of transcripts</td>
+</tr>
+<tr>
+<td>Lock / WAL sidecars</td>
+<td><code>marble.lock</code>, <code>marble.db-wal</code>, <code>marble.db-shm</code></td>
+<td>Live</td>
+<td>PID is this host</td>
+<td>Do not copy; lock is local-FS only</td>
+</tr>
+<tr>
+<td>Settings / catalog / cron / clerk / search</td>
+<td>tables <code>settings</code>, <code>model_catalog</code>, <code>cron_jobs</code>/<code>cron_runs</code>, <code>clerk_session_state</code>, <code>session_search(_terms)</code>, <code>agent_presets</code>, <code>daemon_state</code></td>
+<td>Mixed</td>
+<td><code>agent_presets.detected_path</code>; cron timezone <code>Local</code>; <code>default_model_id</code></td>
+<td>Medium; cron <strong>fires turns</strong> if a replica is writable</td>
+</tr>
+<tr>
+<td>Computers / grants</td>
+<td><code>computers</code>, <code>computer_pairings</code>, <code>computer_grants</code> (hash only)</td>
+<td>Pairing rare</td>
+<td>Device tokens + <code>endpoint_hint</code>; peer reconnects by harness URL</td>
+<td>High (token_hash; plaintext token during pairing)</td>
+</tr>
+<tr>
+<td>Launch / host identity</td>
+<td>systemd unit, <code>--public-url</code>, <code>--base-url</code>, Tailscale hostname + node key, USB NIC</td>
+<td>At restart</td>
+<td><strong>Yes</strong> — this is the coupling the outage demonstrated</td>
+<td>Public URL is not secret; Tailscale node key is</td>
+</tr>
+<tr>
+<td>OAuth / login cookies</td>
+<td><code>auth.SessionStore</code> <strong>in-memory</strong> (ADR-0017 Q11); 7-day cookie</td>
+<td>Lost on restart already</td>
+<td><code>--oauth-redirect-url</code> must match the reachable origin</td>
+<td>Re-login after promote</td>
+</tr>
+<tr>
+<td>Continuations / BG tasks</td>
+<td><code>continuation.Manager</code>, <code>bgtask.Manager</code> in-memory</td>
+<td>Live turns</td>
+<td>PIDs, cwd</td>
+<td>Dropped on any failover</td>
+</tr>
+<tr>
+<td>Workspace</td>
+<td><code>--workspace /home/russell</code></td>
+<td>Continuous</td>
+<td>Home dir = harness FS root</td>
+<td>Mixed; <strong>not</strong> harness state. Git covers <code>projects/</code>; uncommitted work and <code>~/skills</code> do not.</td>
+</tr>
+<tr>
+<td>Peer identity</td>
+<td><code>~/.marble-peer/</code> (<code>config.json</code>, <code>credentials.json</code> 0600, <code>device_id</code>, <code>chrome-profile/</code>, <code>state.json</code>, <code>marble-peer.lock</code>)</td>
+<td>Pairing rare; Chrome profile large</td>
+<td>Bound to that desktop and to a harness URL</td>
+<td>High (device tokens). Lives <strong>outside</strong> <code>$MEMORY</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>A second harness already exists on <code>rinis-mac-mini</code> (<code>~/rini-marble-harness.plist</code>, <code>--memory /Users/rini/.marble</code>, <code>--public-url http://rinis-mac-mini.tail6f1a62.ts.net:8080</code>). That is a <strong>different</strong> operator memory leaf. It is not a merge target and not a standby for rinux.</p>
+<p>Other tailnet Linux: <code>claw-world-new</code> (online), <code>spark-37a9-280</code> (the model host). Putting the only replica on spark couples “no model” with “no memory”. Prefer a third machine (or a new mini PC) as standby.</p>
+<h3 id="goals">Goals</h3>
+<ol>
+<li><strong>Export</strong> one harness’s portable state and <strong>import</strong> it onto another, with a manifest and checksums.</li>
+<li>Survive a rinux-class outage in <strong>minutes of operator work</strong>, not days of reconstruction.</li>
+<li>Leave room for a <strong>warm standby</strong> that is read-only until promoted.</li>
+<li>Keep secrets off the wire in cleartext.</li>
+</ol>
+<p>Non-goals for this ADR: no-downtime active-active (two writers), merging two operators’ memory dirs, replicating the workspace home directory, replicating <code>~/.marble-peer</code> Chrome profiles, changing Tailscale itself.</p>
+<h2 id="options">Options</h2>
+<h3 id="a-cold-bundle-marble-harness-state-exportimport">A. Cold bundle — <code>marble-harness state export|import</code></h3>
+<p>A subcommand in the same style as <code>overage-rescue</code> (<code>cmd/marble-harness/main.go</code>). Default dry-run; <code>-apply</code> on import refuses while <code>marble.lock</code> is held.</p>
+<p><strong>Mechanics.</strong> <code>VACUUM INTO</code> (or <code>sqlite3_backup</code>) writes a consistent <code>marble.db</code> without copying <code>-wal</code>/<code>-shm</code>. Files under <code>$MEMORY</code> are copied into a directory tree (or a <code>.tar.zst</code>) next to <code>manifest.json</code> with per-file SHA-256. <code>$MEMORY/env</code> is omitted unless encrypted. Import stops the dest harness, verifies checksums, refuses a dest binary whose <code>CurrentSchemaVersion</code> is <strong>older</strong> than the bundle, copies files, optionally rewrites <code>sessions.workspace</code> / <code>md_path</code> prefixes, writes <code>$MEMORY/env</code> from <code>secrets.age</code>, then the operator starts the dest unit with new <code>--public-url</code> / <code>--workspace</code>.</p>
+<p><strong>Gets right.</strong> Small surface; works onto any disk the operator can <code>scp</code> to; is the only thing that helps when rinux is already dark. Matches dual-write (MD + DB) and limp-mode rules.</p>
+<p><strong>Breaks.</strong> Restart required. In-flight turns, continuations, BG shells, OAuth cookies, and <code>peerhub.InstanceID</code> are lost (they are already lost on a crash). Workspace files are not in the bundle. Peers still point at the old URL until edited. First full copy size is unknown.</p>
+<h3 id="b-git-backed-state-repo">B. Git-backed state repo</h3>
+<p>Cron or a hook commits <code>session/</code>, <code>daily/</code>, <code>knowledge/</code>, <code>skills/</code>, <code>soul.md</code>, <code>mpub/</code>, and the JSON configs to a private git remote. <code>marble.db</code> is excluded or dumped to <code>marble.sql</code> on a schedule.</p>
+<p><strong>Gets right.</strong> Knowledge/skills/soul are already Markdown and diff well. An off-box git remote survives a dead disk. Operator already lives in git for <code>projects/</code>.</p>
+<p><strong>Breaks.</strong> Session markdown is large, rewritten whole (<code>memory.Store.WriteSession</code> atomic rewrite), and will bloat git. SQLite dumps race WAL. Secrets must never be committed. Cron on the <strong>primary</strong> is itself state that dies with the box. Git is a complement for the slow-changing Markdown, not a failover of <code>model_catalog</code>, <code>computers</code>, or <code>cron_jobs</code>.</p>
+<h3 id="c-live-streaming-replication-warm-standby">C. Live streaming replication / warm standby</h3>
+<p>Primary periodically snapshots SQLite with the backup API / <code>VACUUM INTO</code> to a staging file and <code>rsync</code>s that plus the Markdown/config/attachment trees to a standby’s <code>--memory</code> over Tailscale. Standby process runs <code>--role=standby</code>: HTTP UI may be up read-only; cron, sinks, computer actions, and new turns are fenced. Promote = stop primary, one final pull, take the lease, start without <code>--role=standby</code>.</p>
+<p><strong>Gets right.</strong> Background sync is what the operator asked for. WAL is never copied. <code>marble.lock</code> stays local (one process per tree). Failover is a runbook, not a rebuild.</p>
+<p><strong>Breaks.</strong> Replication lag (seconds to a few minutes). Split-brain if both run as primary — <code>marble.lock</code> does <strong>not</strong> fence two machines. Secrets still need a separate encrypted path. First full sync can be large. The standby must not share a filesystem with the primary (NFS, option E).</p>
+<h3 id="d-hot-standby-with-client-redirect">D. Hot standby with client redirect</h3>
+<p>C, plus on promotion either (1) move the Tailscale hostname <code>rinux</code> onto the new node so <code>http://rinux.tail6f1a62.ts.net:8080</code> keeps working, or (2) leave hostnames stable and rewrite <code>--public-url</code> + <code>sinks.json</code> <code>deep_link_base</code> + peer <code>config.json</code> harness URLs. Session resume from the replicated DB + <code>session/*.md</code>.</p>
+<p><strong>Gets right.</strong> Bookmarks, confirm links (<code>--public-url</code> is already the origin for computer-confirm), and sink deep links survive. Closest to “no downtime” this architecture can honestly offer: drain the in-flight turn, cut, promote, one re-login.</p>
+<p><strong>Breaks.</strong> Tailscale hostname move needs the old node down (or renamed) first — MagicDNS lag of seconds to a minute. OAuth redirect URLs in Google Console must list the new origin if the hostname changes. Peers hold the lock against <code>InstanceID</code>; a new primary always gets a new UUID (<code>peerhub/hub.go</code>) and re-acquires. Not zero-downtime for a turn that is mid-tool-loop.</p>
+<h3 id="e-rejected-or-complementary">E. Rejected or complementary</h3>
+<table>
+<thead>
+<tr>
+<th>Idea</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFS/SMB shared <code>$MEMORY</code></td>
+<td><strong>Reject.</strong> <code>marble.lock</code> is flock+PID on one kernel. WAL over NFS is a known corruption path. Two harnesses on one leaf is already forbidden.</td>
+</tr>
+<tr>
+<td>Cloud-only memory (S3 as the live leaf)</td>
+<td><strong>Reject as live store.</strong> Fine as a <strong>destination</strong> for cold bundles. Object storage is not POSIX, not WAL-safe, and secrets would sit next to transcripts.</td>
+</tr>
+<tr>
+<td>Full VM snapshot</td>
+<td>Complementary disaster option. Hours, couples the OS, not portable onto <code>claw-world-new</code> or a Mac. Does not teach the harness about its own state.</td>
+</tr>
+<tr>
+<td>Docker volume</td>
+<td>This harness is a systemd user unit on a home dir, not a container. A volume does not solve USB-NIC death.</td>
+</tr>
+<tr>
+<td>Git (option B) for knowledge/skills/soul only</td>
+<td><strong>Complement.</strong> Cheap, do it; do not pretend it moves <code>marble.db</code>.</td>
+</tr>
+<tr>
+<td>Nightly <code>scp</code> of a Phase-1 bundle to another tailnet host</td>
+<td><strong>Complement / Phase 1 ops.</strong> This is the “next outage does not cost days” bar.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decision">Decision</h2>
+<p><strong>Primary: option A now, option C next, option D as the promotion story.</strong> Option B only for the slow Markdown (knowledge/skills/soul). Option E’s shared-disk and cloud-leaf ideas stay rejected.</p>
+<p>This is a three-phase path. Phase 1 alone would have turned the Wi-Fi outage into “boot another box, import last night’s bundle, re-login.” Phases 2–3 add a warm standby so the last few minutes are not lost.</p>
+<h3 id="phase-1-exportimport-cli-days-this-is-the-outage-stopper">Phase 1 — export/import CLI (days; <strong>this is the outage stopper</strong>)</h3>
+<p>New subcommands, same binary, same flag style as <code>overage-rescue</code>:</p>
+<pre><code class="language-text">marble-harness state export  [-memory DIR] [-out PATH] [--stats] [--secrets=omit|age]
+marble-harness state import  [-memory DIR] [-in PATH]  [-apply] [--rewrite-workspace FROM=TO]
+</code></pre>
+<p>Default export is dry-run/<code>--stats</code> (counts, bytes, largest prefixes). Write requires an explicit <code>-out</code>. Import is dry-run until <code>-apply</code>, and <code>-apply</code> refuses a live <code>marble.lock</code>.</p>
+<h4 id="bundle-layout-marble-statev1">Bundle layout (<code>marble-state/v1</code>)</h4>
+<pre><code class="language-text">marble-state-v1/
+  manifest.json
+  marble.db                 # VACUUM INTO snapshot (no -wal/-shm)
+  files/
+    session/  daily/  knowledge/  skills/  mpub/
+    attachments/  blobs/  backups/
+    soul.md  mcp.json  tts.json  sinks.json  agent_process.json
+  secrets.age               # only with --secrets=age
+</code></pre>
+<p>Omitted always: <code>marble.lock</code>, <code>marble.db-wal</code>, <code>marble.db-shm</code>, <code>tts-cache/</code>. Omitted by default: <code>env</code>.</p>
+<p><code>manifest.json</code>:</p>
+<pre><code class="language-json">{
+  &quot;schema&quot;: &quot;marble-state/v1&quot;,
+  &quot;created_at&quot;: &quot;2026-10-23T18:00:00Z&quot;,
+  &quot;source&quot;: {
+    &quot;hostname&quot;: &quot;rinux&quot;,
+    &quot;public_url&quot;: &quot;http://rinux.tail6f1a62.ts.net:8080&quot;,
+    &quot;workspace&quot;: &quot;/home/russell&quot;,
+    &quot;memory&quot;: &quot;/home/russell/.marble&quot;,
+    &quot;harness_version&quot;: &quot;…&quot;,
+    &quot;db_schema_version&quot;: 14,
+    &quot;model&quot;: &quot;qwen3.8-27b&quot;,
+    &quot;base_url&quot;: &quot;http://spark-37a9-280.tail6f1a62.ts.net:8000/v1&quot;
+  },
+  &quot;files&quot;: [{&quot;path&quot;: &quot;files/session/….md&quot;, &quot;sha256&quot;: &quot;…&quot;, &quot;bytes&quot;: 0, &quot;mode&quot;: &quot;0644&quot;}],
+  &quot;db&quot;: {&quot;path&quot;: &quot;marble.db&quot;, &quot;sha256&quot;: &quot;…&quot;, &quot;bytes&quot;: 0, &quot;schema_version&quot;: 14},
+  &quot;secrets&quot;: &quot;omitted&quot;,
+  &quot;excludes&quot;: [&quot;env&quot;, &quot;tts-cache&quot;, &quot;marble.lock&quot;, &quot;marble.db-wal&quot;, &quot;marble.db-shm&quot;]
+}
+</code></pre>
+<h4 id="sqlite-snapshot">SQLite snapshot</h4>
+<p>Do not copy <code>marble.db</code> while WAL is live. Export opens the DB (or uses the running process via a future admin endpoint) and runs <code>VACUUM INTO '&lt;staging&gt;/marble.db'</code>, which is a consistent checkpointed copy. If export is a separate process and the harness holds the lock, export either (1) talks to a <code>POST /api/admin/state-snapshot</code> on the live harness, or (2) the operator stops the unit first. Prefer (1) so a nightly bundle does not require downtime. The snapshot file is what goes in the bundle; <code>-wal</code>/<code>-shm</code> never do.</p>
+<h4 id="secrets">Secrets</h4>
+<p>Never put <code>$MEMORY/env</code> in the clear in the bundle. <code>--secrets=omit</code> (default) records <code>"secrets":"omitted"</code> and prints the names present (not values), using the same parser as <code>config.ParseEnvFile</code>. <code>--secrets=age --age-recipient &lt;age1…&gt;</code> encrypts the file with <a href="https://age-encryption.org">age</a> to <code>secrets.age</code>. There is no <code>--secrets=include</code>. The age identity lives off-box (USB, password manager); the public recipient can sit in the systemd unit as <code>MARBLE_STATE_AGE_RECIPIENT</code>. Import decrypts to dest <code>$MEMORY/env</code> and <code>chmod 0600</code>. systemd <code>EnvironmentFile=</code> is re-pointed by the operator.</p>
+<p><code>model_catalog.api_key_env</code>, <code>tts.json</code> <code>api_key_env</code>, and <code>sinks.json</code> <code>secret_env</code> are names. They travel with the DB/JSON. They are useless until <code>env</code> is restored.</p>
+<p><code>computer_pairings.device_token_plain</code> is a live-handshake leftover; export should NULL it. Durable trust is <code>computers.token_hash</code> plus the peer’s <code>credentials.json</code>, which is <strong>not</strong> in this bundle.</p>
+<h4 id="path-rewriting">Path rewriting</h4>
+<p>Import <code>--rewrite-workspace /home/russell=/home/other</code> updates <code>sessions.workspace</code> and the prefix of <code>sessions.md_path</code>. <code>sessions.agent_cwd</code> is workspace-relative and stays. <code>session_attachments.path</code> / <code>blobs.path</code> are memory-relative and stay. Transcript Markdown, <code>mcp.json</code> cwd/command, and <code>agent_process.json</code> paths are <strong>reported</strong> as rewrite candidates, not silently mutated in v1 (false positives in prose). <code>sinks.json</code> <code>deep_link_base</code> and <code>--public-url</code> are dest launch flags, not bundle fields.</p>
+<h4 id="version-skew">Version skew</h4>
+<ul>
+<li>Dest binary schema <strong>&lt;</strong> bundle <code>db_schema_version</code> → refuse. Upgrade the dest harness first (newer schema already limp-modes older binaries; do not invent a second rule).</li>
+<li>Dest binary schema <strong>≥</strong> bundle → copy DB, then dest <code>db.Open</code> runs <code>upgradeSchema</code>.</li>
+<li>Missing <code>marble.db</code> with Markdown present → dest starts limp; operator is told. That is recovery of last resort, not the happy path.</li>
+</ul>
+<h4 id="what-phase-1-does-not-move">What Phase 1 does not move</h4>
+<p>Workspace <code>/home/russell</code>. <code>~/.marble-peer</code>. In-memory auth, continuations, BG tasks. Tailscale node key. USB NIC. The dest needs its own <code>--workspace</code> (a checkout of <code>projects/</code> plus whatever else the operator copies by hand).</p>
+<p><strong>Ops on rinux, as soon as the CLI exists:</strong> a systemd timer dumps a bundle to <code>claw-world-new</code> (or a USB disk) every night, secrets via age. That is the whole “next dongle death” mitigation.</p>
+<h3 id="phase-2-continuous-push-to-a-standby-about-a-week">Phase 2 — continuous push to a standby (about a week)</h3>
+<p>A standby host with the <strong>same</strong> (or newer) harness binary, its own <code>--memory</code> directory, and <code>--role=standby</code>:</p>
+<ul>
+<li>Pull loop, not push: the standby calls the primary’s snapshot endpoint (or <code>rsync</code>s a directory the primary writes). Pull keeps the primary from needing write access to the standby disk.</li>
+<li><strong>SQLite:</strong> every <strong>60s</strong>, primary <code>VACUUM INTO</code> (or online backup API) a staging file <code>state-snap/marble.db</code>; standby <code>rsync -az --checksum</code> that file into place <strong>next to</strong> the standby DB, then atomically rename onto <code>marble.db</code> only while the standby process is stopped <strong>or</strong> while it has the DB closed (standby should not hold SQLite open between pulls; reopen read-only after each snap). Never rsync <code>-wal</code>/<code>-shm</code>.</li>
+<li><strong>Files:</strong> every <strong>60s</strong>, <code>rsync -az --delete</code> of <code>session/ daily/ knowledge/ skills/ mpub/ attachments/ blobs/ backups/ soul.md *.json</code>, excluding <code>env</code>, <code>tts-cache</code>, <code>marble.lock</code>.</li>
+<li><strong>Secrets:</strong> a slower loop (5–15 min) rsyncs <code>env</code> over Tailscale with mode 0600 preserved, <strong>or</strong> drops a fresh <code>secrets.age</code> and decrypts on the standby. Prefer age so a compromised standby disk does not yield keys at rest without the identity.</li>
+<li>Lag target: <strong>≤ 2 minutes</strong> under quiet load. A busy turn’s latest <code>session_events</code> may miss the last snap; Markdown persist is 5 minutes (<code>--persist-interval</code>), so flush dirty sessions before a planned promote (<code>PersistSession</code> / daemon sweep). Add <code>state export --flush</code> that asks the live harness to persist all dirty sessions first.</li>
+</ul>
+<p>Standby <strong>must not</strong> fire <code>cron_jobs</code>, deliver sinks, accept new turns, or acquire peer locks. Implementation: <code>--role=standby</code> short-circuits <code>cron.Manager</code> fire, <code>sink.Manager</code> deliver, <code>peerhub</code> acquire, and POST message handlers (409). GET UI can stay up as a witness. <code>daemon_state</code> sweeps that prune blobs are disabled (pruning on a replica would fight the next rsync <code>--delete</code>).</p>
+<h3 id="phase-3-promotion-runbook-days-after-phase-2">Phase 3 — promotion runbook (days, after Phase 2)</h3>
+<p>Fencing is a <strong>lease</strong>, because <code>marble.lock</code> is per-filesystem.</p>
+<p>New singleton (either <code>daemon_state</code> columns or a <code>settings</code> key pair, written only by primary):</p>
+<pre><code class="language-text">leader_id      hostname + public_url  (e.g. rinux|http://rinux.tail6f1a62.ts.net:8080)
+leader_epoch   integer, monotonic
+leader_until   RFC3339 UTC
+</code></pre>
+<p>Primary renews every <strong>15s</strong>, TTL <strong>45s</strong>. Standby refuses to leave <code>--role=standby</code> unless <code>promote</code> is invoked <strong>and</strong> (<code>leader_until</code> is past <strong>or</strong> <code>--force</code> after the operator confirms the old box is dead). <code>promote</code> increments <code>leader_epoch</code>, writes the new <code>leader_id</code>, and is the only path that starts cron/sinks/turns.</p>
+<p>Complementary, not sufficient: a Tailscale ACL tag <code>tag:marble-primary</code> on whichever node currently serves <code>:8080</code>. DNS is not a lock.</p>
+<h4 id="runbook-planned-drain">Runbook (planned drain)</h4>
+<ol>
+<li>Finish or interrupt in-flight turns on the primary. <code>POST /api/sessions/{id}/stop</code> as needed.</li>
+<li><code>marble-harness state export --flush</code> (persist dirty MD + one snapshot). On standby: one extra pull. Compare <code>manifest.json</code> / DB SHA-256.</li>
+<li><code>systemctl --user stop marble-harness</code> on the primary. Confirm <code>marble.lock</code> is gone.</li>
+<li>On standby: <code>marble-harness state promote --public-url http://&lt;standby&gt;.tail6f1a62.ts.net:8080</code> (rewrites lease; prints the <code>sinks.json</code> <code>deep_link_base</code> and systemd <code>--public-url</code> that must match).</li>
+<li>Optional hostname takeover: on the dead box <code>tailscale down</code>; on the standby <code>tailscale set --hostname=rinux</code> so existing bookmarks keep working. If the hostname stays (<code>claw-world-new</code>), update Google OAuth redirect URLs and every peer <code>config.json</code> harness URL.</li>
+<li>Edit dest systemd unit: <code>--workspace</code>, <code>--memory</code>, <code>--public-url</code>, <code>EnvironmentFile=</code>. Do <strong>not</strong> copy rinux’s <code>--base-url</code> unless that model host is still the one you want (on this fleet it is: spark is independent).</li>
+<li><code>systemctl --user start marble-harness</code>. Verify:</li>
+</ol>
+<pre><code class="language-bash">curl -sS http://127.0.0.1:8080/api/health
+# mode=normal, schema_version_db=14, memory_path=dest
+curl -sS http://127.0.0.1:8080/api/sessions | head
+test -f &quot;$MEMORY/env&quot; &amp;&amp; stat -c '%a' &quot;$MEMORY/env&quot;   # 600
+</code></pre>
+<ol start="8">
+<li>Sign in again (cookies were in-memory). Send a trivial turn. Confirm cron modal shows jobs <strong>without</strong> having double-fired (<code>cron_runs</code> last timestamps).</li>
+<li>Peers: each <code>~/.marble-peer/config.json</code> harness URL must match the new origin; tokens in <code>credentials.json</code> still hash to <code>computers.token_hash</code>. If they do not, re-pair (ADR-0020) or mint a grant (ADR-0036). The new primary’s <code>InstanceID</code> is fresh; peer locks re-acquire.</li>
+<li>Leave the old disk alone until a session has been used on the new primary. Then retire or wipe <code>env</code> on the old disk.</li>
+</ol>
+<h4 id="runbook-rinux-already-dead">Runbook (rinux already dead)</h4>
+<p>Skip 1–3. Promote <code>--force</code> on the last successful pull/bundle. Accept lag (up to the snapshot interval, plus any unsynced dirty MD). Restore <code>env</code> from <code>secrets.age</code> or the operator’s password manager. Workspace projects come from git; uncommitted home-dir work on the dead disk is gone unless the disk is later mounted.</p>
+<h2 id="risks-and-open-questions">Risks and open questions</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Split-brain</strong></td>
+<td>Two primaries both fire cron, both talk to peers, both append <code>session_events</code> that rsync will clobber. Lease + <code>--role=standby</code> + “stop the old unit first” is the whole mitigation. <code>marble.lock</code> does not help across hosts. <code>--force</code> is how a dead primary is declared; it must be loud.</td>
+</tr>
+<tr>
+<td><strong>Secrets on the wire</strong></td>
+<td>Default omit. Age for bundles. Tailscale for any rsync of <code>env</code>. Never git.</td>
+</tr>
+<tr>
+<td><strong>WAL copy safety</strong></td>
+<td>Copying <code>marble.db</code> + <code>-wal</code> from a live process is corrupt-on-arrival. Snapshot only via <code>VACUUM INTO</code> / backup API.</td>
+</tr>
+<tr>
+<td><strong><code>session_attachments</code> vs workspace</strong></td>
+<td>Canonical bytes are under <code>$MEMORY/attachments</code> (relative paths). Workspace copies under <code>.attachments/</code> are <strong>not</strong> in the bundle; they rebuild on next view/send. Agent <code>attach_file</code> of arbitrary workspace paths is not durability.</td>
+</tr>
+<tr>
+<td><strong><code>model_catalog.base_url</code> / process <code>--base-url</code></strong></td>
+<td>On this fleet they point at <code>spark-37a9-280</code>, which survives rinux. A failover that also moves the model host must rewrite catalog rows and the systemd <code>ExecStart</code>. Do not bake MagicDNS names that you intend to steal for the harness into the catalog.</td>
+</tr>
+<tr>
+<td><strong>mpub visibility</strong></td>
+<td>Private pages assume the dest OAuth allowlist. Open mode (<code>AuthMode=open</code>) on a standby that is reachable on the tailnet would publish them to anyone on <code>:8080</code>. Keep dest auth ≥ primary.</td>
+</tr>
+<tr>
+<td><strong>First full sync size</strong></td>
+<td>Unknown (memory dir not measurable from this agent). <code>--stats</code> is part of Phase 1. Attachments + blobs + mpub assets are the likely heavy parts; <code>tts-cache</code> is omitted.</td>
+</tr>
+<tr>
+<td><strong>Workspace is not separable</strong></td>
+<td><code>--workspace /home/russell</code> is the operator’s home. Harness export will not make a second rinux. Restore is “new machine, clone <code>projects/</code>, import <code>$MEMORY</code>.” Uncommitted files in home are a separate backup problem (restic, etc.).</td>
+</tr>
+<tr>
+<td><strong>Peer state</strong></td>
+<td>Exporting <code>computers</code> without <code>~/.marble-peer/credentials.json</code> means the desktop must re-pair if tokens were rotated, or if the harness URL changed. Chrome profiles stay on the desktop — correct, they are that machine’s cookies.</td>
+</tr>
+<tr>
+<td><strong>Timezone <code>Local</code> on cron</strong></td>
+<td>A standby in a different TZ will fire at the wrong wall clock after promote. Pin <code>timezone</code> to <code>America/New_York</code> (or whatever rinux uses) before relying on Phase 2.</td>
+</tr>
+<tr>
+<td><strong>Search index</strong></td>
+<td><code>session_search*</code> can be rebuilt from Markdown on dest; include it anyway (cheap, consistent with the snapshot).</td>
+</tr>
+<tr>
+<td><strong>Schema limp</strong></td>
+<td>Shipping a v14 DB to a v13 binary is a boot into limp. Promote checklist includes harness version.</td>
+</tr>
+<tr>
+<td><strong>OAuth redirect</strong></td>
+<td><code>--oauth-redirect-url</code> and Google Console must include the post-promote origin. In-memory sessions always drop.</td>
+</tr>
+</tbody>
+</table>
+<p>Open questions for review:</p>
+<ol>
+<li>Snapshot endpoint on the live harness vs. stop-the-world export only? Rec: live <code>VACUUM INTO</code> endpoint, operator-auth’d, for nightly and Phase 2.</li>
+<li>Standby host: <code>claw-world-new</code> vs a new mini PC vs USB-disk-only until hardware is bought? Rec: nightly bundle to <code>claw-world-new</code> immediately; dedicated mini PC as Phase 2 standby so spark and the replica stay independent.</li>
+<li>Tailscale hostname steal (<code>rinux</code>) vs stable per-machine names + URL rewrite? Rec: steal for emergency promote so bookmarks and <code>--public-url</code> in the wild keep working; keep per-machine names for the planned drain test.</li>
+<li>Age identity storage: USB in a drawer vs password manager vs a second tailnet node? Rec: password manager + a printed recovery key; USB as the offline copy.</li>
+<li>Include <code>backups/</code> in the nightly bundle? Rec: yes (they are the overage/repair pre-images); exclude if <code>--stats</code> shows they dominate.</li>
+<li>Should Phase 1 rewrite transcript Markdown paths? Rec: no in v1; report only.</li>
+</ol>
+<h2 id="effort">Effort</h2>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Work</th>
+<th>Calendar</th>
+<th>Needed to stop the next outage costing days?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1</strong> Export/import CLI + manifest + <code>VACUUM INTO</code> + age secrets + <code>--stats</code> + nightly timer to another tailnet host</td>
+<td>Snapshot code, tar/dir writer, import path rewrite, tests against a fixture memory dir</td>
+<td><strong>A few days</strong></td>
+<td><strong>Yes. Do this first.</strong></td>
+</tr>
+<tr>
+<td><strong>1b</strong> Git remote for <code>knowledge/</code> <code>skills/</code> <code>soul.md</code> only</td>
+<td>Hook or timer, private repo</td>
+<td>Hours</td>
+<td>Nice; not sufficient</td>
+</tr>
+<tr>
+<td><strong>2</strong> <code>--role=standby</code>, snapshot endpoint, rsync/pull loop, disable cron/sinks/turns</td>
+<td>New flag, fencing in cron/sink/api, a small sync unit</td>
+<td><strong>About a week</strong></td>
+<td>No — reduces data loss from “last night” to “last minute”</td>
+</tr>
+<tr>
+<td><strong>3</strong> Lease row, <code>state promote</code>, Tailscale hostname runbook, peer URL notes, OAuth redirect checklist</td>
+<td>Small code + a written runbook exercised once</td>
+<td><strong>A few days after Phase 2</strong></td>
+<td>No — makes the failover repeatable</td>
+</tr>
+<tr>
+<td>Dedicated standby hardware</td>
+<td>Buy/place a mini PC on the tailnet</td>
+<td>Lead time</td>
+<td>Independent of code; USB dongle on rinux remains a single NIC</td>
+</tr>
+</tbody>
+</table>
+<p>Phase 1 is the decision that would have mattered last week. Phases 2 and 3 are how the fleet stops treating “the box with the dongle” as a unique snowflake.</p>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0039-harness-state-portability.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>
