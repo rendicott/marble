@@ -4,7 +4,19 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.26
+## What's new in v0.4.27
+
+Highlights since **[v0.4.26](https://github.com/rendicott/marble/releases/tag/v0.4.26)** (no schema change). Design: [ADR-0039](adr/0039-harness-state-portability.md).
+
+### State export/import — a harness can move
+A dead disk or a dead network adapter no longer costs the memory directory. `marble-harness state export` writes a self-verifying `marble-state/v1` bundle; `state import` puts it on another machine.
+
+- **Snapshot, not copy.** `marble.db` leaves through `VACUUM INTO` on a separate SQLite connection: no `db.Open`, so no `marble.lock` and no schema migration, and the live harness keeps serving turns throughout. `-wal`/`-shm` are never part of a bundle, and the snapshot is `PRAGMA integrity_check`ed before hashing.
+- **Checksummed manifest written last.** Every bundled file carries SHA-256, byte count, and mode, alongside source host, workspace, DB schema version, and harness version.
+- **Secrets stay home by default.** `$MEMORY/env` is not in a bundle. `--secrets=age --age-recipient age1…` encrypts it to `secrets.age` with [age](https://age-encryption.org) (`filippo.io/age`, in-process — no CLI dependency). There is no `--secrets=include`.
+- **Import refuses rather than guesses.** Dry run by default; refuses a checksum mismatch, a live `marble.lock`, a bundle newer than the binary's schema, or an existing destination database. `--rewrite-workspace FROM=TO` moves `sessions.workspace` and the `md_path` prefix on a path boundary; transcript prose is reported, never rewritten.
+
+### Earlier — v0.4.26
 
 Highlights since **[v0.4.25](https://github.com/rendicott/marble/releases/tag/v0.4.25)** (no schema change). Design: [ADR-0038](adr/0038-context-overage-rescue.md).
 
