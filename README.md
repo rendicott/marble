@@ -821,6 +821,19 @@ printf 'GEMINI_API_KEY=…\n' >> ~/.marble/env
 #   systemctl --user restart marble-harness
 ```
 
+## State export/import
+
+ADR-0039 Phase 1. `marble-harness state export` writes a `marble-state/v1` directory bundle. It snapshots `marble.db` with `VACUUM INTO` on a separate SQLite connection, so a running harness keeps `marble.lock`. Copied trees: `session/`, `daily/`, `knowledge/`, `skills/`, `mpub/`, `attachments/`, `blobs/`, `backups/`, plus `soul.md`, `mcp.json`, `tts.json`, `sinks.json`, and `agent_process.json`. Never copied: `tts-cache/`, `marble.lock`, `marble.db-wal`, `marble.db-shm`. `$MEMORY/env` is omitted unless `--secrets=age` encrypts it to `secrets.age`.
+
+```bash
+marble-harness state export -memory "$MEMORY" --stats
+marble-harness state export -memory "$MEMORY" -out /path/bundle --secrets=age --age-recipient age1...
+marble-harness state import -memory "$MEMORY" -in /path/bundle
+marble-harness state import -memory "$MEMORY" -in /path/bundle -apply --rewrite-workspace /old=/new --age-identity /path/identity.txt
+```
+
+Export without `-out` only prints stats. Import without `-apply` verifies checksums and prints the plan. Import refuses a newer database schema than this binary, a checksum mismatch, a live `marble.lock`, and an existing destination `marble.db` (move it aside, or pass `--force-db`).
+
 ## MVP limitations
 
 | Limitation | Notes |

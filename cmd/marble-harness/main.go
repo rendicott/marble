@@ -60,6 +60,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "overage-rescue" {
 		os.Exit(runOverageRescue(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "state" {
+		os.Exit(runState(os.Args[2:]))
+	}
 
 	cfg, err := config.ParseFlags(os.Args[1:])
 	if err != nil {
