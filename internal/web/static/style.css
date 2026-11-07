@@ -842,6 +842,53 @@ a.icon-btn {
   min-height: 0;
 }
 
+/* Floating "↓ Latest": a zero-height flex slot keeps layout untouched while the
+   pill floats just above the composer, overlapping the transcript's last line. */
+.jump-bottom-slot {
+  position: relative;
+  flex: 0 0 auto;
+  height: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+.jump-bottom {
+  position: absolute;
+  right: 0.85rem;
+  bottom: 0.6rem;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.28);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.jump-bottom:hover { border-color: var(--accent); }
+.jump-bottom:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.jump-bottom[hidden] { display: none !important; }
+@media (max-width: 720px) {
+  /* Keep the pill clear of the OS home indicator and thumbs */
+  .jump-bottom {
+    right: 0.7rem;
+    bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
+  }
+}
+
 .bubble.model-omit { opacity: 0.55; }
 .bubble {
   max-width: min(780px, 100%);

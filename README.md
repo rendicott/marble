@@ -4,7 +4,18 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.27
+## What's new in v0.4.28
+
+Highlights since **[v0.4.27](https://github.com/rendicott/marble/releases/tag/v0.4.27)** (no schema change). UI fix only — no design doc.
+
+### The chat stops falling back in landscape
+On a phone, rotating to landscape used to throw the transcript a screen or more back into history, and nothing on screen brought it back. Three faults, one fix:
+
+- **The bottom now holds through a reflow.** `#transcript` keeps its `scrollTop` while the viewport re-lays-out, so a view pinned to the bottom lands roughly a screen above it. The geometry-driven scroll event that followed also cleared the "following the bottom" flag, so streaming stopped following as well. On `orientationchange`, `resize`, and `visualViewport.resize` the pin is snapshotted before reflow and re-applied as layout settles (rAF ×2, then 160 ms and 300 ms fallbacks, because browsers settle at different times).
+- **Deliberate reading is left alone.** During that settling window, scrolls caused by geometry cannot unpin the view; a touch, wheel, or key cancels any pending re-anchor, so a chat you scrolled up to read stays exactly where you left it.
+- **A `↓ Latest` pill.** Floats just above the composer whenever you are off the bottom, and hides at it. It lives outside `#transcript`, so a re-render cannot destroy it, and shares the existing scroll/rAF path with the ▲/▼ turn nav rather than adding a second hot scroll listener. 44 px touch target, safe-area aware, labelled for screen readers.
+
+### Earlier — v0.4.27
 
 Highlights since **[v0.4.26](https://github.com/rendicott/marble/releases/tag/v0.4.26)** (no schema change). Design: [ADR-0039](adr/0039-harness-state-portability.md).
 
@@ -919,7 +930,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.26](https://github.com/rendicott/marble/releases/tag/v0.4.26)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.28](https://github.com/rendicott/marble/releases/tag/v0.4.28)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 

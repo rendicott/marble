@@ -330,6 +330,11 @@
           ▴ Roll up
         </button>
       </div>
+      <!-- Floating jump-to-bottom; parked outside #transcript so re-renders don't destroy it -->
+      <div id="jump-bottom-slot" class="jump-bottom-slot">
+        <button type="button" id="btn-jump-bottom" class="jump-bottom"
+                title="Jump to the latest message" aria-label="Jump to the latest message" hidden>↓ Latest</button>
+      </div>
       <form id="composer">
         <div id="agent-cwd-row" class="agent-cwd-row" hidden>
           <label for="agent-cwd">Project directory <span class="muted">relative to workspace</span></label>

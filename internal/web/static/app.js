@@ -54,6 +54,7 @@
     attachInput: document.getElementById("attach-input"),
     turnUp: document.getElementById("btn-turn-up"),
     turnDown: document.getElementById("btn-turn-down"),
+    jumpBottom: document.getElementById("btn-jump-bottom"),
     attachWarn: document.getElementById("attach-warn"),
     attModal: document.getElementById("att-modal"),
     attModalTitle: document.getElementById("att-modal-title"),
@@ -278,11 +279,78 @@
   }
 
   function syncTranscriptPinFromScroll() {
+    if (suppressPinSync) return;
+    // A geometry-driven scroll (rotation, URL bar) must not clear the pin.
+    if (viewportSettling()) return;
     transcriptPinnedToBottom = isTranscriptNearBottom();
   }
 
   if (els.transcript) {
     els.transcript.addEventListener("scroll", syncTranscriptPinFromScroll, { passive: true });
+  }
+
+  /**
+   * Rotation and mobile URL-bar resizes change #transcript's clientHeight but
+   * leave its scrollTop alone, so a view pinned to the bottom lands about a
+   * screen above it — and that geometry-driven scroll event used to clear the
+   * pin, stranding the reader mid-history. Snapshot the pin before reflow and
+   * re-anchor afterwards; leave a deliberately scrolled-up view alone.
+   */
+  const VIEWPORT_SETTLE_MS = 300;
+  let viewportSettlingUntil = 0;
+  let pinRestoreToken = 0;
+  let suppressPinSync = false;
+
+  function viewportSettling() {
+    return performance.now() < viewportSettlingUntil;
+  }
+
+  /** Re-anchor the viewport to the newest content if we were following it. */
+  function applyPinToBottom() {
+    const t = els.transcript;
+    if (!t || !transcriptPinnedToBottom) return;
+    t.scrollTop = t.scrollHeight;
+    transcriptPinnedToBottom = true;
+    suppressPinSync = true;
+    requestAnimationFrame(() => {
+      suppressPinSync = false;
+    });
+    scheduleTurnNavUpdate();
+  }
+
+  function onViewportChange() {
+    if (!els.transcript) return;
+    const wasPinned = transcriptPinnedToBottom;
+    viewportSettlingUntil = performance.now() + VIEWPORT_SETTLE_MS;
+    const token = ++pinRestoreToken;
+    if (!wasPinned) return;
+    const reanchor = () => {
+      if (token !== pinRestoreToken) return; // superseded by a newer layout or a touch
+      applyPinToBottom();
+    };
+    // Layout settles at different times across browsers: rAF×2, then timers.
+    requestAnimationFrame(() => requestAnimationFrame(reanchor));
+    setTimeout(reanchor, 160);
+    setTimeout(reanchor, VIEWPORT_SETTLE_MS);
+  }
+
+  /** A real user gesture outranks any pending re-anchor. */
+  function cancelPendingPinRestore() {
+    if (!viewportSettling()) return;
+    pinRestoreToken++;
+    viewportSettlingUntil = 0;
+  }
+
+  if (els.transcript) {
+    // orientationchange fires before the reflow — the earliest honest snapshot.
+    window.addEventListener("orientationchange", onViewportChange);
+    window.addEventListener("resize", onViewportChange);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", onViewportChange);
+    }
+    els.transcript.addEventListener("touchstart", cancelPendingPinRestore, { passive: true });
+    els.transcript.addEventListener("wheel", cancelPendingPinRestore, { passive: true });
+    window.addEventListener("keydown", cancelPendingPinRestore);
   }
 
   /**
@@ -336,11 +404,20 @@
     els.turnDown.disabled = isTranscriptNearBottom(TURN_NAV_SLOP_PX);
   }
 
+  /** Floating "↓ Latest" pill: shown only while the reader is off the bottom. */
+  function updateJumpBottom() {
+    if (!els.jumpBottom || !els.transcript) return;
+    const offBottom = !isTranscriptNearBottom(TURN_NAV_SLOP_PX);
+    if (els.jumpBottom.hidden === !offBottom) return;
+    els.jumpBottom.hidden = !offBottom;
+  }
+
   let turnNavRaf = 0;
   function scheduleTurnNavUpdate() {
     if (turnNavRaf) return;
     turnNavRaf = requestAnimationFrame(() => {
       turnNavRaf = 0;
+      updateJumpBottom();
       updateTurnNav();
     });
   }
@@ -351,6 +428,12 @@
       if (el) els.transcript.scrollTop = turnNavTop(el);
     });
     els.turnDown.addEventListener("click", turnNavDown);
+    if (els.jumpBottom) {
+      els.jumpBottom.addEventListener("click", () => {
+        scrollTranscriptToBottom(true);
+        scheduleTurnNavUpdate();
+      });
+    }
     els.transcript.addEventListener("scroll", scheduleTurnNavUpdate, { passive: true });
     // Re-renders, streamed messages, and expand/collapse all move the targets.
     new MutationObserver(scheduleTurnNavUpdate).observe(els.transcript, {
