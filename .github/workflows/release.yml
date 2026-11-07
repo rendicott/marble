@@ -144,7 +144,12 @@ jobs:
     name: Sign, notarize & publish DMG
     needs: release
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    runs-on: macos-14
+    # GitHub retired the macos-14 image, and a retired label fails the job before
+    # any step runs ("The configuration 'macos-14-arm64-us-default' is not
+    # supported") — that silently cost the v0.4.28/v0.4.29 DMGs. macos-15 is an
+    # arm64 image today. Override without a code change by setting the repo
+    # variable MACOS_RUNNER (e.g. macos-26) when the image rotates again.
+    runs-on: ${{ vars.MACOS_RUNNER || 'macos-15' }}
     steps:
       - name: Require signing secrets
         id: gate
