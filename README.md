@@ -4,9 +4,11 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.28
+## What's new in v0.4.29
 
 Highlights since **[v0.4.27](https://github.com/rendicott/marble/releases/tag/v0.4.27)** (no schema change). UI fix only — no design doc.
+
+> `v0.4.28` published no binaries: its release build failed on a `go vet` error in `internal/shellpolicy` (non-constant format string). `v0.4.29` carries the same chat fix plus that repair, so install `v0.4.29`.
 
 ### The chat stops falling back in landscape
 On a phone, rotating to landscape used to throw the transcript a screen or more back into history, and nothing on screen brought it back. Three faults, one fix:
@@ -930,7 +932,7 @@ Notable ADRs:
 
 ## Releases
 
-GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.28](https://github.com/rendicott/marble/releases/tag/v0.4.28)**.
+GitHub Actions builds **precompiled** binaries on version tags (`v*`). Latest tagged: **[v0.4.29](https://github.com/rendicott/marble/releases/tag/v0.4.29)**.
 
 Desktop peer binaries are published from the peer repo: **[marble-desktop-peer releases](https://github.com/rendicott/marble-desktop-peer/releases)** (latest **[v0.2.2](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.2)** — region capture).
 

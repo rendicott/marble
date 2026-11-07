@@ -2,6 +2,7 @@ package shellpolicy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -174,7 +175,7 @@ func (p *Policy) Check(command, cwdRel string) error {
 	}
 	if p.BlockMemory && p.MemoryRoot != "" {
 		if refsMemoryRoot(cmd, p.MemoryRoot) {
-			return fmt.Errorf("command references the Marble memory directory (blocked, not retryable: no rewording of it will run). " +
+			return errors.New("command references the Marble memory directory (blocked, not retryable: no rewording of it will run). " +
 				"Use memory_search / memory_fetch / memory_write for memory content. " + secretsHint())
 		}
 	}
