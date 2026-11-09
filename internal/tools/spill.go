@@ -160,18 +160,25 @@ func sweepSpills(workspace, keep string) {
 		total += info.Size()
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
-	for len(files) > spillMaxFiles || total > spillMaxBytes {
+
+	// The file just handed out must survive, but it still occupies a slot and
+	// bytes on disk — so take it out of the eviction queue without taking it out
+	// of the accounting. Dropping it from the count is how the cap drifted over.
+	protected := 0
+	if keep != "" {
+		for i, f := range files {
+			if f.name == keep {
+				files = append(files[:i], files[i+1:]...)
+				protected = 1
+				break
+			}
+		}
+	}
+	for len(files)+protected > spillMaxFiles || total > spillMaxBytes {
 		if len(files) == 0 {
-			return
+			return // only the protected spill remains; nothing left to evict
 		}
 		oldest := files[0]
-		if oldest.name == keep {
-			if len(files) == 1 {
-				return
-			}
-			files = files[1:]
-			continue
-		}
 		if err := os.Remove(filepath.Join(dir, oldest.name)); err == nil {
 			total -= oldest.size
 		}

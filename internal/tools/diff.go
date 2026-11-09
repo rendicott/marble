@@ -51,7 +51,19 @@ func unifiedDiff(path, before, after string) string {
 	return out
 }
 
-func splitDiffLines(s string) []string { return strings.Split(s, "\n") }
+// splitDiffLines drops the phantom line a trailing newline produces, and treats
+// the empty file as no lines at all — otherwise an insert-only or delete-only
+// hunk counts a line that does not exist and its header lies.
+func splitDiffLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, "\n")
+	if parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	return parts
+}
 
 // diffOps trims the common head and tail (where nearly all of a file's lines are)
 // and runs LCS only on what is left.
