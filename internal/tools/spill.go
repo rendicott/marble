@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -103,8 +104,10 @@ func (r *Registry) spillBody(tool, body string) (string, error) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 		return "", err
 	}
+	rel := SpillDirName + "/" + name
+	log.Printf("tools: spill %s -> %s (%d bytes)", tool, rel, len(body))
 	sweepSpills(r.Workspace, name) // never evict the spill we just handed out
-	return SpillDirName + "/" + name, nil
+	return rel, nil
 }
 
 // spillSlug keeps a tool name safe for a filename.

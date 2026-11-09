@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,7 @@ func editReport(path, before, after string, count int, tier matchTier) string {
 	how := ""
 	if tier != tierExact {
 		how = fmt.Sprintf("; matched after %s normalization", tier)
+		log.Printf("tools: edit %s matched after %s normalization", path, tier)
 	}
 	msg := fmt.Sprintf("edited %s (%d replacement(s)%s)", path, count, how)
 	if d := unifiedDiff(path, before, after); d != "" {
@@ -168,6 +170,7 @@ func (r *Registry) applyPatch(argsJSON string, tc *TurnContext) (string, error) 
 				}
 				if tier != tierExact {
 					diffs = append(diffs, fmt.Sprintf("(edit[%d] matched after %s normalization)\n", i, tier))
+					log.Printf("tools: edit %s matched after %s normalization", e.Path, tier)
 				}
 			} else if e.Content != "" {
 				next = e.Content

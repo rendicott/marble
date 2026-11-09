@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | **Proposed** |
+| **Status** | **Accepted** |
 | **Date** | 2026-11-07 |
 | **Author** | grok |
 | **Deciders** | Project owner |
@@ -61,8 +61,7 @@ total_bytes: 77218
 |------|---------|-------|
 | file_read | Yes | Uses Offset/Limit directly; returns next_offset when truncated |
 | grep | Yes | Large matches spill to one file per match set |
-| glob | No | Always small |
-| list_files | No | Always small |
+| glob, list_files | Yes | Spill like any other tool when the result exceeds the cap; in practice results are small |
 | shell | Yes | Stdout/stderr spills independently |
 | shell background tail | Yes | Only the tail portion; full log in spill |
 | web_fetch | Yes | Body spills; headers stay in head |

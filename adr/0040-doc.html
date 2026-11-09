@@ -11,7 +11,7 @@
     <div class="brand">
       <span class="mark"></span>
       <span>Marble · ADR-0040</span>
-      <span class="status proposed">Proposed</span>
+      <span class="status accepted">Accepted</span>
     </div>
     <nav class="toc">
       <a href="index.html">Index</a>
@@ -33,7 +33,7 @@
 <tbody>
 <tr>
 <td><strong>Status</strong></td>
-<td><strong>Proposed</strong></td>
+<td><strong>Accepted</strong></td>
 </tr>
 <tr>
 <td><strong>Date</strong></td>
@@ -115,14 +115,9 @@ total_bytes: 77218
 <td>Large matches spill to one file per match set</td>
 </tr>
 <tr>
-<td>glob</td>
-<td>No</td>
-<td>Always small</td>
-</tr>
-<tr>
-<td>list_files</td>
-<td>No</td>
-<td>Always small</td>
+<td>glob, list_files</td>
+<td>Yes</td>
+<td>Spill like any other tool when the result exceeds the cap; in practice results are small</td>
 </tr>
 <tr>
 <td>shell</td>
