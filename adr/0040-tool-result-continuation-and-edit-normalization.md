@@ -106,6 +106,23 @@ failure in any hunk aborts the whole patch with full rollback — no partial wri
 
 This makes edit matching robust to common typography while preserving exact semantics on successful matches and providing clear diagnostics.
 
+## Implementation notes (D1 as landed, 2026-11-09)
+
+Four points where the build clarified or corrected this document:
+
+- **The spill holds the whole body, not only the tail.** `spilled_bytes == total_bytes`. The resume point
+  still travels in `next_offset`, but the model can also re-read earlier output (e.g. the head of a huge
+  `shell_execute` log) without another tool call. The example above, where `spilled_bytes < total_bytes`,
+  was the alternative; it costs one extra file and buys back old context.
+- **`file_read` gained `byte_offset`.** Its `offset` was line-based, so the byte resume point this ADR chose
+  was unreachable through the tool it named. `byte_offset` slices at an exact byte (rejecting a mid-rune
+  offset with a typed error) and `limit` still caps lines after it. `offset`/`limit` are unchanged.
+- **The marker also reports `next_line`.** Belt and braces for models that would rather resume by line.
+- **`resume_mid_line: true` when the cut could not be line-aligned** (one enormous line). The marker says
+  so rather than implying a clean line break. Reading a spill that itself overflows spills again — the
+  chain advances through `next_offset` and terminates at end-of-body; the sweep never evicts the file it
+  has just handed out.
+
 ## Alternatives Considered
 
 - New continue_result tool: rejected because it duplicates file_read Offset/Limit, adds client complexity, and breaks MCP uniformity.

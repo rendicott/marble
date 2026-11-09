@@ -177,6 +177,22 @@ note (&ldquo;…[diff truncated at 4 KiB]&rdquo;) but the edit still proceeds. <
 <code>reverseOp</code> rollback (internal/tools/edit.go:79-105): normalization is attempted per file, and a single
 failure in any hunk aborts the whole patch with full rollback — no partial writes.</p>
 <p>This makes edit matching robust to common typography while preserving exact semantics on successful matches and providing clear diagnostics.</p>
+<h2 id="implementation-notes-d1-as-landed-2026-11-09">Implementation notes (D1 as landed, 2026-11-09)</h2>
+<p>Four points where the build clarified or corrected this document:</p>
+<ul>
+<li><strong>The spill holds the whole body, not only the tail.</strong> <code>spilled_bytes == total_bytes</code>. The resume point
+  still travels in <code>next_offset</code>, but the model can also re-read earlier output (e.g. the head of a huge
+  <code>shell_execute</code> log) without another tool call. The example above, where <code>spilled_bytes &lt; total_bytes</code>,
+  was the alternative; it costs one extra file and buys back old context.</li>
+<li><strong><code>file_read</code> gained <code>byte_offset</code>.</strong> Its <code>offset</code> was line-based, so the byte resume point this ADR chose
+  was unreachable through the tool it named. <code>byte_offset</code> slices at an exact byte (rejecting a mid-rune
+  offset with a typed error) and <code>limit</code> still caps lines after it. <code>offset</code>/<code>limit</code> are unchanged.</li>
+<li><strong>The marker also reports <code>next_line</code>.</strong> Belt and braces for models that would rather resume by line.</li>
+<li><strong><code>resume_mid_line: true</code> when the cut could not be line-aligned</strong> (one enormous line). The marker says
+  so rather than implying a clean line break. Reading a spill that itself overflows spills again — the
+  chain advances through <code>next_offset</code> and terminates at end-of-body; the sweep never evicts the file it
+  has just handed out.</li>
+</ul>
 <h2 id="alternatives-considered">Alternatives Considered</h2>
 <ul>
 <li>New continue_result tool: rejected because it duplicates file_read Offset/Limit, adds client complexity, and breaks MCP uniformity.</li>

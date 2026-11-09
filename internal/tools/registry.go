@@ -166,10 +166,6 @@ func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
 }
 
 func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
-	max := r.MaxResultChars
-	if max <= 0 {
-		max = 32000
-	}
 	if tc == nil {
 		tc = &TurnContext{ReadPaths: map[string]bool{}}
 	}
@@ -194,7 +190,7 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 		// timeout enforced inside MCP sessions; outer bound 2m; honor turn cancel
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		out := clamp(r.MCP.Execute(ctx, name, argsJSON), max)
+		out := r.clampResult(name, r.MCP.Execute(ctx, name, argsJSON))
 		r.postflightThrash(name, argsJSON, out, tc)
 		return r.noteRepeat(name, argsJSON, out, tc)
 	}
@@ -337,7 +333,8 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 			out = out + w
 		}
 	}
-	result := clamp(out, max)
+	// ADR-0040 D1: overflow spills to .tool-results/ with a resume marker.
+	result := r.clampResult(name, out)
 	r.postflightThrash(name, argsJSON, result, tc)
 	// Advisory when escalate lock just engaged
 	if tc.Thrash != nil && tc.Thrash.EscalateLock && tc.OnHarnessNote != nil {
@@ -345,13 +342,6 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 		tc.OnHarnessNote("[harness] escalate lock: computer click blocked until confirm / different approach (ADR-0022)")
 	}
 	return r.noteRepeat(name, argsJSON, result, tc)
-}
-
-func clamp(s string, max int) string {
-	if max <= 0 || len(s) <= max {
-		return s
-	}
-	return s[:max] + fmt.Sprintf("\n\n…[truncated %d of %d chars]", max, len(s))
 }
 
 // resolve maps a path into the workspace jail.

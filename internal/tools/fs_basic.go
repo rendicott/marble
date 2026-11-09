@@ -9,9 +9,13 @@ import (
 )
 
 type fileReadArgs struct {
-	Path   string `json:"path"`
-	Offset int    `json:"offset"`
-	Limit  int    `json:"limit"`
+	Path string `json:"path"`
+	// Offset/Limit are 1-based line numbers (ADR-0005).
+	Offset int `json:"offset"`
+	Limit  int `json:"limit"`
+	// ByteOffset resumes from an exact byte offset (ADR-0040 D1 spill markers).
+	// Must land on a UTF-8 rune boundary; Limit still caps lines after it.
+	ByteOffset int `json:"byte_offset"`
 }
 
 func (r *Registry) fileRead(argsJSON string, tc *TurnContext) (string, error) {
@@ -37,6 +41,21 @@ func (r *Registry) fileRead(argsJSON string, tc *TurnContext) (string, error) {
 		tc.ReadPaths[a.Path] = true
 	}
 	text := string(data)
+	if a.ByteOffset > 0 {
+		if a.ByteOffset > len(text) {
+			return "", fmt.Errorf("byte_offset %d is past the end of %s (%d bytes)", a.ByteOffset, a.Path, len(text))
+		}
+		if !utf8.RuneStart(text[a.ByteOffset]) {
+			return "", fmt.Errorf("byte_offset %d splits a UTF-8 rune in %s", a.ByteOffset, a.Path)
+		}
+		text = text[a.ByteOffset:]
+		if a.Limit > 0 {
+			if lines := strings.Split(text, "\n"); a.Limit < len(lines) {
+				text = strings.Join(lines[:a.Limit], "\n")
+			}
+		}
+		return fmt.Sprintf("path=%s byte_offset=%d\n%s", a.Path, a.ByteOffset, text), nil
+	}
 	if a.Offset > 0 || a.Limit > 0 {
 		lines := strings.Split(text, "\n")
 		start := 0

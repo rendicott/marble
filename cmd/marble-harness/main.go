@@ -266,6 +266,8 @@ func main() {
 		},
 		ThrashSet: true,
 	}
+	// ADR-0040 D1: age/size sweep for .tool-results/ so spills cannot accumulate.
+	go tools.SweepSpills(cfg.Workspace)
 	runner := &session.Runner{
 		Cfg:    cfg,
 		Client: client,

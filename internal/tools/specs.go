@@ -4,13 +4,14 @@ import "github.com/rendicott/marble/internal/model"
 
 func allSpecs() []model.ToolSpec {
 	return []model.ToolSpec{
-		spec("file_read", "Read a text file under the workspace. Optional offset/limit are 1-based line numbers.",
+		spec("file_read", "Read a text file under the workspace. offset/limit are 1-based line numbers. byte_offset resumes exactly where a truncated tool result said it cut (see next_offset in a '…[truncated; see spill]' marker); it must land on a UTF-8 boundary and limit still caps lines after it.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"path":   map[string]interface{}{"type": "string"},
-					"offset": map[string]interface{}{"type": "integer"},
-					"limit":  map[string]interface{}{"type": "integer"},
+					"path":        map[string]interface{}{"type": "string"},
+					"offset":      map[string]interface{}{"type": "integer"},
+					"limit":       map[string]interface{}{"type": "integer"},
+					"byte_offset": map[string]interface{}{"type": "integer"},
 				},
 				"required": []string{"path"},
 			}),
