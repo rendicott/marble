@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | **Proposed** (2026-11-09) |
+| **Status** | **Accepted** (2026-11-09) |
 | **Date** | 2026-11-09 |
 | **Author** | — |
 | **Deciders** | Project owner |
