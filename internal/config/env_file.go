@@ -429,6 +429,22 @@ func ChildEnv(extra map[string]string) []string {
 	return childEnvFiltered(extra, nil)
 }
 
+// agentSubscriptionVars carry a *subscription* login rather than API-key billing, so they
+// survive the agent filter (ADR placeholder-free: see IsAgentCredentialVar).
+// CLAUDE_CODE_OAUTH_TOKEN is the long-lived token minted by `claude setup-token`. Claude Code
+// prefers ANTHROPIC_API_KEY over it whenever both are set, so keeping the token is safe only
+// because the key is withheld alongside it.
+var agentSubscriptionVars = map[string]bool{
+	"CLAUDE_CODE_OAUTH_TOKEN": true,
+}
+
+// IsAgentSubscriptionVar reports whether name is a subscription credential that agent
+// subprocesses must keep — otherwise `env_mode=subscription` leaves a setup-token login
+// with no credentials at all.
+func IsAgentSubscriptionVar(name string) bool {
+	return agentSubscriptionVars[strings.ToUpper(strings.TrimSpace(name))]
+}
+
 // IsAgentCredentialVar reports whether an env var selects API-key / token billing for a
 // coding-agent CLI, or overrides the endpoint its subscription login talks to.
 //
@@ -442,6 +458,10 @@ func ChildEnv(extra map[string]string) []string {
 func IsAgentCredentialVar(name string) bool {
 	n := strings.ToUpper(strings.TrimSpace(name))
 	if n == "" {
+		return false
+	}
+	// Subscription logins are not key billing: they must reach the child.
+	if IsAgentSubscriptionVar(n) {
 		return false
 	}
 	switch n {

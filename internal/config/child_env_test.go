@@ -66,6 +66,7 @@ func TestChildEnvForAgentWithholdsCredentials(t *testing.T) {
 	t.Setenv("XAI_API_KEY", "xai-from-systemd-0002")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://proxy.invalid")
 	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-sub-0007")
 	t.Setenv("HARMLESS_FLAG", "keep-me")
 	withManagedEnv(t, "GROK_API_KEY=grok-managed-0003\nGEMINI_API_KEY=gem-managed-0004\nSESSION_OAUTH_TOKEN=oauth-0005\nMAIL_KEY=fmu1-managed-0006\n")
 
@@ -78,6 +79,10 @@ func TestChildEnvForAgentWithholdsCredentials(t *testing.T) {
 	}
 	if got := agent["HARMLESS_FLAG"]; len(got) != 1 || got[0] != "keep-me" {
 		t.Fatalf("non-credential vars pass through: %v", got)
+	}
+	// A subscription credential is not key billing: a setup-token login has nothing else.
+	if got := agent["CLAUDE_CODE_OAUTH_TOKEN"]; len(got) != 1 || got[0] != "oauth-sub-0007" {
+		t.Fatalf("subscription OAuth token must reach the agent: %v", got)
 	}
 	if got := agent["MAIL_KEY"]; len(got) != 1 || got[0] != "fmu1-managed-0006" {
 		t.Fatalf("credential carrying an unrelated name still reaches the agent (it is not key-shaped): %v", got)
