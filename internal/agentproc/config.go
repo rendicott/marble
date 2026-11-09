@@ -30,6 +30,43 @@ type Config struct {
 	StuckKill bool `json:"stuck_kill"`
 	// Context is the global default source-list for subprocess injection (ADR-0031).
 	Context ContextConfig `json:"context"`
+	// EnvMode is the default environment policy for coding-agent subprocesses:
+	// "subscription" (default) withholds credential-shaped vars and endpoint overrides
+	// so claude/grok/opencode fall back to their own logged-in login; "inherit" passes
+	// the full harness env (Settings → Secrets included) so a child can bill an API key.
+	// A per-call call_agent_process env_mode overrides this. "" → subscription.
+	EnvMode string `json:"env_mode,omitempty"`
+}
+
+// Env policy values for agent subprocesses.
+const (
+	// EnvModeSubscription withholds credential-shaped vars and base-URL overrides so the
+	// CLI uses the operator's logged-in subscription (the default, and the safest).
+	EnvModeSubscription = "subscription"
+	// EnvModeInherit passes the full harness environment, Settings → Secrets included, so a
+	// child can authenticate with an API key instead of a login.
+	EnvModeInherit = "inherit"
+)
+
+// NormalizeEnvMode canonicalizes an env_mode value. "" means subscription; the aliases
+// exist so a call written as "login" or "api_keys" behaves as the caller intended.
+func NormalizeEnvMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "subscription", "login", "isolated", "default":
+		return EnvModeSubscription, nil
+	case "inherit", "all", "full", "api_keys", "keys":
+		return EnvModeInherit, nil
+	}
+	return "", fmt.Errorf("env_mode %q: use \"subscription\" (logged-in CLI, API keys withheld) or \"inherit\" (full env, API keys available)", mode)
+}
+
+// AgentEnvMode is the configured default env policy; invalid values fall back to
+// subscription so a typo in agent_process.json cannot silently expose API keys.
+func (c Config) AgentEnvMode() string {
+	if m, err := NormalizeEnvMode(c.EnvMode); err == nil {
+		return m
+	}
+	return EnvModeSubscription
 }
 
 // LivenessConfig holds rate thresholds for process-tree liveness signals.
@@ -118,6 +155,7 @@ func DefaultConfig() Config {
 			Default:  DefaultContextSources(),
 			MaxChars: DefaultContextMaxChars,
 		},
+		EnvMode: EnvModeSubscription,
 	}
 }
 
@@ -183,6 +221,12 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Context.Default == nil {
 		cfg.Context.Default = DefaultContextSources()
+	}
+	// env_mode: absent or unparseable → subscription (never silently inherit keys).
+	if m, err := NormalizeEnvMode(cfg.EnvMode); err != nil {
+		cfg.EnvMode = def.EnvMode
+	} else {
+		cfg.EnvMode = m
 	}
 	return cfg, nil
 }

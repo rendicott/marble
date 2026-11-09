@@ -24,6 +24,9 @@ type agentProcArgs struct {
 	Kill            bool        `json:"kill"`
 	Context         interface{} `json:"context"`
 	ContextMaxChars int         `json:"context_max_chars"`
+	// EnvMode is the child env policy: "subscription" (default) withholds API-key and
+	// base-URL vars so the CLI uses its own login; "inherit" passes the full harness env.
+	EnvMode string `json:"env_mode"`
 }
 
 func (r *Registry) callAgentProcess(argsJSON string, tc *TurnContext) (string, error) {
@@ -32,6 +35,12 @@ func (r *Registry) callAgentProcess(argsJSON string, tc *TurnContext) (string, e
 	}
 	var a agentProcArgs
 	if err := parseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	// Validate env_mode up front: a typo must fail loud rather than silently pick
+	// subscription or, worse, inherit.
+	envMode, err := agentproc.NormalizeEnvMode(a.EnvMode)
+	if err != nil {
 		return "", err
 	}
 
@@ -83,6 +92,7 @@ func (r *Registry) callAgentProcess(argsJSON string, tc *TurnContext) (string, e
 		Model:        a.Model,
 		ExtraArgs:    a.ExtraArgs,
 		Background:   a.Background,
+		EnvMode:      envMode,
 	}
 	if block, marker := r.assembleAgentContext(tc, a.Context, a.ContextMaxChars, a.Prompt); marker != "" || block != "" {
 		req.ContextBlock = block
@@ -104,6 +114,7 @@ func (r *Registry) callAgentProcess(argsJSON string, tc *TurnContext) (string, e
 			"pid":            t.PID,
 			"started_at":     t.StartedAt.Format(time.RFC3339),
 			"command":        t.Command,
+			"env_mode":       envMode,
 			"prompt_preview": contextPreview(t),
 			"poll": map[string]string{
 				"task_id": t.ID,
@@ -170,6 +181,9 @@ func taskView(t *agentproc.Task, detail bool) map[string]interface{} {
 	}
 	if t.ContextMarker != "" {
 		out["context"] = t.ContextMarker
+	}
+	if t.EnvMode != "" {
+		out["env_mode"] = t.EnvMode
 	}
 	return out
 }

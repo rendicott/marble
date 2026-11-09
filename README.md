@@ -114,7 +114,9 @@ Highlights since **[v0.4.18](https://github.com/rendicott/marble/releases/tag/v0
 ### Secrets just work in the agent's shells
 Settings → Secrets were loaded into the harness only at startup, so a key added later never reached `shell_execute`. Agents then tried to source `$MEMORY/env` (blocked) and suggested pasting the key into chat or copying it into the repo.
 
-- **Live:** shells, background tasks, agent subprocesses and MCP servers get the current Settings → Secrets as environment variables each time they start. Adding or rotating a key needs no restart.
+- **Live:** shells, background tasks and MCP servers get the current Settings → Secrets as environment variables each time they start. Adding or rotating a key needs no restart.
+- **Not for agent CLIs:** `call_agent_process` and routed preset turns withhold credential-shaped names (`*_API_KEY`, `*_AUTH_TOKEN`, `*_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`, …), so `claude`, `grok` and `opencode` use the operator's own logged-in subscription instead of metered API keys. A key in the env made Claude Code answer "Credit balance is too low" while the subscription sat unused.
+- **Opt back in when you mean it:** pass `env_mode: "inherit"` on `call_agent_process` (or `"env_mode": "inherit"` in `agent_process.json`) to hand a child the full env — Settings → Secrets included — so it can authenticate with an API key. A key named in a driver's `env` applies in either mode. `env_mode` defaults to `subscription`; an unparseable value is an error, never a silent inherit.
 - **Masked:** secret values in any tool result (and in routed grok / claude output) are replaced with `[secret:NAME]` before they reach the transcript or the model. Agents can write scripts that use `$FOO_TOKEN` freely.
 - **Guided:** the system prompt and tool descriptions say to use `"$NAME"`. Sourcing `$MEMORY/env` is still blocked, and the error now lists the available names (never values).
 

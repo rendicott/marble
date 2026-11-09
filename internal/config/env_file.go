@@ -426,6 +426,52 @@ func AuthHintForAPIKeyEnv(apiKeyEnv string) string {
 // until a restart. Secrets in children are fine; ScrubSecrets keeps their values out of
 // tool results, transcripts and model requests.
 func ChildEnv(extra map[string]string) []string {
+	return childEnvFiltered(extra, nil)
+}
+
+// IsAgentCredentialVar reports whether an env var selects API-key / token billing for a
+// coding-agent CLI, or overrides the endpoint its subscription login talks to.
+//
+// These names are withheld from agent subprocesses (call_agent_process and routed preset
+// turns): claude, grok and opencode run on the operator's own logged-in subscription. An
+// injected ANTHROPIC_API_KEY silently switches Claude Code to metered API billing — it
+// reports "Credit balance is too low" while the subscription sits unused. xAI's CLI reads
+// XAI_API_KEY while Marble exports the same secret as GROK_API_KEY, so the mismatch alone
+// produced "Not signed in" on a machine with a valid login. A stale ANTHROPIC_BASE_URL /
+// OPENAI_BASE_URL likewise hijacks the CLI away from its login endpoint.
+func IsAgentCredentialVar(name string) bool {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	switch n {
+	case "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL", "OPENAI_ORG_ID",
+		"OPENAI_PROJECT_ID", "XAI_BASE_URL", "GROK_BASE_URL",
+		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+		"GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS":
+		return true
+	}
+	for _, suf := range []string{
+		"_API_KEY", "_APIKEY", "_API_TOKEN",
+		"_AUTH_TOKEN", "_OAUTH_TOKEN", "_ACCESS_TOKEN", "_SESSION_TOKEN",
+		"_ACCESS_KEY_ID", "_SECRET_ACCESS_KEY",
+	} {
+		if strings.HasSuffix(n, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// ChildEnvForAgent is ChildEnv for coding-agent subprocesses: the same live overlay, minus
+// every credential-shaped name (IsAgentCredentialVar), so the child falls back to its own
+// logged-in credentials. Driver config extras are applied verbatim — a preset naming a key
+// in Settings → Agents is an explicit operator opt-in to key billing.
+func ChildEnvForAgent(extra map[string]string) []string {
+	return childEnvFiltered(extra, IsAgentCredentialVar)
+}
+
+func childEnvFiltered(extra map[string]string, drop func(string) bool) []string {
 	overlay := loadEnvOverlay()
 	env := make([]string, 0, len(os.Environ())+len(overlay)+len(extra))
 	for _, kv := range os.Environ() {
@@ -439,12 +485,19 @@ func ChildEnv(extra map[string]string) []string {
 		if _, ok := extra[k]; ok {
 			continue
 		}
+		if drop != nil && drop(k) {
+			continue
+		}
 		env = append(env, kv)
 	}
 	for k, v := range overlay {
-		if _, ok := extra[k]; !ok {
-			env = append(env, k+"="+v)
+		if _, ok := extra[k]; ok {
+			continue
 		}
+		if drop != nil && drop(k) {
+			continue
+		}
+		env = append(env, k+"="+v)
 	}
 	for k, v := range extra {
 		env = append(env, k+"="+v)

@@ -26,6 +26,10 @@ type Request struct {
 	ContextMarker string
 	// AgentSessionID pins the child's session (ADR-0035); passed via DriverConfig.SessionIDFlag.
 	AgentSessionID string
+	// EnvMode selects the child environment policy: subscription (default, credentials
+	// withheld so the CLI uses its own login) or inherit (full harness env, API keys
+	// available). Empty defers to the configured default.
+	EnvMode string
 }
 
 // Result is returned to the Marble model (and stored on BG completion).

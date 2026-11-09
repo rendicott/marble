@@ -47,6 +47,9 @@ type Task struct {
 	Command       []string   `json:"command,omitempty"`
 	// AgentSessionID is the session id pinned on the child CLI (ADR-0035), if its driver supports it.
 	AgentSessionID string `json:"agent_session_id,omitempty"`
+	// EnvMode records which env policy the child ran under (subscription | inherit), so a
+	// poll can show whether API keys were in play.
+	EnvMode string `json:"env_mode,omitempty"`
 	// Progress is filled on Get/List while running (or at finish).
 	Progress *Progress `json:"progress,omitempty"`
 
@@ -177,7 +180,7 @@ func (m *Manager) RunSync(ctx context.Context, sessionID string, req Request) (R
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = cwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = mergeEnv(dcfg.Env)
+	cmd.Env = mergeEnv(dcfg.Env, m.resolveEnvMode(req.EnvMode))
 
 	var stdout, stderr bytes.Buffer
 	maxOut := m.maxOut()
@@ -252,7 +255,7 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = cwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = mergeEnv(dcfg.Env)
+	cmd.Env = mergeEnv(dcfg.Env, m.resolveEnvMode(req.EnvMode))
 
 	var stdout, stderr bytes.Buffer
 	maxOut := m.maxOut()
@@ -281,6 +284,7 @@ func (m *Manager) StartBackground(sessionID string, req Request) (*Task, error) 
 		StartedAt:      startedAt,
 		Command:        argv,
 		AgentSessionID: agentSID,
+		EnvMode:        m.resolveEnvMode(req.EnvMode),
 		live:           live,
 		done:           make(chan struct{}),
 		cmd:            cmd,
@@ -683,9 +687,28 @@ func (m *Manager) Done(id string) <-chan struct{} {
 	return nil
 }
 
-// mergeEnv is the child env: harness env + live Settings → Secrets + driver extras.
-func mergeEnv(extra map[string]string) []string {
-	return config.ChildEnv(extra)
+// mergeEnv is the child env for coding-agent CLIs: harness env + live Settings → Secrets,
+// filtered by the env policy. subscription (the default) withholds every credential-shaped
+// name (config.IsAgentCredentialVar) so claude/grok/opencode use the operator's own
+// logged-in subscription instead of metered API keys; inherit passes the full env so a
+// child can bill an API key deliberately. Driver extras always apply verbatim.
+func mergeEnv(extra map[string]string, mode string) []string {
+	if mode == EnvModeInherit {
+		return config.ChildEnv(extra)
+	}
+	return config.ChildEnvForAgent(extra)
+}
+
+// resolveEnvMode applies a per-call override, else the configured default. An unparseable
+// override falls back to the default rather than to inheritance (fail safe).
+func (m *Manager) resolveEnvMode(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return m.Config().AgentEnvMode()
+	}
+	if out, err := NormalizeEnvMode(mode); err == nil {
+		return out
+	}
+	return m.Config().AgentEnvMode()
 }
 
 // JoinUnderWorkspace resolves rel under root. Empty or "." returns root.

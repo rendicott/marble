@@ -58,6 +58,50 @@ func TestChildEnvAppliesManagedSecretsLive(t *testing.T) {
 	}
 }
 
+// Agent subprocesses must fall back to their own logged-in subscription credentials. A key
+// in the environment flips Claude Code to metered API billing ("Credit balance is too low")
+// and xAI's CLI reads a different name than Marble exports, so it reports "Not signed in".
+func TestChildEnvForAgentWithholdsCredentials(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-from-systemd-0001")
+	t.Setenv("XAI_API_KEY", "xai-from-systemd-0002")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://proxy.invalid")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	t.Setenv("HARMLESS_FLAG", "keep-me")
+	withManagedEnv(t, "GROK_API_KEY=grok-managed-0003\nGEMINI_API_KEY=gem-managed-0004\nSESSION_OAUTH_TOKEN=oauth-0005\nMAIL_KEY=fmu1-managed-0006\n")
+
+	agent := envMap(ChildEnvForAgent(nil))
+	for _, banned := range []string{"ANTHROPIC_API_KEY", "XAI_API_KEY", "ANTHROPIC_BASE_URL",
+		"CLAUDE_CODE_USE_BEDROCK", "GROK_API_KEY", "GEMINI_API_KEY", "SESSION_OAUTH_TOKEN"} {
+		if _, ok := agent[banned]; ok {
+			t.Fatalf("agent env must not carry %s", banned)
+		}
+	}
+	if got := agent["HARMLESS_FLAG"]; len(got) != 1 || got[0] != "keep-me" {
+		t.Fatalf("non-credential vars pass through: %v", got)
+	}
+	if got := agent["MAIL_KEY"]; len(got) != 1 || got[0] != "fmu1-managed-0006" {
+		t.Fatalf("credential carrying an unrelated name still reaches the agent (it is not key-shaped): %v", got)
+	}
+	if len(agent["PATH"]) != 1 {
+		t.Fatal("PATH must pass through so the CLI is found")
+	}
+
+	// Shells and background tasks keep the live overlay untouched.
+	shell := envMap(ChildEnv(nil))
+	if got := shell["ANTHROPIC_API_KEY"]; len(got) != 1 || got[0] != "sk-ant-from-systemd-0001" {
+		t.Fatalf("shell env keeps secrets: %v", got)
+	}
+	if got := shell["GROK_API_KEY"]; len(got) != 1 {
+		t.Fatal("shell env keeps managed secrets")
+	}
+
+	// An explicit per-driver extra is an operator opt-in and wins.
+	explicit := envMap(ChildEnvForAgent(map[string]string{"XAI_API_KEY": "explicit-driver-key"}))
+	if got := explicit["XAI_API_KEY"]; len(got) != 1 || got[0] != "explicit-driver-key" {
+		t.Fatalf("driver extras are applied verbatim: %v", got)
+	}
+}
+
 func TestScrubSecrets(t *testing.T) {
 	t.Setenv("SYSTEMD_ONLY_API_KEY", "sk-from-systemd-xyz")
 	t.Setenv("HARMLESS_PATHISH", "/usr/local/share/thing") // not credential-named, not managed

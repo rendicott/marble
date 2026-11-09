@@ -587,7 +587,7 @@ func allSpecs() []model.ToolSpec {
 				"required": []string{"url"},
 			}),
 		// call_agent_process (ADR-0014) — external coding harnesses (grok/claude)
-		spec("call_agent_process", "Run an external coding agent headless (format=grok|claude|opencode). Prefer background=true for app/multi-file work; poll {\"task_id\"}. Judge progress by progress.alive / alive_age_sec / phase / signals (session state, process I/O+CPU, child processes, output, cwd) — not identical poll text or missing file writes; agents often reason for many minutes before editing. stuck_hint means every measured signal has been quiet for stuck_after_sec; read stuck_reason before killing. Short implement prompts beat long CRITICAL essays. Defaults (agent_process.json): medium effort, --no-plan, max-turns~40, timeout~15m. context defaults to full+memory (session transcript + memory hits); pass context=[] or none for a throwaway isolated run. Kill: {\"task_id\",\"kill\":true}. Prefer Marble tools for simple edits.",
+		spec("call_agent_process", "Run an external coding agent headless (format=grok|claude|opencode). Prefer background=true for app/multi-file work; poll {\"task_id\"}. Judge progress by progress.alive / alive_age_sec / phase / signals (session state, process I/O+CPU, child processes, output, cwd) — not identical poll text or missing file writes; agents often reason for many minutes before editing. stuck_hint means every measured signal has been quiet for stuck_after_sec; read stuck_reason before killing. Short implement prompts beat long CRITICAL essays. Defaults (agent_process.json): medium effort, --no-plan, max-turns~40, timeout~15m. context defaults to full+memory (session transcript + memory hits); pass context=[] or none for a throwaway isolated run. env_mode defaults to \"subscription\": API-key and base-URL vars are withheld so the child uses its own logged-in login; pass env_mode=\"inherit\" only when the child must authenticate with an API key. Kill: {\"task_id\",\"kill\":true}. Prefer Marble tools for simple edits.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -646,6 +646,11 @@ func allSpecs() []model.ToolSpec {
 					"context_max_chars": map[string]interface{}{
 						"type":        "integer",
 						"description": "Total injected-context cap (default 16000)",
+					},
+					"env_mode": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"subscription", "inherit"},
+						"description": "Child env policy. subscription (default) withholds API-key and base-URL vars so claude/grok/opencode use their own logged-in login; inherit passes the full harness env (Settings → Secrets) so the child can bill an API key.",
 					},
 				},
 			}),
