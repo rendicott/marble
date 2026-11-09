@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0040</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0040</span>
+      <span class="status proposed">Proposed</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0040-tool-result-continuation-and-edit-normalization.md">Markdown</a>
+      <a href="0039-doc.html">← 0039</a>
+      <a href="0041-doc.html">0041 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0040-tool-result-continuation-and-edit-normalization">ADR-0040: Tool Result Continuation and Edit Normalization</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Proposed</strong></td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-11-07</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>grok</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tools, truncation, edit, normalization, continuation, prompt-cache</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0005 (tools and agent loop — Q22/Q23 prior-read gate, <code>edit_file</code>/<code>apply_patch</code> semantics), ADR-0006 (MCP bridge)</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>docs/modern-harness-techniques.md section 4 P1 items 4 and 5; opencode read/edit tools</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Current tool results are clamped at &ndash;max-tool-result (default 32000 chars, internal/config/config.go:145). internal/tools/registry.go:350-355 implements clamp(s, max) which returns s unchanged when len(s) &lt;= max, else s[:max] + &ldquo;\n\n…[truncated %d of %d chars]&rdquo; (max, len). The cut may land mid-rune and mid-line. No continuation or spill mechanism exists.</p>
+<p>internal/tools/registry.go Execute() applies clamp() to every tool path, including the MCP branch (r.MCP.Execute(&hellip;) result is clamped).</p>
+<p>file_read (internal/tools/fs_basic.go:13-14) already accepts Offset and Limit int args and applies them
+(fs_basic.go:40-51): a line-range read is possible today. What is missing is the other half — when
+clamp() cuts the <em>returned text</em>, the model is never told where the cut landed, so it cannot compute the
+next Offset and must re-read from line 1. The spill + <code>next_offset</code> marker supplies that missing half
+without changing the Offset/Limit contract.</p>
+<p>editFile (internal/tools/edit.go:17) enforces a strict read-before-edit gate at :24: if !wasRead(tc, a.Path) → &ldquo;edit_file requires a successful file_read on %q earlier in this turn&rdquo;. Patch application at :141 requires prior read and uses strings.Count(text, a.OldString) for matching: count 0 → &ldquo;old_string not found in %s&rdquo;; count &gt; 1 with replace_all=false also errors. Matching is byte-exact.</p>
+<p>internal/db/events.go:30 AppendEvent already spills oversize content to blobs with marker &ldquo;…[truncated; full content in blob]&rdquo; at :135. This provides precedent for spilling to storage.</p>
+<p>The reference pattern from opencode (read-filesystem.ts) uses MAX_READ_LINES 2000, MAX_READ_BYTES 50 KiB, per-line cap of 2000 chars with explicit &ldquo;&hellip; (line truncated to 2000 chars)&rdquo; marker, and returns {content, offset, truncated, next}.</p>
+<p>These limitations cause prompt bloat on large outputs, broken UTF-8, incomplete model context on truncation, and fragile edit matching on files containing smart quotes, dashes, or varied whitespace. Prompt-cache invalidation occurs on any result change. No unified diff is produced on edits.</p>
+<p>This ADR defines continuation for large tool results via spills and normalization for edit matching that preserves exactness on hits while improving robustness.</p>
+<h2 id="decision-d1-tool-result-continuation-via-spill-files">Decision D1 — Tool result continuation via spill files</h2>
+<h3 id="interface-d1">Interface (D1)</h3>
+<p>Every tool result that exceeds the configured clamp limit is split into a head (the clamped portion)
+plus a marker block. The marker is a model-readable block, one key per line:</p>
+<pre><code>…[truncated; see spill]
+spilled_path: .tool-results/abc123-spill-001.txt
+spilled_bytes: 45231
+next_offset: 31987
+total_bytes: 77218
+</code></pre>
+<ul>
+<li>Offset units are byte offsets. Because clamp() truncates on len() (bytes in Go), resuming by bytes is exact and cheap. Offsets are line-aligned: scan forward from the clamp point to the next newline so the model never receives a half-line. Never split a UTF-8 rune: scan backward from the clamp point to a valid rune boundary before cutting.</li>
+<li>The resume mechanism reuses the existing file_read Offset and Limit arguments on the spill path. For non-file tools the marker names the spill_path so file_read can be called on it. A new continue_result token is explicitly rejected because it would require new client-side plumbing, break MCP compatibility, and duplicate the already-supported Offset/Limit on file_read.</li>
+<li>Spill location is workspace .tool-results/ (directly visible to the jail, readable by file_read with no new jail rule). $MEMORY is rejected because it lives outside the workspace, would require new permission rules, and would not be visible to normal file_read.</li>
+<li>Retention/GC: at most 50 files or 100 MiB total, age-based sweep (delete files &gt;24h old). Sweep runs at harness startup and after every spill. Spill files never enter the transcript or the prompt; only the head + marker appear in events.</li>
+<li>Cache safety: results under the cap remain byte-identical to today, so the prompt prefix and cache key are unchanged.</li>
+<li>MCP bridge (mcp_*) and peer computer_exec: their results already pass through the same <code>clamp()</code> in
+  <code>Registry.Execute</code>, so they inherit the marker with no protocol change. Both are server-side spills —
+  the child&rsquo;s stdout and the peer&rsquo;s stdout are captured whole before clamping, so the spill is written
+  by the harness, not by the remote end.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Spills?</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>file_read</td>
+<td>Yes</td>
+<td>Uses Offset/Limit directly; returns next_offset when truncated</td>
+</tr>
+<tr>
+<td>grep</td>
+<td>Yes</td>
+<td>Large matches spill to one file per match set</td>
+</tr>
+<tr>
+<td>glob</td>
+<td>No</td>
+<td>Always small</td>
+</tr>
+<tr>
+<td>list_files</td>
+<td>No</td>
+<td>Always small</td>
+</tr>
+<tr>
+<td>shell</td>
+<td>Yes</td>
+<td>Stdout/stderr spills independently</td>
+</tr>
+<tr>
+<td>shell background tail</td>
+<td>Yes</td>
+<td>Only the tail portion; full log in spill</td>
+</tr>
+<tr>
+<td>web_fetch</td>
+<td>Yes</td>
+<td>Body spills; headers stay in head</td>
+</tr>
+<tr>
+<td>MCP bridge (mcp_*)</td>
+<td>Yes</td>
+<td>Backend result is clamped then spilled identically</td>
+</tr>
+<tr>
+<td>peer computer_exec</td>
+<td>Yes</td>
+<td>Remote output spilled locally</td>
+</tr>
+</tbody>
+</table>
+<p>This design reuses existing file_read, follows the db/events.go spill precedent, and keeps prompt-cache behavior identical for sub-cap results.</p>
+<h2 id="decision-d2-edit-normalization-on-miss-only">Decision D2 — Edit normalization on miss only</h2>
+<h3 id="interface-d2">Interface (D2)</h3>
+<p>Normalization applies ONLY on a miss (<code>strings.Count(text, a.OldString) == 0</code>). A hit remains
+byte-exact as today; no rewriting of the on-disk file occurs.</p>
+<p>Today <code>editFile</code> returns <code>"edited %s (%d replacement(s))"</code> (internal/tools/edit.go:53) — a claim, not
+evidence, so the model usually re-reads the file to check. D2 replaces that string with the unified diff
+below.</p>
+<p>Glyph substitution table (applied only to the search key and to candidate lines for matching):</p>
+<ul>
+<li>U+2018, U+2019 → &lsquo;</li>
+<li>U+201C, U+201D → &ldquo;</li>
+<li>U+2013, U+2014 → -</li>
+<li>U+00A0, U+2009, U+202F → space</li>
+<li>U+2026 → &hellip;</li>
+</ul>
+<p>Matching first tries exact byte match. On miss it tries glyph-normalized forms. If still no match it falls back to trimmed-line matching: ignore leading/trailing whitespace per line, require equal line counts between old_string and candidate. The error message reports which fallback tier fired (e.g. &ldquo;normalized glyph match failed, trying trimmed-line fallback&rdquo;).</p>
+<p>Per-region line-ending preservation: withRegionEndings() (inspired by opencode) keeps CRLF in regions that originally used CRLF and LF elsewhere. The file is written exactly with the line endings the model supplied in its edit; no silent normalization of file content.</p>
+<p>When more than one candidate matches (after normalization and fallback), error with line numbers and a 40-char excerpt for each; never guess. The message suggests using replace_all=true.</p>
+<p>Ordering: the wasRead gate (internal/tools/edit.go:24) is evaluated FIRST and unchanged. Normalization never bypasses the read-before-edit requirement.</p>
+<p>Both <code>edit_file</code> and <code>apply_patch</code> will return a unified diff with 3 lines of context and &mdash;/+++
+headers carrying byte counts. The diff itself is capped at 4 KiB; past the cap it is truncated with a
+note (&ldquo;…[diff truncated at 4 KiB]&rdquo;) but the edit still proceeds. <code>apply_patch</code> keeps its existing
+<code>reverseOp</code> rollback (internal/tools/edit.go:79-105): normalization is attempted per file, and a single
+failure in any hunk aborts the whole patch with full rollback — no partial writes.</p>
+<p>This makes edit matching robust to common typography while preserving exact semantics on successful matches and providing clear diagnostics.</p>
+<h2 id="alternatives-considered">Alternatives Considered</h2>
+<ul>
+<li>New continue_result tool: rejected because it duplicates file_read Offset/Limit, adds client complexity, and breaks MCP uniformity.</li>
+<li>Spill to $MEMORY: rejected; lives outside workspace, requires new jail rules, invisible to file_read.</li>
+<li>Always normalize file content on write: rejected; would mutate source files silently and break exact-match expectations.</li>
+<li>Line-based truncation only: rejected; byte offsets are cheaper and exact given Go&rsquo;s len().</li>
+<li>Raise default max-tool-result: rejected; large prompts still hurt latency and cache hit rate.</li>
+</ul>
+<h2 id="compatibility-migration">Compatibility &amp; Migration</h2>
+<p>Results under the clamp remain byte-identical; prompt-cache keys unchanged. Existing agents using Offset/Limit on file_read continue to work. Edits that already succeeded stay successful. New error messages for multi-match and fallback tiers are the only observable change for failing edits. No migration required.</p>
+<h2 id="test-plan">Test Plan</h2>
+<ul>
+<li>Unit tests for clamp with rune boundaries, line alignment, and marker format.</li>
+<li>Integration tests: large file_read, shell ls /dev/urandom, web_fetch of big page; verify marker, spilled file, resume via Offset.</li>
+<li>Edit tests: smart quotes, em-dashes, mixed line endings, multi-candidate cases, trimmed-line fallback.</li>
+<li>wasRead gate remains enforced before any normalization.</li>
+<li>Diff cap and truncation behavior.</li>
+<li>GC sweep at startup and after spills; verify .tool-results/ stays under limits.</li>
+<li>Prompt-cache hit rate before/after on sub-cap results.</li>
+<li>MCP round-trip of spill marker.</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<ul>
+<li>Spill directory growth if GC fails (mitigated by dual limits and startup sweep).</li>
+<li>Model confusion from marker block (mitigated by clear one-line key format and precedent from opencode).</li>
+<li>False positives in normalized matching (mitigated by exact-first policy and explicit tier reporting).</li>
+<li>Diff truncation hiding important context (4 KiB chosen to cover typical edits).</li>
+</ul>
+<h2 id="rollout">Rollout</h2>
+<ol>
+<li>Implement spill path and marker in registry.go + fs_basic.go.</li>
+<li>Add normalization helpers and update edit.go.</li>
+<li>Update tests and render_docs.py if needed.</li>
+<li>Deploy via harness rebuild and user systemd restart.</li>
+<li>Monitor first 100 turns for spill frequency and edit success rate.</li>
+</ol>
+<h2 id="open-questions">Open Questions</h2>
+<ul>
+<li>Should spill files be automatically cleaned on turn end if referenced only once?</li>
+<li>Exact default for .tool-results/ GC limits (50 files / 100 MiB proposed).</li>
+<li>Should web_fetch JSON bodies receive structural truncation instead of raw spill?</li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0040-tool-result-continuation-and-edit-normalization.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>
