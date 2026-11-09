@@ -7,7 +7,45 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/rendicott/marble/internal/config"
 )
+
+// A secret that Execute masks in the transcript must never reach the spill file.
+// The spill is written during execute(); the scrub wraps execute() from outside.
+func TestSpillDoesNotPersistSecrets(t *testing.T) {
+	const secret = "sk-spill-leak-0123456789abcdef"
+	mem := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mem, config.RelMemoryEnv), []byte("LEAKY_KEY="+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config.SetMemoryDirForEnv(mem)
+	config.InvalidateEnvOverlay()
+	t.Cleanup(func() { config.SetMemoryDirForEnv(""); config.InvalidateEnvOverlay() })
+
+	r := spillTestRegistry(t, 200)
+	body := strings.Repeat("token="+secret+"\n", 40)
+	if err := os.WriteFile(filepath.Join(r.Workspace, "big.txt"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := r.Execute("file_read", `{"path":"big.txt"}`, nil)
+	if strings.Contains(out, secret) {
+		t.Fatal("secret leaked into the tool result")
+	}
+	ents, err := os.ReadDir(filepath.Join(r.Workspace, SpillDirName))
+	if err != nil || len(ents) == 0 {
+		t.Fatalf("expected a spill, got %v (%d entries)", err, len(ents))
+	}
+	for _, e := range ents {
+		b, err := os.ReadFile(filepath.Join(r.Workspace, SpillDirName, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), secret) {
+			t.Fatalf("secret persisted to spill %s", e.Name())
+		}
+	}
+}
 
 func spillTestRegistry(t *testing.T, maxChars int) *Registry {
 	t.Helper()

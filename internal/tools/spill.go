@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/rendicott/marble/internal/config"
 )
 
 // ADR-0040 D1 — resumable tool-result truncation.
@@ -35,7 +37,13 @@ const (
 var spillSeq atomic.Uint64
 
 // clampResult applies the result cap. Sub-cap results pass through untouched.
+//
+// The body is scrubbed BEFORE it can be spilled: Execute masks secrets on the way
+// out to the model, which is too late for a file already written to disk. Scrubbing
+// here also keeps the spilled bytes and next_offset in agreement with the head the
+// model is actually shown.
 func (r *Registry) clampResult(tool, s string) string {
+	s = config.ScrubSecrets(s)
 	max := r.MaxResultChars
 	if max <= 0 {
 		max = 32000
