@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0041</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0041</span>
+      <span class="status proposed">Proposed (2026-11-09)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0041-async-watch-obligations.md">Markdown</a>
+      <a href="0040-doc.html">← 0040</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0041-async-watch-obligations-watch-tool-watch_jobs-and-four-trigger-channels">ADR-0041: Async Watch Obligations — <code>watch</code> Tool, <code>watch_jobs</code>, and Four Trigger Channels</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Proposed</strong> (2026-11-09)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-11-09</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>tools, bgtask, continuation, session, schema-v15, no-output-parsing</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0005 (tools &amp; agent loop), ADR-0015 (cron), ADR-0022 (long-turn efficiency), ADR-0028 (turn sinks)</td>
+</tr>
+<tr>
+<td><strong>Design note</strong></td>
+<td><code>marble-watch-tool</code> (operator mpub) — fuller prose, same decisions</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>On 2026-11-07 a release tag was pushed and CI failed in the Test step. The tag was never followed up; the notarized DMG was silently absent from <strong>two consecutive releases</strong> (v0.4.28, v0.4.29) before a human noticed. Separately measured: continuations are armed to check CI on roughly <strong>1 in 10</strong> pushes.</td>
+</tr>
+<tr>
+<td><strong>Code references</strong></td>
+<td><code>file:line</code> citations verified against <code>a5b9659</code>, 2026-11-09. Line numbers will drift; the named symbols are the durable reference.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<h3 id="the-failure-is-mechanical-not-disciplinary">The failure is mechanical, not disciplinary</h3>
+<p>On 2026-11-07 <code>git push --tags</code> started release run <code>42400527869</code>. It failed 55 seconds
+later — <code>internal/shellpolicy/policy.go:177: non-constant format string in call to
+fmt.Errorf</code>, a <code>go vet</code> fault in <code>Test</code> under Go 1.25, present since <code>ac73549</code> and
+unrelated to the pushed change. Nothing looked. The DMG job never ran. A second tag
+(v0.4.28) failed for the same reason. The deficiency only surfaced because the DMG job
+was audited for an unrelated reason, and by then the fix had to ship as a re-cut (v0.4.29).</p>
+<p>The proximate cause is procedural, and it is worth naming precisely: <strong>the agent that
+pushed the tag ended its turn without ever checking the build.</strong> Continuing to check CI a
+tenth of the time is not a discipline problem that more discipline fixes. It has a
+structural cause:</p>
+<ul>
+<li>The knowledge that a future obligation exists lives in the agent&rsquo;s context for the
+  duration of exactly one turn, and then is discarded.</li>
+<li>Every affordance is voluntary. <code>schedule_continuation</code> exists; nothing ever asks whether
+  one <em>should</em> have been set. There is no representation of &ldquo;unfinished&rdquo; anywhere in the
+  harness that outlives the turn.</li>
+<li><code>gh run view</code> on an in-progress run returns <code>exit=0</code> with a tidy job table. To any
+  reasonable reading, that is &ldquo;landed.&rdquo; The turn closes honestly and wrongly.</li>
+</ul>
+<h3 id="detecting-the-condition-from-command-output-does-not-work">Detecting the condition from command output does not work</h3>
+<p>The intuitive repair — a deterministic detector over <code>shell_execute</code> results, firing on
+<code>actions/runs/(\d+)</code> — was designed, argued, and <strong>rejected</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Failure</th>
+<th>Why it kills the approach</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Vendor drift</strong></td>
+<td>A pattern over <code>gh</code>&rsquo;s human-readable output is a bet that a third party never re-words a string. That is not detection; it is a guess about formatting.</td>
+</tr>
+<tr>
+<td><strong>Coverage</strong></td>
+<td>GitLab, Jenkins, Buildkite, <code>make deploy</code>, a background <code>rsync</code> — each needs its own detector, forever.</td>
+</tr>
+<tr>
+<td><strong>Fatal</strong></td>
+<td><code>git push --tags</code> prints <strong>nothing</strong> about CI. Zero bytes. The command that started this incident carries no evidence to detect from. Any output-based detector is blind exactly where the trouble begins.</td>
+</tr>
+</tbody>
+</table>
+<p>So the design inverts the question. It does not ask <em>how do we infer that something is
+pending?</em> It asks <em>how do we make pending-ness a declared fact?</em> The agent knows at call
+time. That knowledge is free in the moment and evaporates immediately afterward. Capture
+it there.</p>
+<h2 id="decision">Decision</h2>
+<h3 id="1-a-watch-is-a-join-plus-the-code-the-join-turns-out-to-need">1. A watch is a join, plus the code the join turns out to need</h3>
+<pre><code class="language-text">watch  ≡  bg.Start(sessionID, command, cwd, label)
+       ＋  cont.Schedule(sessionID, prompt, deadlineSec, taskID, label)
+          └─ endures outside the turn ─┘   └─ wakes the session when it ends ─┘
+                     └─────────────── persisted as one row ───────────────┘
+</code></pre>
+<p>The two primitives exist and compose. <code>internal/bgtask</code> runs session-scoped long commands
+with output capture and live UI chips (<code>Manager.Start</code>, <code>internal/bgtask/manager.go:73</code>).
+<code>internal/continuation</code> already has <code>Job.WaitTask</code> (<code>internal/continuation/manager.go:18</code>;
+<code>wait_for_task</code> in the tool schema) and accepts both background task ids and
+<code>call_agent_process</code> ids (the <code>taskDone</code> callback, <code>cmd/marble-harness/main.go:573-584</code>).
+A 500 ms ticker checks that callback (<code>manager.go:165,187</code>), so a wait resolves within
+about half a second of task exit.</p>
+<p>What does not exist is the <strong>pairing</strong>, and the discipline that the pairing is created in
+a single act. The pairing is not free: the join alone cannot render a verdict, deliver it
+reliably, or show a live tail. §Risks R1–R7 list the required new code, and the Rollout
+schedules it first.</p>
+<h3 id="2-the-verdict-is-the-exit-code">2. The verdict is the exit code</h3>
+<p>This is why nothing is parsed. The CLIs this targets report the outcome as an integer no
+vendor will re-word: <code>gh run watch --exit-status</code>, <code>kubectl rollout status</code>, <code>docker push</code>,
+<code>terraform apply -auto-approve</code>, <code>rsync</code>. Ask for <code>--json</code> when detail is wanted; never
+scrape prose. The shell policy check runs unchanged before the command starts
+(<code>policy.Check</code>, <code>bgtask/manager.go:75</code>).</p>
+<p>The verdict is only as good as the invocation. <code>gh run watch</code> <strong>without</strong> <code>--exit-status</code>
+exits 0 on a failed run, and the harness cannot tell. The tool description steers toward
+the right flags; nothing enforces them.</p>
+<h3 id="3-one-tool-four-actions">3. One tool, four actions</h3>
+<p>Cohesive enough to share a single spec, which keeps the tools list short. <code>manage_sinks</code>
+is the precedent for an <code>action</code>-dispatched tool (<code>internal/tools/specs.go:423</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create</code></td>
+<td>Start a command in the background and arm a continuation on its exit. Returns the watch id immediately. Refuses when the database is not writable (<code>DB.Writable</code>, <code>internal/db/db.go:215</code>): a watch that cannot be persisted must not pretend to be durable.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>Elapsed time, live tail of stdout/stderr (requires R3), state — a mid-turn &ldquo;is it done yet?&rdquo; that does not break the watch.</td>
+</tr>
+<tr>
+<td><code>list</code></td>
+<td>All watches for this session, live and recent. This is the agent&rsquo;s own memory, written down.</td>
+</tr>
+<tr>
+<td><code>cancel</code></td>
+<td>Kill the task and drop the continuation (requires R4). Requires <code>reason</code>, stored in <code>note</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Declared in house form, in <code>allSpecs()</code> (<code>specs.go:5</code>) via the <code>spec()</code> helper
+(<code>specs.go:724</code>), which wraps a JSON Schema object:</p>
+<pre><code class="language-go">spec(&quot;watch&quot;, &quot;Run a command that finishes LATER and get woken when it does. Use for anything &quot;+
+    &quot;whose outcome you will need after this turn: CI builds, deploys, long test suites, migrations, &quot;+
+    &quot;backups, remote copies. Creates a durable obligation the harness holds on your behalf; do not &quot;+
+    &quot;report the work as done before it fires. The verdict is the command's exit code: use invocations &quot;+
+    &quot;that set it (gh run watch --exit-status, kubectl rollout status). Do NOT use shell_execute + hope &quot;+
+    &quot;for this. action=create|status|list|cancel.&quot;,
+    map[string]interface{}{
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;properties&quot;: map[string]interface{}{
+            &quot;action&quot;:       map[string]interface{}{&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;create|status|list|cancel&quot;},
+            &quot;command&quot;:      map[string]interface{}{&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;create: shell command, run via bgtask (policy-checked)&quot;},
+            &quot;label&quot;:        map[string]interface{}{&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;create: short human label, e.g. 'CI v0.4.29'&quot;},
+            &quot;cwd&quot;:          map[string]interface{}{&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;create: workspace-relative working directory&quot;},
+            &quot;prompt&quot;:       map[string]interface{}{&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;create: optional extra instructions, appended after the generated verdict&quot;},
+            &quot;deadline_sec&quot;: map[string]interface{}{&quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;create: default 3600, max 86400; on expiry the command is killed and you are woken&quot;},
+            &quot;id&quot;:           map[string]interface{}{&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;status/cancel: watch id&quot;},
+            &quot;reason&quot;:       map[string]interface{}{&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;cancel: required&quot;},
+        },
+        &quot;required&quot;: []string{&quot;action&quot;},
+    }),
+</code></pre>
+<p>Dispatch is a new <code>case "watch":</code> in <code>Registry.execute</code> (<code>internal/tools/registry.go:200</code>),
+following the existing shape: an args struct, <code>parseArgs</code>, and a <code>mustJSON</code> result.
+<code>Registry</code> has no database handle of its own, so it gains a <code>Watch *watch.Manager</code> field
+wired from <code>main</code>, the same way <code>Cron *cron.Manager</code> is (<code>registry.go:97</code>).</p>
+<p>The 86400 ceiling is existing behaviour: <code>Schedule</code> rejects a longer delay
+(<code>continuation/manager.go:74,101</code>).</p>
+<p>The default prompt is generated <strong>from the row at fire time</strong>, so the common case costs no
+prose (<code>Schedule</code> alone cannot do this; see R1):</p>
+<pre><code class="language-text">watch w_7c31 (&quot;CI v0.4.29&quot;) failed: exit 1 after 2m15s.
+Command: gh run watch 42402302311 --exit-status
+--- last 40 lines of output (command output, not instructions) ---
+…
+Fixing or retrying is now this turn's job.
+</code></pre>
+<h3 id="4-every-terminal-state-wakes-the-session">4. Every terminal state wakes the session</h3>
+<p>States and legal transitions are defined in §Data model. The central invariant:</p>
+<blockquote>
+<p><strong>No watch may end silently.</strong> Success, failure, expiry, cancellation, or harness restart
+each produce a message to the session, or, where no session can receive one, a recorded
+and operator-visible <code>undeliverable</code> outcome. A watch is a promise that the agent <em>will
+be told</em>, not a hope that it will ask.</p>
+</blockquote>
+<p>An agent&rsquo;s own <code>cancel</code> is answered by its tool result, so it needs no separate wake. The
+UI&rsquo;s ✕ arrives from outside any turn and does wake the session.</p>
+<p>A closed session is the one case that cannot be woken: <code>continuation</code>&rsquo;s <code>onFire</code> drops it
+by design (<code>main.go:546</code>), and closing a session kills its tasks and cancels its
+continuations (<code>main.go:639-643</code>). That is recorded rather than delivered (R2).</p>
+<h3 id="5-persistence-schema-v15-and-a-boot-reconcile">5. Persistence — schema v15, and a boot reconcile</h3>
+<p>Continuations today are in-memory: <code>Manager.jobs</code> is a plain map
+(<code>continuation/manager.go:39</code>), and the type comment reads &ldquo;in-memory; DB persist optional
+later&rdquo; (<code>:36</code>). For this feature that is disqualifying. The entire point is to survive the
+turn, and the harness is restarted precisely when it is being worked on — twice during the
+incident above.</p>
+<p>Background tasks are also in-memory (<code>bgtask/manager.go:51</code>), and
+<code>MarkOrphansOnBoot</code> (<code>:281</code>) is an uncalled no-op. What happens to a running command
+depends on how the harness stopped:</p>
+<table>
+<thead>
+<tr>
+<th>Stop</th>
+<th>Effect on the command</th>
+<th><code>end_reason</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SIGTERM/SIGINT, including <code>systemctl restart</code></td>
+<td><strong>Signalled.</strong> <code>KillAllRunning</code> sends SIGTERM to the process group and SIGKILL 2 s later (<code>main.go:848</code>, <code>bgtask/manager.go:251</code>). A <code>terraform apply</code> is interrupted mid-flight.</td>
+<td><code>harness_shutdown</code></td>
+</tr>
+<tr>
+<td>Crash or SIGKILL</td>
+<td><strong>Orphaned.</strong> The child has its own process group (<code>Setpgid</code>, <code>bgtask/manager.go:104</code>) and may keep running with no handle.</td>
+<td><code>harness_crash</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Reconcile on boot</strong>, after <code>cont</code> is wired (<code>main.go:586</code>) and before the HTTP server
+starts:</p>
+<ol>
+<li>Every row still <code>pending</code> or <code>running</code> moves to <code>lost</code> with <code>end_reason=harness_crash</code>.</li>
+<li>Every terminal row with <code>wake_outcome IS NULL</code> is woken. The original continuation died
+   with the process, so reconcile <strong>schedules a new one</strong>
+   (<code>cont.Schedule(sid, prompt, 1, "", label)</code>, source <code>watch_boot</code>). There is nothing to
+   &ldquo;fire anyway&rdquo;.</li>
+</ol>
+<p>On SIGTERM, before <code>KillAllRunning</code>, <code>running</code> rows move to <code>lost</code> with
+<code>end_reason=harness_shutdown</code>. Otherwise the ticker can observe the killed task during the
+shutdown window (<code>cont.Stop</code> runs only after an HTTP drain of up to 8 s) and start a turn
+reporting a bogus failure.</p>
+<p>The prompt names which case applied: <em>the command was interrupted and may be half-done</em>
+versus <em>the command may still be running unsupervised</em>. A restart therefore converts
+silence into a message — the thesis of this ADR applied to the harness&rsquo;s own mortality.</p>
+<h3 id="6-four-trigger-channels">6. Four trigger channels</h3>
+<p>A perfect async primitive that is never called is decoration. The channels are not equals.</p>
+<table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>Implemented at</th>
+<th>Exists today?</th>
+<th>Load-bearing?</th>
+<th>Reaches</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>(a) Tool description</td>
+<td>New <code>spec("watch", …)</code> in <code>allSpecs()</code> (<code>specs.go:5</code>); sent via <code>r.Tools.Specs()</code> (<code>internal/session/loop.go:262</code>)</td>
+<td>Seam yes, spec no</td>
+<td><strong>Yes</strong> — the only channel that can create a watch</td>
+<td>Model</td>
+</tr>
+<tr>
+<td>(b) Standing advisory</td>
+<td>New <code>append</code> to the <code>advisories</code> slice (<code>loop.go:407</code>, between <code>:440</code> and <code>:451</code>); prepended to the outbound prompt at <code>:457</code></td>
+<td>Seam yes</td>
+<td><strong>Yes</strong>, once a watch exists</td>
+<td>Model</td>
+</tr>
+<tr>
+<td>(c) Turn-end note</td>
+<td>Final-answer branch (<code>loop.go:745-790</code>), before the <code>return</code> at <code>:790</code>, via <code>r.advisory</code> (<code>:1087</code>)</td>
+<td>Seam yes</td>
+<td>No</td>
+<td>Operator only</td>
+</tr>
+<tr>
+<td>(d) Sink</td>
+<td>New dispatch into <code>sink.Manager.dispatch</code> (<code>internal/sink/manager.go:390</code>); new kind in <code>KnownKinds</code> (<code>internal/sink/event.go:28</code>)</td>
+<td><strong>No</strong> — sinks are turn-scoped</td>
+<td>No — backstop</td>
+<td>Operator only</td>
+</tr>
+</tbody>
+</table>
+<p>The channels only exist on turns that reach the tool loop. Turns routed to a subprocess
+agent return early (<code>loop.go:243-247</code>), and <code>cap_tools=false</code> models receive no tool specs
+(<code>loop.go:263</code>). See R7.</p>
+<p><strong>(a) The tool description — creates the habit. Load-bearing.</strong>
+Sent with every model call in a turn (<code>loop.go:262</code>). It names the situations by example —
+CI builds, deploys, long suites, remote copies — and names the competing default
+(<code>"Do NOT use shell_execute + hope for this"</code>), because an unopposed competitor wins. This
+channel is free, never drifts from vendor output, and is the only one that can conjure a
+watch out of nothing.</p>
+<p>The competitor is also in the system prompt, which today instructs the agent to use
+<code>start_background_task</code> + <code>schedule_continuation</code> with <code>wait_for_task</code>
+(<code>internal/session/session.go:295</code>; also <code>:280</code>, <code>:282</code>). Those lines must name <code>watch</code> in
+the same change or the two instructions contradict each other. Steering by guidance has
+precedent (<code>specs.go:98</code>, <code>session.go:280</code>, the timeout hints at
+<code>internal/shellpolicy/policy.go:230,233</code>), but its effect on <code>watch</code> adoption is unmeasured.</p>
+<p><strong>(b) The standing advisory — keeps an existing watch in view. Load-bearing once one exists.</strong>
+While a watch is <code>pending</code> or <code>running</code>, the loop appends one line to the <code>advisories</code>
+slice. That slice carries the context-usage warning (<code>loop.go:408</code>) and the repeat-awareness
+note (<code>:435</code>), and is prepended as a system message to a per-call copy of the prompt
+(<code>:457</code>), so it never accumulates in history.</p>
+<p>This is <strong>not</strong> <code>Runner.advisory</code> (<code>:1087</code>). That function publishes a UI event, a turn
+step and a <code>harness_advisory</code> DB event, and the model never sees it. The
+<code>[harness] image attachments omitted…</code> line at <code>:401</code> is one of those; a watch line sent
+that way would be invisible to the agent.</p>
+<pre><code class="language-text">[harness] watch w_7c31 (&quot;CI v0.4.29&quot;) still running.
+Do not report this work as finished. You will be woken when it exits.
+</code></pre>
+<p>The line deliberately carries no elapsed time: it sits at the head of the prompt, and a
+value that changes every round would defeat any provider-side prefix caching.</p>
+<p>Coverage is &ldquo;every model call, except an auto-compact round&rdquo;, because <code>:488-491</code> rebuild
+<code>prompt</code> without re-prepending. That one-round gap is accepted. Repetition is the
+mechanism here; a one-shot note would be useless. But this channel acts only after a watch
+exists, so it <strong>cannot</strong> move the arm-rate off ten percent. Only (a) can.</p>
+<p><strong>(c) The turn-end note — informational. Not load-bearing.</strong>
+When the model returns a final answer with no tool calls while a watch is live, the loop
+emits an <code>r.advisory</code> and writes a <code>watch_open_at_turn_end</code> session event. Two limits:</p>
+<ul>
+<li>It reaches the operator, not the model, which has already finished answering. Making
+  the model react would mean spending another round, which this ADR does not do.</li>
+<li>Ending a turn with a live watch is the <strong>correct</strong> use of the tool, so this fires on
+  every well-behaved turn as well. Distinguishing &ldquo;told the user it is pending&rdquo; from
+  &ldquo;claimed it landed&rdquo; would mean parsing prose, which §Context rejects. It is therefore a
+  status note, not an alarm, and is not sent to sinks. It does not cover the other turn
+  exits (<code>loop.go:349</code>, <code>:345</code>, <code>:370</code>, <code>:606</code>, <code>:802</code>).</li>
+</ul>
+<p>Advisory only — <strong>never a hard block</strong>, because a harness that refuses to end a turn is a
+harness an operator has to fight.</p>
+<p><strong>(d) The sink — covers undelivered wakes. Backstop.</strong>
+A wake that could not be delivered goes to the operator&rsquo;s eyes as a <code>watch_undelivered</code>
+sink delivery (ADR-0028). Sinks today are built per finished turn (<code>finishTurn</code>,
+<code>internal/sink/manager.go:342</code>; kinds at <code>event.go:28</code>), so this needs a new non-turn
+entry point. Successful wakes need nothing new: the woken turn is already classified
+<code>continuation</code> (<code>manager.go:381</code>), subject to the existing filter (<code>filters.go:134</code>).</p>
+<p>If the agent never called <code>watch</code> there is no row, and <strong>no channel, including this one,
+has anything to report</strong>. That residue remains uncovered.</p>
+<p><strong>Deliberately not built:</strong> a pre-flight hook that sniffs <code>git push</code>, <code>gh workflow run</code>, or
+<code>docker push</code> and nags. That is the rejected detector of §Context in a different costume — a
+list of magic strings that rots and never covers the command nobody anticipated. Those
+strings belong in the tool description as guidance to a reasoner, not in Go as a switch
+statement.</p>
+<h3 id="7-relationship-to-what-already-exists">7. Relationship to what already exists</h3>
+<table>
+<thead>
+<tr>
+<th>Subsystem</th>
+<th>Relationship</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bgtask</code></td>
+<td><code>watch</code> calls <code>Start</code>, with the same shell policy and the same session scope. <strong>Not unchanged:</strong> needs a live tail, a usable tail on noisy commands, and a cap that counts only running tasks (R3, R5).</td>
+</tr>
+<tr>
+<td><code>continuation</code></td>
+<td>Gains <code>Source</code> (<code>agent</code> | <code>watch</code> | <code>watch_boot</code>) and <code>WatchID</code>, a sibling <code>ScheduleWatch</code> so the two existing <code>Schedule</code> callers (<code>tools/shell.go:300</code>, <code>loop.go:865</code>) stay as they are, and single-job <code>Cancel</code> (R1, R4). <code>agent</code>-source jobs behave as before.</td>
+</tr>
+<tr>
+<td><code>main</code> <code>onFire</code></td>
+<td>Gains a <code>watch</code> branch that finalizes the row, renders the prompt, and does not drop on busy (R1, R2). Put the logic in <code>internal/watch</code> so it is testable without <code>main</code>.</td>
+</tr>
+<tr>
+<td><code>shellpolicy</code></td>
+<td>Identical checks before the command starts. No new bypass.</td>
+</tr>
+<tr>
+<td><code>cron</code></td>
+<td>Orthogonal. Cron is recurrence; watch is one-shot completion. A cron job that wants to check a build calls <code>watch</code> from inside its fire.</td>
+</tr>
+<tr>
+<td><code>sinks</code></td>
+<td><code>watch_undelivered</code> kind and a non-turn dispatch; nothing on the happy path.</td>
+</tr>
+<tr>
+<td>Events</td>
+<td>New kinds <code>watch_started</code>, <code>watch_fired</code>, <code>watch_open_at_turn_end</code>, <code>watch_undelivered</code>. <code>session_events.kind</code> is free text (<code>db.go:289</code>), so no migration is needed.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="8-ui">8. UI</h3>
+<p>A chip beside the existing continuation and bg-task chips, on the same <code>Notify</code> plumbing
+(<code>main.go:528-536</code>) — no new SSE channel. <code>/api/sessions/{id}/pending</code>
+(<code>internal/api/pending.go</code>) gains a <code>watches</code> list, and <code>taskRefsFromResult</code>
+(<code>internal/session/pending.go:20</code>) gains a <code>watch</code> case:</p>
+<pre><code class="language-text">⏱ watching  CI v0.4.29 · 1m32s  ✕
+</code></pre>
+<p>Amber while <code>running</code>, green for <code>done</code>, red for <code>failed</code> with the code, grey struck-through
+when <code>end_reason=cancelled</code>. Clicking opens the same tail view <code>watch status</code> returns, so
+operator and agent read identical facts. <code>undeliverable</code> renders as a small warning row —
+visible, not accusatory.</p>
+<h2 id="data-model">Data model</h2>
+<p><code>CurrentSchemaVersion</code> moves 14 → 15 (<code>internal/db/db.go:30</code>). <code>upgradeSchema</code> errors on a
+version with no case (<code>db.go:139</code>), so this needs <code>case 14:</code> and a <code>migrateV14toV15</code>, plus
+the version list in the comment above the constant.</p>
+<pre><code class="language-sql">CREATE TABLE watch_jobs (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    label           TEXT,
+    command         TEXT NOT NULL,
+    cwd             TEXT,
+    prompt          TEXT,           -- optional agent text, appended to the verdict
+    task_id         TEXT,           -- bgtask handle; void after restart
+    continuation_id TEXT,           -- continuation handle; void after restart
+    status          TEXT NOT NULL,  -- pending|running|done|failed|lost|expired
+    end_reason      TEXT,           -- see transition table
+    exit_code       INTEGER,        -- NULL when the process never produced one
+    output_tail     TEXT,           -- scrubbed, capped; survives restart for redelivery
+    created_at      TEXT NOT NULL,
+    deadline_at     TEXT NOT NULL,
+    ended_at        TEXT,
+    wake_outcome    TEXT,           -- NULL = unsettled | started | undeliverable:&lt;why&gt;
+    note            TEXT            -- e.g. the cancel reason
+);
+CREATE INDEX idx_watch_jobs_session ON watch_jobs(session_id, status);
+</code></pre>
+<p><code>output_tail</code> is required because bgtask output is in-memory: a wake redelivered after
+restart would otherwise have no evidence. It must pass through <code>config.ScrubSecrets</code>
+before being written. Tool
+output is scrubbed at <code>Registry.Execute</code> (<code>registry.go:165</code>), but the wake path
+(<code>main.go:550</code> → <code>PostContinuation</code>) does not go through it.</p>
+<h3 id="state-machine">State machine</h3>
+<pre><code class="language-text">              ┌────────────► failed
+              │                ▲
+ pending ─────┼─► running ─────┼──► done
+              │      │         │
+              │      ├─────────┴──► expired
+              ▼      ▼
+             lost ◄──┘
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>From</th>
+<th>To</th>
+<th>Trigger</th>
+<th><code>end_reason</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>—</td>
+<td><code>pending</code></td>
+<td><code>create</code>: row inserted <strong>before</strong> <code>bg.Start</code>, so a crash here is detectable</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>pending</code></td>
+<td><code>running</code></td>
+<td><code>bg.Start</code> and <code>ScheduleWatch</code> both succeeded; handles written</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>pending</code></td>
+<td><code>failed</code></td>
+<td><code>bg.Start</code> returned an error (policy, cap, spawn), or <code>ScheduleWatch</code> failed (task is killed)</td>
+<td><code>start_error</code></td>
+</tr>
+<tr>
+<td><code>pending</code></td>
+<td><code>lost</code></td>
+<td>Boot reconcile</td>
+<td><code>harness_crash</code></td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td><code>done</code></td>
+<td><code>Reason=task_done</code>, task <code>exited</code>, exit 0</td>
+<td><code>exit_zero</code></td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td><code>failed</code></td>
+<td><code>Reason=task_done</code>, non-zero exit</td>
+<td><code>exit_nonzero</code></td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td><code>failed</code></td>
+<td>Task <code>failed</code> with no exit code (<code>bgtask/manager.go:138</code>)</td>
+<td><code>wait_error</code></td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td><code>failed</code></td>
+<td><code>cancel</code>, or the UI ✕</td>
+<td><code>cancelled</code></td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td><code>failed</code></td>
+<td>Session closed (<code>main.go:639</code>)</td>
+<td><code>session_closed</code></td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td><code>expired</code></td>
+<td><code>Reason=delay</code> with the task still running; task is then killed</td>
+<td><code>deadline</code></td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td><code>lost</code></td>
+<td>SIGTERM/SIGINT, before <code>KillAllRunning</code></td>
+<td><code>harness_shutdown</code></td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td><code>lost</code></td>
+<td>Boot reconcile</td>
+<td><code>harness_crash</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>done</code>, <code>failed</code>, <code>lost</code> and <code>expired</code> are terminal; there is no transition out of them.
+Cancellation is <code>failed</code> with <code>end_reason=cancelled</code> rather than a seventh state, so the
+agent sees a single non-success class and the UI differentiates on <code>end_reason</code>.</p>
+<p>Every transition is a compare-and-set
+(<code>UPDATE … WHERE id=? AND status=?</code>; zero rows affected means another path won). This is
+how <code>cancel</code>, expiry and task exit are arbitrated, and it is required rather than tidy:
+<code>Kill</code> does not cancel the task context (<code>bgtask/manager.go:183</code>), so a killed task reports
+<code>exited</code> with exit code -1 instead of <code>killed</code> (the <code>ctx.Done</code> check at <code>:144-148</code> only
+matches <code>KillAllRunning</code>). The row must already be terminal before the kill signal is sent,
+or the kill would be misread as <code>exit_nonzero</code>.</p>
+<p>Delivery is orthogonal to state. <code>wake_outcome</code> is written after the wake settles, and the
+terminal transition is committed first, so a crash between the two causes a duplicate wake
+and never a missing one.</p>
+<h2 id="consequences">Consequences</h2>
+<p><strong>Bounded claim.</strong> This turns a ten-percent habit into a durable record with a guaranteed
+wake-up <em>conditional on the tool being chosen once</em>, and adds guidance toward that choice.
+It does not claim to read the agent&rsquo;s intentions, and it does nothing at all when the
+tool is not called.</p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent calls <code>watch</code>, build fails</td>
+<td>Woken with exit code and output tail. <strong>Solved.</strong></td>
+</tr>
+<tr>
+<td>Agent calls <code>watch</code>, then claims the work landed</td>
+<td>Advisory every round warns against it; nothing prevents it. The wake still arrives and contradicts the claim. <strong>Mitigated.</strong></td>
+</tr>
+<tr>
+<td>Agent calls <code>watch</code>, harness restarts mid-build</td>
+<td>Row survives; told the watch was <code>lost</code>. Silence is <strong>solved</strong>; the command is <strong>not</strong> resumed.</td>
+</tr>
+<tr>
+<td>Agent calls <code>watch</code>, session busy at exit</td>
+<td>Wake retried until the session is free (R2). <strong>Solved.</strong></td>
+</tr>
+<tr>
+<td>Agent calls <code>watch</code>, session later closed</td>
+<td>No wake is possible. Recorded as <code>undeliverable</code>, sink delivery. <strong>Recorded, not woken.</strong></td>
+</tr>
+<tr>
+<td>Routed turn or <code>cap_tools=false</code> model</td>
+<td>No <code>watch</code> tool, no advisory (R7). <strong>Not covered.</strong></td>
+</tr>
+<tr>
+<td>Agent never calls <code>watch</code></td>
+<td>No row exists; no channel has anything to report. <strong>Not solved.</strong></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Cost per live watch is one advisory line per round.</strong> With several watches that is
+  repeated prose in every request. Mitigation: collapse to a single summary line above two
+  live watches; never silently drop them.</li>
+<li><strong>A watch can outlive its usefulness.</strong> <code>deadline_sec</code> defaults to 3600 and fails loudly;
+  a cancelled watch requires a reason so the record explains itself later.</li>
+<li><strong>Boot reconcile can report <code>lost</code> for work that already finished</strong> (the process died
+  after the command exited but before the terminal row was written). The prompt says the
+  outcome is unknown; a duplicate wake-up is cheaper than a silent one.</li>
+<li><strong>The metric is the judgment.</strong> Log the watch-started-per-CI-push ratio and review it
+  after a few weeks. The denominator comes from offline analysis of <code>session_events</code>; that
+  is reporting, not a runtime detector. If the ratio does not move, channel (a) is not
+  working, and that is the signal to revisit, not to add channels.</li>
+<li><strong>Not fixed here:</strong> continuations remain in-memory for the <code>agent</code> source. Only <code>watch</code>
+  rows are durable. Bringing agent-scheduled continuations onto the same table is the
+  obvious follow-up and is deliberately out of scope, so the new table is not immediately
+  load-bearing for pre-existing behaviour.</li>
+</ul>
+<h2 id="risks-and-open-questions">Risks and open questions</h2>
+<p>The primitives compose, but &ldquo;neither half is new&rdquo; understates the work. Findings from
+reading the code:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Problem</th>
+<th>Code</th>
+<th>Required change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1</td>
+<td><strong>The prompt is fixed at schedule time.</strong> <code>Schedule</code> stores it and <code>onFire</code> posts it verbatim; the exit code and output do not exist yet.</td>
+<td><code>continuation/manager.go:112-120</code>, <code>main.go:550</code></td>
+<td><code>Job.Source</code>/<code>WatchID</code> and a <code>watch</code> branch in <code>onFire</code> that finalizes the row and renders the prompt. <strong><code>continuation</code> cannot deliver a verdict without new code.</strong></td>
+</tr>
+<tr>
+<td>R2</td>
+<td><strong>A fired continuation can still be dropped.</strong> <code>Fired</code> is set before delivery; delivery then drops on load error, closed session, or 30 min of busy, and the retry goroutine is lost on restart. <code>CancelSession</code> never calls <code>onFire</code>. This breaks the §4 invariant as-is.</td>
+<td><code>manager.go:196</code>, <code>main.go:543,547,562,571,43</code>, <code>manager.go:134</code></td>
+<td><code>watch</code> jobs retry without the 30 min cap; <code>wake_outcome</code> plus boot redelivery; <code>OnSessionClose</code> finalizes rows as <code>session_closed</code> and records <code>undeliverable</code>.</td>
+</tr>
+<tr>
+<td>R3</td>
+<td><strong>There is no live tail, and the tail can be wrong.</strong> Output is copied onto <code>Task</code> only after <code>Wait</code>, so <code>Get</code> returns empty strings while running (and <code>check_background_task</code> shows no tail until exit). <code>limitedWriter</code> keeps the <strong>first</strong> 512 KiB and discards the rest, so on noisy commands &ldquo;last 40 lines&rdquo; is not the end of the output.</td>
+<td><code>bgtask/manager.go:105-107,149-152,291-300</code>, <code>tools/shell.go:264-267</code></td>
+<td>Locked access to the live buffers, and a head+tail or ring buffer. <code>status</code> and the UI tail depend on this.</td>
+</tr>
+<tr>
+<td>R4</td>
+<td><strong>No single-job cancel.</strong> Only <code>CancelSession</code> exists.</td>
+<td><code>continuation/manager.go:134</code></td>
+<td><code>Cancel(jobID)</code>.</td>
+</tr>
+<tr>
+<td>R5</td>
+<td><strong>The per-session cap is a lifetime cap.</strong> It counts every task id in <code>bySess</code>, and nothing deletes entries, so a session gets 8 background tasks until restart despite the &ldquo;concurrent&rdquo; comment and error text. Long-lived sessions are exactly where watches accumulate. Existing bug, made worse by this feature.</td>
+<td><code>bgtask/manager.go:61,94-96</code></td>
+<td>Count only <code>StatusRunning</code>.</td>
+</tr>
+<tr>
+<td>R6</td>
+<td><strong>Tool output re-enters as a user-role turn.</strong> The output tail lands in a <code>[scheduled continuation]</code> message rather than a tool result, so CI output carrying injected instructions arrives with more authority than it should, and unscrubbed unless handled.</td>
+<td><code>loop.go:62-63</code></td>
+<td>Scrub (§Data model), fence, and label as command output. Reduces the risk; does not eliminate it.</td>
+</tr>
+<tr>
+<td>R7</td>
+<td><strong>Routed and tool-less turns are out of reach.</strong> Routed turns return before the tool loop, so a subprocess agent cannot call <code>watch</code> and sees no advisory. A watch&rsquo;s wake always runs on the Marble model, since continuations skip routing.</td>
+<td><code>loop.go:241-247,263</code></td>
+<td>None proposed. Stated scope limit.</td>
+</tr>
+</tbody>
+</table>
+<p>Open questions:</p>
+<ol>
+<li><strong>Should <code>watch</code> create fail or fall back in limp mode?</strong> This ADR says fail (§3). The
+   alternative is an in-memory watch with an explicit &ldquo;not durable&rdquo; warning.</li>
+<li><strong>Closed sessions.</strong> Cron reopens a closed session to deliver (<code>main.go:609-612</code>); this
+   ADR does not, because closing is an operator decision and also kills the command. If
+   operators expect otherwise, <code>session_closed</code> could wake via reopen.</li>
+<li><strong>Is (c) worth building?</strong> Given it fires on correct use and cannot reach the model, it
+   may reduce to the UI chip. It is cheap, but drop it if the event proves to be noise.</li>
+<li><strong>Expiry kills the command.</strong> That is right for a hung watcher and wrong for a
+   <code>gh run watch</code> whose underlying CI run carries on regardless. The wake prompt should
+   say that only the local command was stopped.</li>
+</ol>
+<h2 id="rollout">Rollout</h2>
+<ol>
+<li><strong>Prerequisites</strong> — R3 (live, usable tail) and R5 (cap) in <code>bgtask</code>; R4 and the
+   <code>Source</code>/<code>WatchID</code>/<code>ScheduleWatch</code> additions in <code>continuation</code>.</li>
+<li><strong>Schema v15</strong> — <code>watch_jobs</code>, migration, state machine.</li>
+<li><strong><code>watch</code> tool and fire path</strong> — <code>create/status/list/cancel</code>, the <code>onFire</code> branch, boot
+   reconcile, and SIGTERM handling. Update the system prompt (<code>session.go:280,282,295</code>) in
+   the same change.</li>
+<li><strong>Advisory (b)</strong> — one <code>append</code> in <code>loop.go</code> beside the existing advisories, fed by a
+   <code>LiveWatches(sessionID)</code> query.</li>
+<li><strong>Turn-end note (c)</strong> — advisory plus <code>watch_open_at_turn_end</code> event on the final-answer
+   branch.</li>
+<li><strong>Sink (d), UI chip</strong> and the undeliverable warning row.</li>
+<li><strong>Measure</strong> the ratio.</li>
+</ol>
+<p>Steps 1–4 are useful without 5–6; nothing here blocks a release.</p>
+<h3 id="testing">Testing</h3>
+<p><strong>Unit — state machine</strong> (<code>internal/watch</code>, table-driven): each legal transition in
+§Data model succeeds; each illegal one (any move out of a terminal state, <code>pending</code> →
+<code>done</code>, and so on) affects zero rows; <code>cancel</code> racing task exit leaves exactly one
+terminal state, with <code>end_reason=cancelled</code> when the cancel wins even though bgtask
+reports <code>exited</code>/-1.</p>
+<p><strong>Unit — reconcile:</strong></p>
+<ul>
+<li>Seeded <code>pending</code> and <code>running</code> rows become <code>lost</code> with <code>harness_crash</code>, and each
+  schedules exactly one wake.</li>
+<li>A terminal row with <code>wake_outcome IS NULL</code> is redelivered; one with <code>wake_outcome</code> set
+  is left alone.</li>
+<li>A row for a closed session becomes <code>undeliverable</code> and is not retried.</li>
+<li>Running reconcile twice produces no second wake.</li>
+</ul>
+<p><strong>Unit — seams:</strong> <code>create</code> yields one row and one continuation whose <code>WaitTask</code> matches
+<code>task_id</code>; the advisory line is in the prompt copy for a live watch and absent otherwise;
+<code>output_tail</code> is scrubbed; a <code>bgtask</code> test asserts a finished task frees a cap slot.</p>
+<p><strong>End-to-end</strong> — real <code>bgtask.Manager</code>, real <code>continuation.Manager</code>, temporary database, a
+captured wake function in place of <code>PostContinuation</code>:</p>
+<pre><code class="language-text">watch create  command='sleep 1; echo boom &gt;&amp;2; exit 3'  deadline_sec=30
+</code></pre>
+<p>Assert that <code>create</code> returns while the command is still running with the row <code>running</code>;
+then, within a few seconds, the row is <code>failed</code> / <code>exit_nonzero</code> / <code>exit_code=3</code>,
+<code>output_tail</code> contains <code>boom</code>, exactly one wake was captured, its text contains
+<code>exit 3</code> and <code>boom</code>, and <code>wake_outcome=started</code>.</p>
+<h2 id="alternatives-rejected">Alternatives rejected</h2>
+<table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Why not</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Regex/detector over <code>shell_execute</code> output</td>
+<td>Fatal coverage hole (<code>git push</code> prints nothing); rots on vendor drift. See §Context.</td>
+</tr>
+<tr>
+<td>Pre-flight command sniffer for known CI commands</td>
+<td>Same detector, different costume. Magic strings in Go, uncovered by the command nobody anticipated.</td>
+</tr>
+<tr>
+<td>Rely on <code>schedule_continuation</code> discipline</td>
+<td>The status quo, measured at 1 in 10. Voluntary affordances with no representation of &ldquo;unfinished&rdquo; cannot fix this.</td>
+</tr>
+<tr>
+<td>Hard-block turn end while a watch is live</td>
+<td>Ending the turn is the correct behaviour with a live watch, and an operator fights a harness that will not let a turn close.</td>
+</tr>
+<tr>
+<td>Inject (c) back into the model for one more round</td>
+<td>Spends a model round on every correct use, and judging the final answer would require parsing prose.</td>
+</tr>
+<tr>
+<td>In-memory watches only</td>
+<td>Disqualified by the restart case, which is exactly when the harness is being worked on.</td>
+</tr>
+</tbody>
+</table>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0041-async-watch-obligations.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

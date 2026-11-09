@@ -931,6 +931,9 @@ Notable ADRs:
 | 0036 | Peer auto-enrollment via single-use grants |
 | 0037 | Search sessions (magnifying glass, term index, schema v14) |
 | 0038 | Context overage: clamp, typed retry, model-free rescue |
+| 0039 | Harness state portability: export/import, warm standby |
+| 0040 | Tool result continuation and edit normalization |
+| 0041 | Async watch obligations (`watch` tool, `watch_jobs`, schema v15) |
 
 ## Releases
 
@@ -949,7 +952,7 @@ Also attached: `SHA256SUMS`.
 
 ### Signed macOS DMG
 
-The Linux binaries are cross-compiled and unsigned. The macOS DMG is a separate job (`macos-dmg` in `.github/workflows/release.yml`) that runs on a `macos-14` runner. It signs `marble-harness` with a fixed identifier, `com.rendicott.marble-harness`, wraps it in a DMG, notarizes with `notarytool`, staples the ticket, and uploads the DMG onto the same release. A stable Developer ID is what keeps macOS Files-and-Folders grants alive across upgrades — an ad-hoc signature gets a new cdhash every build and macOS treats it as a different app, which is why the Downloads prompt returns after every bump.
+The Linux binaries are cross-compiled and unsigned. The macOS DMG is a separate job (`macos-dmg` in `.github/workflows/release.yml`) that runs on a GitHub-hosted macOS arm64 runner (`macos-15`, overridable via the repo variable `MACOS_RUNNER`). It signs `marble-harness` with a fixed identifier, `com.rendicott.marble-harness`, wraps it in a DMG, notarizes with `notarytool`, staples the ticket, and uploads the DMG onto the same release. A stable Developer ID is what keeps macOS Files-and-Folders grants alive across upgrades — an ad-hoc signature gets a new cdhash every build and macOS treats it as a different app, which is why the Downloads prompt returns after every bump.
 
 The job checks for its secrets first and skips cleanly when any are missing, so a release still publishes the unsigned binaries. Add these under **Settings → Secrets and variables → Actions** (never commit them):
 
