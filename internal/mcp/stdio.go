@@ -26,7 +26,12 @@ func ConnectStdio(ctx context.Context, name string, sc ServerConfig, timeout tim
 	if sc.Command == "" {
 		return nil, fmt.Errorf("stdio server %q: command required", name)
 	}
-	cmd := exec.CommandContext(ctx, sc.Command, sc.Args...)
+	// NOT exec.CommandContext: the dial ctx is cancelled by every caller right after
+	// dialing returns (startup, settings reload), which killed each stdio server
+	// moments after "connected" and left every later tool call writing to a dead
+	// pipe ("write |1: broken pipe"). Child lifetime is owned by Close() below,
+	// which SIGTERMs/SIGKILLs the process group; the init timeout still bounds dialing.
+	cmd := exec.Command(sc.Command, sc.Args...)
 	if sc.Cwd != "" {
 		cmd.Dir = sc.Cwd
 	}

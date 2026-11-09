@@ -3,10 +3,14 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/rendicott/marble/internal/model"
@@ -43,6 +47,7 @@ type Manager struct {
 	status    []ServerStatus
 	timeout   time.Duration
 	disabled  bool
+	cfg       FileConfig // last known config, for self-heal respawn
 }
 
 // NewManager creates an empty manager.
@@ -70,6 +75,9 @@ func (m *Manager) Start(ctx context.Context, fc FileConfig) {
 		if !sc.IsEnabled() {
 			continue
 		}
+		m.mu.Lock()
+		m.cfg = fc
+		m.mu.Unlock()
 		kind := sc.Kind()
 		if kind == "" {
 			m.addStatus(ServerStatus{Name: name, OK: false, Error: "need command (stdio) or url (http)"})
@@ -321,6 +329,54 @@ func bridgeSpec(name, desc string, params map[string]interface{}) model.ToolSpec
 	}
 }
 
+// isDeadPipe reports whether err means the server process/connection is gone, so a
+// respawn-and-retry is worth one attempt (EPIPE, EOF, closed pipe).
+func isDeadPipe(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "broken pipe") || strings.Contains(s, "file already closed") ||
+		strings.Contains(s, "EOF") || strings.Contains(s, "connection reset")
+}
+
+// reconnect respawns one server from the last known config (self-heal after a child
+// process exits). Returns the fresh session, or nil if it could not be dialed.
+func (m *Manager) reconnect(ctx context.Context, name string) Session {
+	m.mu.RLock()
+	sc, ok := m.cfg.MCPServers[name]
+	m.mu.RUnlock()
+	if !ok || !sc.IsEnabled() {
+		return nil
+	}
+	var sess Session
+	var err error
+	switch sc.Kind() {
+	case "stdio":
+		sess, err = ConnectStdio(ctx, name, sc, m.timeout)
+	case "http":
+		sess, err = ConnectHTTP(ctx, name, sc, m.timeout)
+	default:
+		return nil
+	}
+	if err != nil {
+		log.Printf("mcp: respawn %s failed: %v", name, err)
+		return nil
+	}
+	m.mu.Lock()
+	old := m.sessions[name]
+	m.sessions[name] = sess
+	m.mu.Unlock()
+	if old != nil {
+		go func() { _ = old.Close() }()
+	}
+	log.Printf("mcp: respawned %s (%s)", name, sc.Kind())
+	return sess
+}
+
 // IsMCPTool reports whether name is handled by MCP.
 func (m *Manager) IsMCPTool(name string) bool {
 	if m == nil {
@@ -356,6 +412,11 @@ func (m *Manager) Execute(ctx context.Context, name, argsJSON string) string {
 			return "error: mcp server not connected"
 		}
 		out, err := sess.CallTool(ctx, td.Name, args)
+		if err != nil && isDeadPipe(err) {
+			if ns := m.reconnect(ctx, td.Server); ns != nil {
+				out, err = ns.CallTool(ctx, td.Name, args)
+			}
+		}
 		if err != nil {
 			return "error: " + err.Error()
 		}
