@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marble · ADR-0038</title>
+  <link rel="stylesheet" href="doc-kit.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <span>Marble · ADR-0038</span>
+      <span class="status accepted">Accepted (2026-10-23)</span>
+    </div>
+    <nav class="toc">
+      <a href="index.html">Index</a>
+      <a href="0038-context-overage-rescue.md">Markdown</a>
+      <a href="0037-doc.html">← 0037</a>
+      <a href="0039-doc.html">0039 →</a>
+    </nav>
+  </header>
+  <main>
+    <article class="doc">
+<h1 id="adr-0038-context-overage-clamp-retry-and-model-free-rescue">ADR-0038: Context Overage — Clamp, Retry, and Model-Free Rescue</h1>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Status</strong></td>
+<td><strong>Accepted</strong> (2026-10-23)</td>
+</tr>
+<tr>
+<td><strong>Date</strong></td>
+<td>2026-10-23</td>
+</tr>
+<tr>
+<td><strong>Author</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Deciders</strong></td>
+<td>Project owner</td>
+</tr>
+<tr>
+<td><strong>Tags</strong></td>
+<td>session, context, budgets, recovery, ui, cli, no-model</td>
+</tr>
+<tr>
+<td><strong>Extends</strong></td>
+<td>ADR-0002 (session memory), ADR-0013 (system prompt &amp; soul), ADR-0018 (context budget), ADR-0022 (computer-heavy turns)</td>
+</tr>
+<tr>
+<td><strong>Evidence</strong></td>
+<td>Session <code>0wft8zjerv</code> on a 1,048,576-token window became permanently unusable. Every send returned <code>model HTTP 400 … you requested 1048656 tokens (655440 in the messages, 393216 in the completion)</code>. <code>/compact</code> made it worse. There was no model configured with a larger window, and no way out from inside the session.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="context">Context</h2>
+<p>Two independent faults met.</p>
+<p><strong>The output budget was never clamped.</strong> <code>chatOnce</code> (<code>internal/model/client.go</code>) sent
+<code>MaxTokens: c.MaxTokens</code> — the catalog row&rsquo;s <code>max_output</code> — on every call, whatever the
+prompt already weighed. With <code>max_output</code> at 393,216, every request reserved 37.5% of a
+1M window for output before a single prompt token was counted. <code>BudgetTokens</code>
+(<code>internal/config/config.go</code>) subtracted that reservation when computing the advisory
+budget, but nothing enforced it on the wire.</p>
+<p><strong>The estimate was blind.</strong> <code>internal/token/estimate.go</code> is <code>chars/4</code>, and images are a flat
+1,500 tokens each. On that transcript the provider counted 655,440 message tokens where the
+harness saw ~42,000 — a fifteenfold gap the estimator cannot see through, because the
+weight is image and tool payload. Earlier in the same session the gap was 8.7%
+(598,592 estimated ceiling, 655,440 counted). <code>trimHistory</code> therefore believed it had
+trimmed enough. The provider disagreed.</p>
+<p>The escape hatches were welded shut. <code>/compact</code> is not a harness command; it goes to the
+model as a user message, which <em>adds</em> tokens. <code>compactSession</code> (<code>internal/session/loop.go</code>)
+is itself a model call carrying the same reservation, so the way out of a context hole
+required the context that was exhausted. Auto-compact existed but starts each turn with a
+zero streak and needs three consecutive high-usage rounds
+(<code>ContextAutoCompactRounds</code>), and a first-call 400 ends the turn at round one. Finally
+<code>forceEndAssistant</code> told the operator &ldquo;send another message (e.g. &lsquo;continue&rsquo;) to resume&rdquo; —
+advice that could not work, and the exact sentence the operator followed.</p>
+<h2 id="decision">Decision</h2>
+<p>Two layers, in this order of authority.</p>
+<h3 id="1-preflight-clamp-and-a-single-typed-retry">1. Preflight clamp and a single typed retry</h3>
+<p><code>ClampMaxTokens</code> (<code>internal/session/clamp.go</code>) sets <code>max_tokens = limit − estimate − margin</code>
+before the POST, so output can no longer crowd out the prompt. The margin is <strong>learned, not
+fixed</strong>. A bare <code>limit/64</code> was measured and does not hold:</p>
+<pre><code class="language-text">limit 1,048,576  estimate 598,592  margin 16,384  →  max_tokens 433,600
+655,440 provider messages + 433,600     = 1,089,040  … still 40,464 over
+</code></pre>
+<p><code>AdaptiveMargin</code> scales the margin by the observed skew between provider-reported
+<code>usage.prompt_tokens</code> and the harness estimate for that base_url+model, defaulting to 1.10
+until samples exist and clamped to a fraction of the window. <code>TestAdaptiveMarginIncidentSkew</code>
+asserts both that the adaptive margin fits <strong>and</strong> that the fixed-margin fixture still
+overflows, so the demonstration cannot quietly rot.</p>
+<p>When a context 400 arrives anyway, <code>internal/model/context_limit.go</code> parses it into a typed
+<code>ContextLimitError</code> carrying the provider&rsquo;s own message count, and <code>contextRetry</code> performs
+<strong>one</strong> retry with <code>max_tokens = limit − messages − margin</code>. The provider&rsquo;s count beats the
+estimate because it is the only number the provider agrees with. The retry is not a loop:
+a second 400 escalates. <code>noteProviderLimit</code> records a provider window larger than the
+catalog without rewriting the catalog (<code>TestLargerProviderLimitIsRecordedNotCataloged</code>).</p>
+<h3 id="2-overage-rescue-deterministic-model-free">2. <code>overage-rescue</code> — deterministic, model-free</h3>
+<p>When the prompt itself does not fit, <code>PlanRescue</code> (<code>internal/session/overage.go</code>) decides
+what to hide from the model projection. It is a pure function: no <code>Runner</code>, no HTTP client,
+no clock, no randomness; the timestamp is injected by the caller. Actions are <code>rescued</code>,
+<code>noop</code>, and <code>unrecoverable</code>, where <code>unrecoverable</code> leaves the document byte-identical.</p>
+<p>Cut order: images before text; oldest rounds before newer ones; tool clusters only as whole
+units (an assistant <code>tool_calls</code> block and its results are never split); a monster message is
+tail-stubbed rather than dropped; the newest round is never omitted wholesale. The kept tail
+is passed through <code>sanitizeToolCallHistory</code> so strict providers never see an orphan tool
+result. When the fixed overhead alone (system prompt, soul, prompt pack, tool schemas)
+exceeds the window, the answer is <code>unrecoverable</code> and the operator is told to switch models.</p>
+<p><strong>Nothing is deleted.</strong> Flags ride in the transcript markdown as
+<code>&lt;!-- model_omit: overage-rescue --&gt;</code> and <code>&lt;!-- model_stub_b64: … --&gt;</code>. This is the whole
+trick: <code>LoadFromDoc</code> rebuilds history from the UI transcript, so a history-only trim —
+what <code>trimHistory</code> and <code>compactSession</code> do — evaporates on the next reload. Flags survive,
+because they are in the file. Omitted rows stay visible in the UI, dimmed, and the newest
+<code>harness</code> row is appended to the leading system message (capped at 1,500 chars) so the model
+knows what was hidden.</p>
+<p>Surfaces:</p>
+<ul>
+<li><code>POST /api/sessions/{id}/overage-rescue</code> — busy session answers 409; archives before
+  mutating; never starts a turn; <code>{"dry_run":true}</code> writes nothing.</li>
+<li><code>marble-harness overage-rescue [-memory D] [-session ID] [-apply] [ID]</code> — dry run by
+  default, refuses to scan every session, and refuses <code>-apply</code> while a live harness holds
+  <code>marble.lock</code>. Works with the harness stopped; writes no event row (it has no live DB
+  session and must not race the harness&rsquo;s event log).</li>
+<li>UI: <strong>Rescue context</strong> appears in the composer only in phase <code>context_overage</code>; the
+  status pill reads <code>context full</code>; the interrupt bubble says &ldquo;Context overage&rdquo; and no
+  longer promises that another message will resume. Only <code>kind="continue"</code> stops carry the
+  old sentence.</li>
+</ul>
+<p>Archives go to <code>&lt;memory&gt;/backups/overage/&lt;id&gt;/&lt;UTC timestamp&gt;.md</code>, written before any
+mutation. A second run on a rescued session reports <code>noop</code> and writes no second archive.</p>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li>A stuck session is recoverable without a model call, without a larger context model, and
+  without losing a byte of transcript. Archived pre-images make the repair reversible by
+  hand.</li>
+<li>The adaptive ratio is in-process and per-model; it is not persisted, so the first clamp
+  after a restart begins at 1.10. Rescue&rsquo;s no-observation scale is a separate 1.25 default.</li>
+<li>The retry silently reduces the output budget. It fires no advisory (only the preflight
+  clamp does), so a long answer may be cut short with no visible explanation. Accepted for
+  now; a one-line advisory would be an improvement.</li>
+<li>The CLI cannot see MCP tool schemas or the Wonderstand prompt pack, because those exist
+  only inside a running harness. Its overhead estimate is therefore conservative-low, and
+  it may plan a projection that the live harness then finds slightly tight. The clamp still
+  protects the call.</li>
+<li>Rescue is one-way: it never clears flags. Re-including omitted text on a larger model is
+  an explicit future restore, not an automatic behaviour — automatic re-inclusion is how a
+  session gets stuck again on the way back.</li>
+<li>The estimator itself is unchanged. <code>chars/4</code> remains wrong about images; the clamp margin
+  and the typed 400 are what absorb it. Fixing vision token accounting is separate work.</li>
+</ul>
+    </article>
+  </main>
+  <footer class="doc-foot">Rendered from <code>0038-context-overage-rescue.md</code> · <a href="index.html">all ADRs</a> · run <code>python3 adr/render_docs.py</code> to refresh</footer>
+</body>
+</html>

@@ -11,13 +11,15 @@
     <div class="brand">
       <span class="mark"></span>
       <span>Marble · ADR-0037</span>
-      <span class="status proposed">Proposed</span>
+      <span class="status accepted">Accepted</span>
     </div>
     <nav class="toc">
       <a href="index.html">Index</a>
       <a href="0037-search-sessions.md">Markdown</a>
       <a href="0037-review.html">Review</a>
+      <a href="0037-answers.json">Answers</a>
       <a href="0036-doc.html">← 0036</a>
+      <a href="0038-doc.html">0038 →</a>
     </nav>
   </header>
   <main>
@@ -33,7 +35,7 @@
 <tbody>
 <tr>
 <td><strong>Status</strong></td>
-<td><strong>Proposed</strong></td>
+<td><strong>Accepted</strong> (2026-10-18, operator accepted every recommendation)</td>
 </tr>
 <tr>
 <td><strong>Date</strong></td>
@@ -105,13 +107,13 @@ dmg     → hdiutil, notarize, codesign
 <p>Indexed: user and assistant message text, and tool results after <code>config.ScrubSecrets</code>, clipped (see Q5).</p>
 <p>Not indexed: <code>$MEMORY/env</code> and soul text, attachment bytes, the system prompt, <code>tool_args_json</code> from <code>session_events</code> (it can carry secrets the model passed and is not the transcript), thinking and harness messages (see Q5).</p>
 <p><code>GET /api/sessions/search?q=</code> is operator-auth only. It must not be added to <code>isPublicPath</code>. Device tokens, enroll, and the peer websocket cannot call it. The response is <code>{id, description, updated_at}</code> — no matching snippet, because a snippet of tool output is exactly where a secret would leak. The description itself is operator-authored or clerk-authored text, which the operator already sees in the sidebar.</p>
-<h2 id="open-questions">Open questions</h2>
-<p>These are posed, with recommendations, in <code>0037-review.html</code>. They are not decided here.</p>
+<h2 id="resolved-questions">Resolved questions</h2>
+<p>The operator accepted every recommendation on 2026-10-18 (<code>0037-answers.json</code>). These are now decisions.</p>
 <table>
 <thead>
 <tr>
 <th>Question</th>
-<th>Recommendation</th>
+<th>Decision</th>
 </tr>
 </thead>
 <tbody>
@@ -133,7 +135,7 @@ dmg     → hdiutil, notarize, codesign
 </tr>
 <tr>
 <td>Q5 What gets indexed</td>
-<td>User and assistant in full (capped), tool results scrubbed and clipped to 2 KiB, thinking excluded.</td>
+<td>User and assistant in full, capped at 8 KiB. Tool results only after <code>ScrubSecrets</code>, clipped to 2 KiB. Thinking and harness messages excluded.</td>
 </tr>
 <tr>
 <td>Q6 Debounce and minimum length</td>
