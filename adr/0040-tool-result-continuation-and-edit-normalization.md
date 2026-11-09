@@ -123,6 +123,22 @@ Four points where the build clarified or corrected this document:
   chain advances through `next_offset` and terminates at end-of-body; the sweep never evicts the file it
   has just handed out.
 
+## Implementation notes (D2 as landed, 2026-11-09)
+
+- **Glyph matching maps offsets, it does not rescan.** Substitution changes byte length
+  (`”` 3 bytes → `"` 1, `…` 3 → `...` 3), so `normMap` keeps an owner array from normalized byte to
+  original byte and `mapSpan` converts a hit back before anything is spliced. Ambiguity reports use the
+  same mapping — an earlier draft indexed the original text with normalized offsets and named the wrong
+  bytes on the wrong lines.
+- **Trimmed-line spans stop before the line ending.** A span that ended after `\r` left the `\n` behind
+  while its `\r` was replaced away, which is how a CRLF file silently became mixed. The span now covers
+  content only; `matchRegionEndings` converts the replacement when the region was CRLF.
+- **`replace_all` with a trimmed-line match is refused** (ambiguous by construction) rather than guessing
+  which ranges were meant. `replace_all` in the glyph tier is supported and counts replacements.
+- **The diff is a real LCS diff** with common prefix/suffix trimmed first, 3 lines of context, `@@` headers,
+  and a 2 M cell budget; past that budget the change is rendered as one whole-region replacement rather
+  than a misleading near-match. Cap is 4 KiB with a note that the edit itself was applied in full.
+
 ## Alternatives Considered
 
 - New continue_result tool: rejected because it duplicates file_read Offset/Limit, adds client complexity, and breaks MCP uniformity.

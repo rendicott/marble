@@ -193,6 +193,22 @@ failure in any hunk aborts the whole patch with full rollback — no partial wri
   chain advances through <code>next_offset</code> and terminates at end-of-body; the sweep never evicts the file it
   has just handed out.</li>
 </ul>
+<h2 id="implementation-notes-d2-as-landed-2026-11-09">Implementation notes (D2 as landed, 2026-11-09)</h2>
+<ul>
+<li><strong>Glyph matching maps offsets, it does not rescan.</strong> Substitution changes byte length
+  (<code>”</code> 3 bytes → <code>"</code> 1, <code>…</code> 3 → <code>...</code> 3), so <code>normMap</code> keeps an owner array from normalized byte to
+  original byte and <code>mapSpan</code> converts a hit back before anything is spliced. Ambiguity reports use the
+  same mapping — an earlier draft indexed the original text with normalized offsets and named the wrong
+  bytes on the wrong lines.</li>
+<li><strong>Trimmed-line spans stop before the line ending.</strong> A span that ended after <code>\r</code> left the <code>\n</code> behind
+  while its <code>\r</code> was replaced away, which is how a CRLF file silently became mixed. The span now covers
+  content only; <code>matchRegionEndings</code> converts the replacement when the region was CRLF.</li>
+<li><strong><code>replace_all</code> with a trimmed-line match is refused</strong> (ambiguous by construction) rather than guessing
+  which ranges were meant. <code>replace_all</code> in the glyph tier is supported and counts replacements.</li>
+<li><strong>The diff is a real LCS diff</strong> with common prefix/suffix trimmed first, 3 lines of context, <code>@@</code> headers,
+  and a 2 M cell budget; past that budget the change is rendered as one whole-region replacement rather
+  than a misleading near-match. Cap is 4 KiB with a note that the edit itself was applied in full.</li>
+</ul>
 <h2 id="alternatives-considered">Alternatives Considered</h2>
 <ul>
 <li>New continue_result tool: rejected because it duplicates file_read Offset/Limit, adds client complexity, and breaks MCP uniformity.</li>

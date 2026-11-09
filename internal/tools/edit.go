@@ -34,23 +34,29 @@ func (r *Registry) editFile(argsJSON string, tc *TurnContext) (string, error) {
 		return "", err
 	}
 	text := string(data)
-	count := strings.Count(text, a.OldString)
-	if count == 0 {
-		return "", fmt.Errorf("old_string not found in %s", a.Path)
-	}
-	if count > 1 && !a.ReplaceAll {
-		return "", fmt.Errorf("old_string matches %d times; set replace_all=true or provide a unique string", count)
-	}
-	var newText string
-	if a.ReplaceAll {
-		newText = strings.ReplaceAll(text, a.OldString, a.NewString)
-	} else {
-		newText = strings.Replace(text, a.OldString, a.NewString, 1)
+	// ADR-0040 D2: exact first, then glyph, then trimmed lines. The read gate
+	// above stands before any of it.
+	newText, count, tier, err := applyStringEdit(a.Path, text, a.OldString, a.NewString, a.ReplaceAll)
+	if err != nil {
+		return "", err
 	}
 	if err := os.WriteFile(path, []byte(newText), 0o644); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("edited %s (%d replacement(s))", a.Path, count), nil
+	return editReport(a.Path, text, newText, count, tier), nil
+}
+
+// editReport states what changed and shows it, so the model need not re-read.
+func editReport(path, before, after string, count int, tier matchTier) string {
+	how := ""
+	if tier != tierExact {
+		how = fmt.Sprintf("; matched after %s normalization", tier)
+	}
+	msg := fmt.Sprintf("edited %s (%d replacement(s)%s)", path, count, how)
+	if d := unifiedDiff(path, before, after); d != "" {
+		msg += "\n" + d
+	}
+	return msg
 }
 
 func wasRead(tc *TurnContext, path string) bool {
@@ -93,6 +99,7 @@ func (r *Registry) applyPatch(argsJSON string, tc *TurnContext) (string, error) 
 	}
 
 	var applied []reverseOp
+	var diffs []string
 	rollback := func() {
 		for i := len(applied) - 1; i >= 0; i-- {
 			op := applied[i]
@@ -148,15 +155,20 @@ func (r *Registry) applyPatch(argsJSON string, tc *TurnContext) (string, error) 
 			var next string
 			if e.OldString != "" {
 				text := string(prev)
-				if !strings.Contains(text, e.OldString) {
+				var tier matchTier
+				// ADR-0040 D2: same normalization ladder as edit_file, single
+				// replacement only — a patch hunk must be unambiguous.
+				next, _, tier, err = applyStringEdit(e.Path, text, e.OldString, e.NewString, false)
+				if err != nil {
 					rollback()
-					return "", fmt.Errorf("edit[%d]: old_string not found in %s", i, e.Path)
+					return "", fmt.Errorf("edit[%d]: %w", i, err)
 				}
-				if strings.Count(text, e.OldString) > 1 {
-					rollback()
-					return "", fmt.Errorf("edit[%d]: old_string not unique in %s", i, e.Path)
+				if d := unifiedDiff(e.Path, text, next); d != "" {
+					diffs = append(diffs, d)
 				}
-				next = strings.Replace(text, e.OldString, e.NewString, 1)
+				if tier != tierExact {
+					diffs = append(diffs, fmt.Sprintf("(edit[%d] matched after %s normalization)\n", i, tier))
+				}
 			} else if e.Content != "" {
 				next = e.Content
 			} else {
@@ -187,5 +199,9 @@ func (r *Registry) applyPatch(argsJSON string, tc *TurnContext) (string, error) 
 			return "", fmt.Errorf("edit[%d]: unknown op %q", i, e.Op)
 		}
 	}
-	return fmt.Sprintf("apply_patch ok: %d edit(s)", len(a.Edits)), nil
+	msg := fmt.Sprintf("apply_patch ok: %d edit(s)", len(a.Edits))
+	if len(diffs) > 0 {
+		msg += "\n" + strings.Join(diffs, "")
+	}
+	return msg, nil
 }

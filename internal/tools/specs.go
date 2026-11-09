@@ -64,7 +64,7 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"pattern"},
 			}),
-		spec("edit_file", "Targeted text replacement in an existing file. Requires file_read on the same path earlier in this turn.",
+		spec("edit_file", "Targeted text replacement in an existing file. Requires file_read on the same path earlier in this turn. Returns a unified diff of the change, so there is no need to re-read the file to verify. A byte-exact match is tried first; only on a miss does it retry through typography (curly quotes, dashes, nbsp, ellipsis) and then trimmed lines, and the reply says which tier matched. An ambiguous match is an error listing each candidate line — never a guess.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -75,7 +75,7 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"path", "old_string", "new_string"},
 			}),
-		spec("apply_patch", "Atomic multi-file edits (add/update/delete) with rollback on failure. update requires prior file_read.",
+		spec("apply_patch", "Atomic multi-file edits (add/update/delete) with rollback on failure: if any hunk fails, every earlier hunk in the call is undone. update requires prior file_read. old_string updates get the same exact-then-normalized matching as edit_file and return unified diffs.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
