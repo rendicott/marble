@@ -41,9 +41,17 @@ func (r *Registry) fileRead(argsJSON string, tc *TurnContext) (string, error) {
 		tc.ReadPaths[a.Path] = true
 	}
 	text := string(data)
+	if a.ByteOffset < 0 {
+		return "", fmt.Errorf("byte_offset must not be negative")
+	}
 	if a.ByteOffset > 0 {
 		if a.ByteOffset > len(text) {
 			return "", fmt.Errorf("byte_offset %d is past the end of %s (%d bytes)", a.ByteOffset, a.Path, len(text))
+		}
+		// Resuming exactly at EOF is legal (it is where a marker points when the
+		// cut fell on the last byte). Indexing there would panic.
+		if a.ByteOffset == len(text) {
+			return fmt.Sprintf("path=%s byte_offset=%d bytes=%d (end of file, nothing to resume)\n", a.Path, a.ByteOffset, len(text)), nil
 		}
 		if !utf8.RuneStart(text[a.ByteOffset]) {
 			return "", fmt.Errorf("byte_offset %d splits a UTF-8 rune in %s", a.ByteOffset, a.Path)
