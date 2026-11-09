@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -220,5 +221,32 @@ func TestUpsertAndDeleteSink(t *testing.T) {
 	}
 	if err := m.DeleteSink("dbg"); err == nil {
 		t.Fatal("expected not found")
+	}
+}
+
+func TestDispatchWatchUndelivered(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body.Store(string(b))
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	cfg := Config{Sinks: []SinkSpec{{
+		ID: "wh", Type: "webhook", Enabled: true, URL: srv.URL, Template: "{{.Kind}}:{{.Message}}",
+	}}}
+	cfg.Normalize()
+	m := NewManager(cfg, "", "")
+	m.sync = true
+	m.httpClient = srv.Client()
+
+	// A nil session is legal: the session may be gone, and the operator is still told.
+	m.DispatchWatchUndelivered(nil, "s1", "w_1", "watch w_1 could not be delivered")
+	got, _ := body.Load().(string)
+	if !strings.Contains(got, "watch w_1 could not be delivered") || !strings.Contains(got, "watch_undelivered") {
+		t.Fatalf("body %q hist=%+v", got, m.History())
+	}
+	if !knownKind("watch_undelivered") {
+		t.Fatal("kind must be filterable")
 	}
 }

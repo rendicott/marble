@@ -112,3 +112,70 @@ func TestCancelSessionMarksOutcome(t *testing.T) {
 		t.Fatal("no-op cancel should not notify")
 	}
 }
+
+func TestScheduleDefaultsToAgentSource(t *testing.T) {
+	rec := &recorder{}
+	m := New(rec.onFire, nil)
+	defer m.Stop()
+	j, err := m.Schedule("s1", "later", 3600, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Source != SourceAgent || j.WatchID != "" {
+		t.Fatalf("%+v", j)
+	}
+}
+
+func TestScheduleWatchCarriesSourceAndWatchID(t *testing.T) {
+	rec := &recorder{}
+	m := New(rec.onFire, nil)
+	defer m.Stop()
+	if _, err := m.ScheduleWatch("s1", "p", 3600, "", "", SourceAgent, "w_1"); err == nil {
+		t.Fatal("agent is not a watch source")
+	}
+	if _, err := m.ScheduleWatch("s1", "p", 3600, "", "", SourceWatch, ""); err == nil {
+		t.Fatal("watch id is required")
+	}
+	j, err := m.ScheduleWatch("s1", "p", 1, "", "lbl", SourceWatchBoot, "w_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Source != SourceWatchBoot || j.WatchID != "w_1" {
+		t.Fatalf("%+v", j)
+	}
+	waitFor(t, func() bool { f, _ := rec.counts(); return f == 1 })
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if got := rec.fired[0]; got.Source != SourceWatchBoot || got.WatchID != "w_1" {
+		t.Fatalf("fired job lost its link: %+v", got)
+	}
+}
+
+func TestCancelSingleJob(t *testing.T) {
+	rec := &recorder{}
+	m := New(rec.onFire, nil)
+	defer m.Stop()
+	a, err := m.Schedule("s1", "a", 1, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.Schedule("s1", "b", 3600, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Cancel(a.ID) {
+		t.Fatal("pending job should cancel")
+	}
+	if m.Cancel(a.ID) || m.Cancel("nope") {
+		t.Fatal("repeat or unknown cancel should report false")
+	}
+	time.Sleep(1600 * time.Millisecond)
+	if f, _ := rec.counts(); f != 0 {
+		t.Fatal("cancelled job fired")
+	}
+	for _, j := range m.List("s1") {
+		if j.ID == b.ID && j.Cancelled {
+			t.Fatal("cancel touched a sibling job")
+		}
+	}
+}

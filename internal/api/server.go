@@ -371,6 +371,10 @@ func (s *Server) handleSessionSub(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionStop(w, r, id)
 		return
 	}
+	if len(parts) == 4 && parts[1] == "watches" && parts[3] == "cancel" {
+		s.handleWatchCancel(w, r, id, parts[2])
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "attachments" {
 		s.handleSessionAttachments(w, r, id, parts[2:])
 		return

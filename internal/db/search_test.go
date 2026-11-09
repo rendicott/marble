@@ -47,7 +47,7 @@ func TestMigrateV13toV14SearchTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d2.Close()
-	if got := schemaVersion(t, d2); got != 14 {
+	if got := schemaVersion(t, d2); got != CurrentSchemaVersion {
 		t.Fatalf("schema %d", got)
 	}
 	var n int

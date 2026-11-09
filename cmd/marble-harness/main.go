@@ -36,6 +36,7 @@ import (
 	"github.com/rendicott/marble/internal/sink"
 	"github.com/rendicott/marble/internal/tools"
 	"github.com/rendicott/marble/internal/tts"
+	"github.com/rendicott/marble/internal/watch"
 	"github.com/rendicott/marble/internal/workspacefs"
 )
 
@@ -536,7 +537,13 @@ func main() {
 	}
 
 	var cont *continuation.Manager
+	var watchMgr *watch.Manager
 	cont = continuation.New(func(j continuation.Job) {
+		// ADR-0041: watch wakes render a verdict at fire time and never drop on busy.
+		if j.Source == continuation.SourceWatch || j.Source == continuation.SourceWatchBoot {
+			watchMgr.OnFire(j)
+			return
+		}
 		s, err := reg.EnsureLoaded(j.SessionID)
 		if err != nil {
 			log.Printf("continuation: session %s: %v", j.SessionID, err)
@@ -572,8 +579,8 @@ func main() {
 		}()
 	}, func(taskID string) bool {
 		// wait_for_task accepts shell background tasks and call_agent_process tasks.
-		if t, ok := bg.Get(taskID); ok {
-			return t.Status != bgtask.StatusRunning
+		if running, ok := bg.IsRunning(taskID); ok {
+			return !running
 		}
 		if agents != nil {
 			if st, ok := agents.Status(taskID); ok {
@@ -585,6 +592,27 @@ func main() {
 	cont.Notify = notifyPending
 	toolReg.Cont = cont
 	defer cont.Stop()
+
+	// ADR-0041 watch obligations: durable bgtask + continuation joins.
+	watchMgr = watch.New(sqldb, bg, cont, func(sessionID, text string) watch.WakeResult {
+		s, err := reg.EnsureLoaded(sessionID)
+		if err != nil {
+			return watch.WakeResult{Status: watch.WakeError, Detail: err.Error()}
+		}
+		if s.Status == "closed" {
+			return watch.WakeResult{Status: watch.WakeClosed}
+		}
+		if runner.PostContinuation(s, text) {
+			return watch.WakeResult{Status: watch.WakeStarted}
+		}
+		return watch.WakeResult{Status: watch.WakeBusy}
+	})
+	watchMgr.SessionClosed = func(sessionID string) bool {
+		s, err := reg.EnsureLoaded(sessionID)
+		return err == nil && s.Status == "closed"
+	}
+	watchMgr.Notify = notifyPending
+	toolReg.Watch = watchMgr
 
 	// ADR-0015 cron: durable schedules → inject prompt + start turn
 	var modelOK atomicBool
@@ -637,6 +665,7 @@ func main() {
 	}
 
 	reg.OnSessionClose = func(sessionID string) {
+		watchMgr.OnSessionClose(sessionID) // rows go terminal before the kill signal
 		bg.KillSession(sessionID)
 		agents.KillSession(sessionID)
 		cont.CancelSession(sessionID)
@@ -658,6 +687,11 @@ func main() {
 	reg.OnSessionOpen = sinkMgr.AttachSession
 	sinkMgr.AttachAll(reg)
 	defer sinkMgr.Stop()
+	watchMgr.OnUndelivered = func(row db.WatchJobRow, why string) {
+		s, _ := reg.EnsureLoaded(row.SessionID) // nil when the session is gone; still report it
+		sinkMgr.DispatchWatchUndelivered(s, row.SessionID, row.ID, watch.UndeliveredMessage(row, why))
+	}
+	watchMgr.OnEvent = reg.LogHarnessEvent
 
 	daemon := session.NewDaemon(reg, cfg.PersistEvery)
 	daemon.Start()
@@ -781,6 +815,13 @@ func main() {
 		return out
 	}
 
+	// ADR-0041: tell sessions about watches the last process left unfinished or unwoken.
+	if n, err := watchMgr.Reconcile(); err != nil {
+		log.Printf("WARNING: watch reconcile: %v", err)
+	} else if n > 0 {
+		log.Printf("watch: reconcile scheduled %d wake(s)", n)
+	}
+
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           srv.Handler(),
@@ -843,6 +884,10 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Printf("shutting down…")
+	// Before any kill: a killed task must not be reported as a failed watch.
+	if n := watchMgr.OnSIGTERM(); n > 0 {
+		log.Printf("watch: %d running watch(es) marked lost for redelivery on boot", n)
+	}
 	// Lazy kill of session children (shell BG + call_agent_process): signal now,
 	// do not wait — escalate to SIGKILL in background so restart is not blocked.
 	nBG := bg.KillAllRunning()

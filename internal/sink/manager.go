@@ -371,6 +371,27 @@ func (m *Manager) finishTurn(s *session.Session, buf *turnBuf) {
 	m.dispatch(s, ev)
 }
 
+// DispatchWatchUndelivered tells the operator a watch's wake could not be delivered
+// (ADR-0041 channel d). No turn stands behind it, hence its own entry point. s is nil
+// when the session can no longer be loaded.
+func (m *Manager) DispatchWatchUndelivered(s *session.Session, sessionID, watchID, message string) {
+	title, modelID, model := s.MetaSnapshot()
+	if modelID == "" {
+		modelID = model
+	}
+	m.dispatch(s, TurnEvent{
+		SessionID:    sessionID,
+		SessionTitle: title,
+		Workspace:    m.workspace,
+		ModelID:      modelID,
+		TurnID:       "watch-" + watchID,
+		Kind:         "watch_undelivered",
+		Message:      message,
+		Preview:      PreviewOf(message),
+		Timestamp:    time.Now(),
+	})
+}
+
 func classify(buf *turnBuf, title string) string {
 	if buf.kindHint == "error" {
 		return "error"

@@ -19,6 +19,10 @@ func TestTaskRefsFromResult(t *testing.T) {
 		{"call_agent_process", `{"agent_task_id":"a1","status":"running","progress":{}}`, nil},
 		{"schedule_continuation", `error: continuations not configured`, nil},
 		{"shell_execute", `{"task_id":"x"}`, nil},
+		{"watch", `{"action":"create","watch_id":"w_1","status":"running"}`, []TaskRef{{"watch", "w_1"}}},
+		// status and cancel name a watch but did not create one.
+		{"watch", `{"id":"w_1","status":"running"}`, nil},
+		{"watch", `{"watch_id":"w_1","status":"failed","cancelled":true}`, nil},
 	}
 	for _, c := range cases {
 		got := taskRefsFromResult(c.tool, c.result)

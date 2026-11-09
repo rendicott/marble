@@ -131,6 +131,13 @@ func normalizeArgsForFingerprint(name, argsJSON string) string {
 		if tid, ok := m["task_id"].(string); ok && strings.TrimSpace(tid) != "" {
 			return "poll|" + strings.TrimSpace(tid)
 		}
+	case "watch":
+		// status polls are expected to repeat; create/cancel fingerprint on their args
+		if act, _ := m["action"].(string); strings.EqualFold(strings.TrimSpace(act), "status") {
+			if id, ok := m["id"].(string); ok && strings.TrimSpace(id) != "" {
+				return "poll|" + strings.TrimSpace(id)
+			}
+		}
 	case "shell_execute", "start_background_task", "computer_exec":
 		if cmd, ok := m["command"].(string); ok {
 			m["command"] = collapseWS(cmd)
@@ -202,6 +209,13 @@ func isPollExempt(name, argsJSON string) bool {
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
 		return strings.TrimSpace(a.TaskID) != ""
+	case "watch":
+		var a struct {
+			Action string `json:"action"`
+			ID     string `json:"id"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return strings.EqualFold(strings.TrimSpace(a.Action), "status") && strings.TrimSpace(a.ID) != ""
 	default:
 		return false
 	}

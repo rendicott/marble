@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -39,10 +40,24 @@ type Task struct {
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Stdout    string    `json:"-"`
 	Stderr    string    `json:"-"`
+	// Combined is the end of stdout and stderr interleaved in arrival order.
+	Combined string `json:"-"`
 	Error     string    `json:"error,omitempty"`
 
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
+	// Live capture; nil once the task finishes and Stdout/Stderr/Combined are final.
+	stdoutBuf, stderrBuf, combinedBuf *outputBuffer
+}
+
+// copyLiveOutput fills dst's output fields from the live buffers. Call with Manager.mu held.
+func (t *Task) copyLiveOutput(dst *Task) {
+	if t.stdoutBuf == nil {
+		return
+	}
+	dst.Stdout = t.stdoutBuf.String()
+	dst.Stderr = t.stderrBuf.String()
+	dst.Combined = t.combinedBuf.String()
 }
 
 // Manager tracks background tasks per session.
@@ -58,7 +73,7 @@ type Manager struct {
 	Notify func(sessionID string)
 }
 
-// New creates a manager (max 8 concurrent per session per ADR-0005).
+// New creates a manager (max 8 running per session per ADR-0005).
 func New(policy *shellpolicy.Policy) *Manager {
 	return &Manager{
 		tasks:   make(map[string]*Task),
@@ -91,7 +106,13 @@ func (m *Manager) Start(sessionID, command, cwdRel, label string) (*Task, error)
 	if m.bySess[sessionID] == nil {
 		m.bySess[sessionID] = make(map[string]struct{})
 	}
-	if len(m.bySess[sessionID]) >= m.maxPerS {
+	running := 0
+	for tid := range m.bySess[sessionID] {
+		if t, ok := m.tasks[tid]; ok && t.Status == StatusRunning {
+			running++
+		}
+	}
+	if running >= m.maxPerS {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("max concurrent background tasks (%d) for session", m.maxPerS)
 	}
@@ -102,9 +123,11 @@ func (m *Manager) Start(sessionID, command, cwdRel, label string) (*Task, error)
 	cmd.Dir = cwd
 	cmd.Env = config.ChildEnv(nil) // Settings → Secrets as $NAME, live
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &limitedWriter{buf: &stdout, max: m.maxOut}
-	cmd.Stderr = &limitedWriter{buf: &stderr, max: m.maxOut}
+	stdout := newOutputBuffer(m.maxOut/4, m.maxOut-m.maxOut/4)
+	stderr := newOutputBuffer(m.maxOut/4, m.maxOut-m.maxOut/4)
+	combined := newOutputBuffer(0, combinedTailBytes)
+	cmd.Stdout = io.MultiWriter(stdout, combined)
+	cmd.Stderr = io.MultiWriter(stderr, combined)
 
 	t := &Task{
 		ID:        id,
@@ -116,6 +139,10 @@ func (m *Manager) Start(sessionID, command, cwdRel, label string) (*Task, error)
 		StartedAt: time.Now(),
 		cmd:       cmd,
 		cancel:    cancel,
+
+		stdoutBuf:   stdout,
+		stderrBuf:   stderr,
+		combinedBuf: combined,
 	}
 	m.tasks[id] = t
 	m.bySess[sessionID][id] = struct{}{}
@@ -125,7 +152,10 @@ func (m *Manager) Start(sessionID, command, cwdRel, label string) (*Task, error)
 		m.finish(t, StatusFailed, nil, err.Error())
 		return t, err
 	}
+	m.mu.Lock()
 	t.PID = cmd.Process.Pid
+	started := *t
+	m.mu.Unlock()
 	m.notify(sessionID)
 
 	go func() {
@@ -146,14 +176,10 @@ func (m *Manager) Start(sessionID, command, cwdRel, label string) (*Task, error)
 			st = StatusKilled
 		default:
 		}
-		m.mu.Lock()
-		t.Stdout = stdout.String()
-		t.Stderr = stderr.String()
-		m.mu.Unlock()
 		m.finish(t, st, &code, "")
 	}()
 
-	return t, nil
+	return &started, nil
 }
 
 func (m *Manager) finish(t *Task, st Status, code *int, errMsg string) {
@@ -162,6 +188,8 @@ func (m *Manager) finish(t *Task, st Status, code *int, errMsg string) {
 		m.mu.Unlock()
 		return
 	}
+	t.copyLiveOutput(t)
+	t.stdoutBuf, t.stderrBuf, t.combinedBuf = nil, nil, nil
 	t.Status = st
 	t.ExitCode = code
 	t.Error = errMsg
@@ -183,14 +211,16 @@ func (m *Manager) notify(sessionID string) {
 func (m *Manager) Kill(taskID string, force bool) error {
 	m.mu.Lock()
 	t, ok := m.tasks[taskID]
-	m.mu.Unlock()
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("task not found")
 	}
-	if t.Status != StatusRunning || t.cmd == nil || t.cmd.Process == nil {
+	if t.Status != StatusRunning || t.PID == 0 {
+		m.mu.Unlock()
 		return fmt.Errorf("task not running")
 	}
-	pgid := t.cmd.Process.Pid
+	pgid := t.PID
+	m.mu.Unlock()
 	sig := syscall.SIGTERM
 	if force {
 		sig = syscall.SIGKILL
@@ -210,7 +240,7 @@ func (m *Manager) Kill(taskID string, force bool) error {
 	return nil
 }
 
-// Get returns a task snapshot.
+// Get returns a task snapshot, including the output captured so far while it runs.
 func (m *Manager) Get(taskID string) (*Task, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -219,7 +249,19 @@ func (m *Manager) Get(taskID string) (*Task, bool) {
 		return nil, false
 	}
 	cp := *t
+	t.copyLiveOutput(&cp)
 	return &cp, true
+}
+
+// IsRunning reports a task's state without copying its output, for frequent pollers.
+func (m *Manager) IsRunning(taskID string) (running, found bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[taskID]
+	if !ok {
+		return false, false
+	}
+	return t.Status == StatusRunning, true
 }
 
 // List session tasks.
@@ -249,20 +291,25 @@ func (m *Manager) KillSession(sessionID string) {
 // Non-blocking: SIGTERM immediately, SIGKILL escalate in a short-lived goroutine.
 // Intended for harness shutdown / restart so children are not left orphaned.
 func (m *Manager) KillAllRunning() int {
+	type target struct {
+		task   *Task
+		pid    int
+		cancel context.CancelFunc
+	}
 	m.mu.Lock()
-	var running []*Task
+	var running []target
 	for _, t := range m.tasks {
-		if t.Status == StatusRunning && t.cmd != nil && t.cmd.Process != nil {
-			running = append(running, t)
+		if t.Status == StatusRunning && t.PID != 0 {
+			running = append(running, target{t, t.PID, t.cancel})
 		}
 	}
 	m.mu.Unlock()
-	for _, t := range running {
-		pgid := t.cmd.Process.Pid
+	for _, r := range running {
+		pgid := r.pid
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		// cancel context if present
-		if t.cancel != nil {
-			t.cancel()
+		if r.cancel != nil {
+			r.cancel()
 		}
 		go func(pid int, task *Task) {
 			time.Sleep(2 * time.Second)
@@ -272,7 +319,7 @@ func (m *Manager) KillAllRunning() int {
 			if still {
 				_ = syscall.Kill(-pid, syscall.SIGKILL)
 			}
-		}(pgid, t)
+		}(pgid, r.task)
 	}
 	return len(running)
 }
@@ -282,25 +329,70 @@ func (m *Manager) MarkOrphansOnBoot() {
 	// in-memory only; nothing to recover
 }
 
-type limitedWriter struct {
-	buf *bytes.Buffer
-	max int
-	n   int
+// combinedTailBytes bounds the interleaved tail; enough for "last N lines" of output.
+const combinedTailBytes = 64 * 1024
+
+// outputBuffer keeps the first maxHead and the last maxTail bytes of a stream, so
+// the end of a noisy command's output is really its end. Safe for concurrent use.
+type outputBuffer struct {
+	mu      sync.Mutex
+	maxHead int
+	maxTail int
+	head    []byte
+	tail    []byte // ring once full: oldest byte at pos
+	pos     int
+	dropped int64
 }
 
-func (w *limitedWriter) Write(p []byte) (int, error) {
-	if w.n >= w.max {
-		return len(p), nil
+func newOutputBuffer(maxHead, maxTail int) *outputBuffer {
+	return &outputBuffer{maxHead: maxHead, maxTail: maxTail}
+}
+
+func (b *outputBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := b.maxHead - len(b.head); room > 0 {
+		k := min(room, len(p))
+		b.head = append(b.head, p[:k]...)
+		p = p[k:]
 	}
-	remain := w.max - w.n
-	if len(p) > remain {
-		_, _ = w.buf.Write(p[:remain])
-		w.n = w.max
-		return len(p), nil
+	if len(p) >= b.maxTail {
+		b.dropped += int64(len(b.tail)) + int64(len(p)-b.maxTail)
+		b.tail = append(b.tail[:0], p[len(p)-b.maxTail:]...)
+		b.pos = 0
+		return n, nil
 	}
-	n, err := w.buf.Write(p)
-	w.n += n
-	return n, err
+	if room := b.maxTail - len(b.tail); room > 0 {
+		k := min(room, len(p))
+		b.tail = append(b.tail, p[:k]...)
+		p = p[k:]
+	}
+	for len(p) > 0 {
+		k := copy(b.tail[b.pos:], p)
+		b.dropped += int64(k)
+		b.pos = (b.pos + k) % b.maxTail
+		p = p[k:]
+	}
+	return n, nil
+}
+
+// String returns head and tail, with a marker where bytes were discarded. The
+// oldest tail line is dropped when partial, so a cut never starts mid-line.
+func (b *outputBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	tail := append(append(make([]byte, 0, len(b.tail)), b.tail[b.pos:]...), b.tail[:b.pos]...)
+	if b.dropped == 0 {
+		return string(b.head) + string(tail)
+	}
+	if i := bytes.IndexByte(tail, '\n'); i >= 0 && i < len(tail)-1 {
+		tail = tail[i+1:]
+	}
+	if len(b.head) == 0 {
+		return string(tail)
+	}
+	return fmt.Sprintf("%s\n…[%d bytes omitted]…\n%s", b.head, b.dropped, tail)
 }
 
 // Ensure we don't leave zombies: on process exit Wait is called in Start.

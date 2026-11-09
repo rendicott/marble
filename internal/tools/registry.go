@@ -21,6 +21,7 @@ import (
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/peerhub"
 	"github.com/rendicott/marble/internal/shellpolicy"
+	"github.com/rendicott/marble/internal/watch"
 )
 
 // Attachment is emitted for UI rendering (attach_file / message_attach / attach_from_url).
@@ -95,6 +96,7 @@ type Registry struct {
 	BG     *bgtask.Manager
 	Cont   *continuation.Manager
 	Cron   *cron.Manager
+	Watch  *watch.Manager
 	MCP    *mcp.Manager
 	Agents *agentproc.Manager
 
@@ -224,6 +226,8 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 		out, err = r.checkBG(argsJSON, tc)
 	case "schedule_continuation":
 		out, err = r.scheduleContinuation(argsJSON, tc)
+	case "watch":
+		out, err = r.watchTool(argsJSON, tc)
 	case "cron_list":
 		out, err = r.cronList(argsJSON)
 	case "cron_get":

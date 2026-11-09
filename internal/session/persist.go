@@ -46,6 +46,15 @@ func (r *Registry) syncSessionRow(s *Session) {
 	_ = r.sqldb.UpsertSession(row)
 }
 
+// LogHarnessEvent records a harness-originated event against a session by id.
+func (r *Registry) LogHarnessEvent(sessionID, kind, content string) {
+	s, err := r.EnsureLoaded(sessionID)
+	if err != nil {
+		return
+	}
+	r.logEvent(s, kind, "system", content, "", "", "", nil, nil, nil, nil, nil, "", "")
+}
+
 func (r *Registry) logEvent(s *Session, kind, role, content, toolName, toolCallID, toolArgs string, usageIn, usageOut, estIn, estOut, latency *int, finish, errStr string) {
 	r.logEventMeta(s, kind, role, content, toolName, toolCallID, toolArgs, usageIn, usageOut, estIn, estOut, latency, finish, errStr, "")
 }

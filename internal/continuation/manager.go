@@ -24,7 +24,18 @@ type Job struct {
 	Reason  string     `json:"reason,omitempty"`
 	// Outcome after firing or cancelling: started | dropped | cancelled (+ detail).
 	Outcome string `json:"outcome,omitempty"`
+	// Source says who scheduled this job: agent | watch | watch_boot (ADR-0041).
+	Source string `json:"source,omitempty"`
+	// WatchID links watch and watch_boot jobs to their watch_jobs row.
+	WatchID string `json:"watch_id,omitempty"`
 }
+
+// Job sources (ADR-0041).
+const (
+	SourceAgent     = "agent"
+	SourceWatch     = "watch"
+	SourceWatchBoot = "watch_boot"
+)
 
 // FireFunc is invoked when a job should run (session may be busy — caller handles
 // and reports the result with SetOutcome).
@@ -91,6 +102,22 @@ func (m *Manager) Stop() {
 
 // Schedule creates a job. Requires delaySec > 0 and/or waitTask.
 func (m *Manager) Schedule(sessionID, prompt string, delaySec int, waitTask, label string) (*Job, error) {
+	return m.schedule(sessionID, prompt, delaySec, waitTask, label, SourceAgent, "")
+}
+
+// ScheduleWatch is Schedule for a watch_jobs row: the fire path reads source and
+// watchID to finalize the row and render the verdict (ADR-0041 R1).
+func (m *Manager) ScheduleWatch(sessionID, prompt string, delaySec int, waitTask, label, source, watchID string) (*Job, error) {
+	if source != SourceWatch && source != SourceWatchBoot {
+		return nil, fmt.Errorf("invalid watch source %q", source)
+	}
+	if watchID == "" {
+		return nil, fmt.Errorf("watch id is required")
+	}
+	return m.schedule(sessionID, prompt, delaySec, waitTask, label, source, watchID)
+}
+
+func (m *Manager) schedule(sessionID, prompt string, delaySec int, waitTask, label, source, watchID string) (*Job, error) {
 	prompt = trim(prompt)
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
@@ -117,6 +144,8 @@ func (m *Manager) Schedule(sessionID, prompt string, delaySec int, waitTask, lab
 		FireAt:    fireAt,
 		WaitTask:  waitTask,
 		CreatedAt: time.Now(),
+		Source:    source,
+		WatchID:   watchID,
 	}
 	m.mu.Lock()
 	m.jobs[id] = j
@@ -145,6 +174,23 @@ func (m *Manager) CancelSession(sessionID string) {
 	if changed {
 		m.notify(sessionID)
 	}
+}
+
+// Cancel cancels one pending job. It reports whether the job was still pending;
+// false means it already fired, was already cancelled, or does not exist.
+func (m *Manager) Cancel(jobID string) bool {
+	m.mu.Lock()
+	j, ok := m.jobs[jobID]
+	if !ok || j.Fired || j.Cancelled {
+		m.mu.Unlock()
+		return false
+	}
+	j.Cancelled = true
+	j.Outcome = "cancelled"
+	sid := j.SessionID
+	m.mu.Unlock()
+	m.notify(sid)
+	return true
 }
 
 // List pending/recent jobs for a session.

@@ -16,7 +16,7 @@ type TurnEvent struct {
 	Workspace      string    `json:"workspace"`
 	ModelID        string    `json:"model_id"`
 	TurnID         string    `json:"turn_id"`
-	Kind           string    `json:"kind"` // complete | error | stop | cron | continuation
+	Kind           string    `json:"kind"` // complete | error | stop | cron | continuation | watch_undelivered
 	Message        string    `json:"message"`
 	Preview        string    `json:"preview"`
 	DeepLink       string    `json:"deep_link"`
@@ -25,7 +25,7 @@ type TurnEvent struct {
 }
 
 // KnownKinds is the allow-list used by filters and the Settings UI.
-var KnownKinds = []string{"complete", "error", "stop", "cron", "continuation"}
+var KnownKinds = []string{"complete", "error", "stop", "cron", "continuation", "watch_undelivered"}
 
 const previewMaxRunes = 160
 

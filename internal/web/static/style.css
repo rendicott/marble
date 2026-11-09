@@ -3602,6 +3602,13 @@ button.tip {
 .ref-chip.tone-muted {
   color: var(--muted);
 }
+.ref-chip.struck {
+  text-decoration: line-through;
+}
+.ref-chip-x {
+  margin-left: 6px;
+  cursor: pointer;
+}
 .ref-chip.copied {
   outline: 2px solid var(--ok);
 }

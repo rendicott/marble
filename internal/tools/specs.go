@@ -143,6 +143,26 @@ func allSpecs() []model.ToolSpec {
 				},
 				"required": []string{"prompt"},
 			}),
+		spec("watch", "Run a command that finishes LATER and get woken when it does. Use for anything "+
+			"whose outcome you will need after this turn: CI builds, deploys, long test suites, migrations, "+
+			"backups, remote copies. Creates a durable obligation the harness holds on your behalf; do not "+
+			"report the work as done before it fires. The verdict is the command's exit code: use invocations "+
+			"that set it (gh run watch --exit-status, kubectl rollout status). Do NOT use shell_execute + hope "+
+			"for this. action=create|status|list|cancel.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"action":       map[string]interface{}{"type": "string", "description": "create|status|list|cancel"},
+					"command":      map[string]interface{}{"type": "string", "description": "create: shell command, run via bgtask (policy-checked)"},
+					"label":        map[string]interface{}{"type": "string", "description": "create: short human label, e.g. 'CI v0.4.29'"},
+					"cwd":          map[string]interface{}{"type": "string", "description": "create: workspace-relative working directory"},
+					"prompt":       map[string]interface{}{"type": "string", "description": "create: optional extra instructions, appended after the generated verdict"},
+					"deadline_sec": map[string]interface{}{"type": "integer", "description": "create: default 3600, max 86400; on expiry the command is killed and you are woken"},
+					"id":           map[string]interface{}{"type": "string", "description": "status/cancel: watch id"},
+					"reason":       map[string]interface{}{"type": "string", "description": "cancel: required"},
+				},
+				"required": []string{"action"},
+			}),
 		spec("cron_list", "List durable cron jobs (recurring schedules). Optional filters: enabled_only, session_id.",
 			map[string]interface{}{
 				"type": "object",

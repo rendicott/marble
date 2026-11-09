@@ -1,4 +1,4 @@
-/* Live chips for continuations, background tasks and agent tasks.
+/* Live chips for continuations, background tasks, agent tasks and watches.
  *
  * Tool rows that scheduled/started something carry m.refs [{kind,id}]; they get a
  * chip that tracks it (countdown, running time, exit). Anything still pending also
@@ -75,7 +75,13 @@
   function lookup(kind, id) {
     if (!data) return null;
     const list =
-      kind === "continuation" ? data.continuations : kind === "bg_task" ? data.bg_tasks : data.agent_tasks;
+      kind === "continuation"
+        ? data.continuations
+        : kind === "bg_task"
+        ? data.bg_tasks
+        : kind === "watch"
+        ? data.watches
+        : data.agent_tasks;
     return (list || []).find((x) => x.id === id) || null;
   }
 
@@ -83,7 +89,8 @@
   function describe(kind, id) {
     const it = lookup(kind, id);
     if (!it) {
-      const what = kind === "continuation" ? "continuation" : kind === "bg_task" ? "bg task" : "agent task";
+      const what =
+        kind === "continuation" ? "continuation" : kind === "bg_task" ? "bg task" : kind === "watch" ? "watch" : "agent task";
       return data
         ? { text: `${what} ${id} · no longer tracked (harness restarted?)`, tone: "muted", title: id, active: false }
         : { text: `${what} ${id} · …`, tone: "muted", title: id, active: false };
@@ -110,6 +117,7 @@
       }
       return { text: `⏱ ${name} · ${when}`, tone: "pending", title, active: true };
     }
+    if (kind === "watch") return describeWatch(it, now);
     const started = Date.parse(it.started_at);
     const ended = it.ended_at ? Date.parse(it.ended_at) : NaN;
     const name = kind === "bg_task" ? it.label || "bg task" : it.format || "agent";
@@ -136,6 +144,45 @@
     return { text: `✗ ${name} ${it.id} · ${how}${dur}`, tone: "bad", title, active: false };
   }
 
+  function describeWatch(it, now) {
+    const name = it.label || it.id;
+    const title =
+      `watch ${it.id}\n${it.command}` +
+      (it.note ? `\nnote: ${it.note}` : "") +
+      (it.wake_outcome ? `\nwake: ${it.wake_outcome}` : "") +
+      (it.output_tail ? `\n--- output ---\n${it.output_tail}` : "");
+    const started = Date.parse(it.created_at);
+    if (it.status === "pending" || it.status === "running") {
+      const text = `⏱ watching ${name} · ${fmtDur(now - started)}`;
+      return { text, tone: "warn", title, active: true, cancellable: it.status === "running" };
+    }
+    const ended = Date.parse(it.ended_at);
+    const dur = !isNaN(ended) ? ` · ${fmtDur(ended - started)}` : "";
+    if ((it.wake_outcome || "").startsWith("undeliverable")) {
+      return { text: `⚠ ${name} · ${it.status}, session not woken${dur}`, tone: "warn", title, active: false };
+    }
+    if (it.status === "done") return { text: `✓ ${name} · exit 0${dur}`, tone: "ok", title, active: false };
+    if (it.end_reason === "cancelled") {
+      return { text: `${name} · cancelled${dur}`, tone: "muted", title, active: false, struck: true };
+    }
+    const how = it.end_reason === "exit_nonzero" ? `exit ${it.exit_code}` : (it.end_reason || it.status).replace(/_/g, " ");
+    return { text: `✗ ${name} · ${how}${dur}`, tone: "bad", title, active: false };
+  }
+
+  async function cancelWatch(id) {
+    if (!sessionId || !window.confirm("Cancel this watch? Its command will be killed.")) return;
+    const sid = sessionId;
+    try {
+      await fetch(`/api/sessions/${encodeURIComponent(sid)}/watches/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+    } catch {
+      /* offline: the next refresh shows the real state */
+    }
+    refresh(sid);
+  }
+
   function chipEl(kind, id) {
     const el = document.createElement("span");
     el.className = "ref-chip";
@@ -146,6 +193,10 @@
     const copy = (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (e.target.classList && e.target.classList.contains("ref-chip-x")) {
+        cancelWatch(id);
+        return;
+      }
       if (navigator.clipboard) navigator.clipboard.writeText(id).catch(() => {});
       el.classList.add("copied");
       setTimeout(() => el.classList.remove("copied"), 900);
@@ -162,7 +213,15 @@
     const d = describe(el.dataset.refKind, el.dataset.refId);
     el.textContent = d.text;
     el.title = d.title + "\n(click to copy id)";
-    el.className = "ref-chip tone-" + d.tone + (el.classList.contains("copied") ? " copied" : "");
+    el.className =
+      "ref-chip tone-" + d.tone + (el.classList.contains("copied") ? " copied" : "") + (d.struck ? " struck" : "");
+    if (d.cancellable) {
+      const x = document.createElement("span");
+      x.className = "ref-chip-x";
+      x.textContent = "✕";
+      x.title = "Cancel this watch";
+      el.appendChild(x);
+    }
     return d.active;
   }
 
@@ -187,6 +246,9 @@
     });
     (data.bg_tasks || []).forEach((t) => t.status === "running" && out.push(["bg_task", t.id]));
     (data.agent_tasks || []).forEach((t) => t.status === "running" && out.push(["agent_task", t.id]));
+    (data.watches || []).forEach((w) => {
+      if (w.status === "running" || w.status === "pending") out.push(["watch", w.id]);
+    });
     return out;
   }
 

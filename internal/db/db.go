@@ -27,7 +27,8 @@ import (
 // v12: computer_grants (ADR-0036 peer auto-enrollment)
 // v13: sessions.agent_cwd (project directory for routed subprocess turns)
 // v14: session_search + session_search_terms (ADR-0037)
-const CurrentSchemaVersion = 14
+// v15: watch_jobs (ADR-0041)
+const CurrentSchemaVersion = 15
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -189,6 +190,10 @@ func (d *DB) upgradeSchema(fromVer int) error {
 			}
 		case 13:
 			if err := d.migrateV13toV14(); err != nil {
+				return err
+			}
+		case 14:
+			if err := d.migrateV14toV15(); err != nil {
 				return err
 			}
 		default:

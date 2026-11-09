@@ -10,7 +10,7 @@ import (
 // TaskRef points a transcript row at the continuation or task its tool call created,
 // so the UI can render a live chip (countdown, running/exited) next to it.
 type TaskRef struct {
-	Kind string `json:"kind"` // continuation | bg_task | agent_task
+	Kind string `json:"kind"` // continuation | bg_task | agent_task | watch
 	ID   string `json:"id"`
 }
 
@@ -34,6 +34,11 @@ func taskRefsFromResult(toolName, result string) []TaskRef {
 	case "start_background_task":
 		if id := str("task_id"); id != "" {
 			return []TaskRef{{Kind: "bg_task", ID: id}}
+		}
+	case "watch":
+		// Only create carries action; status/list/cancel created nothing.
+		if id := str("watch_id"); id != "" && str("action") == "create" {
+			return []TaskRef{{Kind: "watch", ID: id}}
 		}
 	case "call_agent_process":
 		// Background start returns agent_task_id + poll; a poll (taskView) has no poll key.

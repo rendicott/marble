@@ -1,10 +1,14 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/rendicott/marble/internal/continuation"
+	"github.com/rendicott/marble/internal/watch"
 )
 
 // pendingView is GET /api/sessions/{id}/pending: what this session is waiting on.
@@ -15,6 +19,7 @@ type pendingView struct {
 	Continuations []pendingCont      `json:"continuations"`
 	BgTasks       []pendingTask      `json:"bg_tasks"`
 	AgentTasks    []pendingAgentTask `json:"agent_tasks"`
+	Watches       []watch.View       `json:"watches"`
 }
 
 type pendingCont struct {
@@ -70,12 +75,25 @@ func (s *Server) pendingFor(id string) pendingView {
 		Continuations: []pendingCont{},
 		BgTasks:       []pendingTask{},
 		AgentTasks:    []pendingAgentTask{},
+		Watches:       []watch.View{},
 	}
 	if s.Tools == nil {
 		return out
 	}
+	// A watch's own continuation and task are shown as its one chip.
+	watchTasks := map[string]bool{}
+	if views, err := s.Tools.Watch.ListWithTails(id); err == nil {
+		out.Watches = append(out.Watches, views...)
+		sort.SliceStable(out.Watches, func(a, b int) bool { return out.Watches[a].CreatedAt < out.Watches[b].CreatedAt })
+		for _, v := range views {
+			watchTasks[v.TaskID] = true
+		}
+	}
 	if s.Tools.Cont != nil {
 		for _, j := range s.Tools.Cont.List(id) {
+			if j.Source == continuation.SourceWatch || j.Source == continuation.SourceWatchBoot {
+				continue
+			}
 			st := "pending"
 			switch {
 			case j.Cancelled:
@@ -95,6 +113,9 @@ func (s *Server) pendingFor(id string) pendingView {
 	}
 	if s.Tools.BG != nil {
 		for _, t := range s.Tools.BG.List(id) {
+			if watchTasks[t.ID] {
+				continue
+			}
 			out.BgTasks = append(out.BgTasks, pendingTask{
 				ID: t.ID, Label: t.Label, Command: preview(t.Command, 160), Status: string(t.Status),
 				StartedAt: t.StartedAt, EndedAt: t.EndedAt, ExitCode: t.ExitCode, Error: t.Error,
@@ -116,6 +137,34 @@ func (s *Server) pendingFor(id string) pendingView {
 		sort.Slice(out.AgentTasks, func(a, b int) bool { return out.AgentTasks[a].StartedAt.Before(out.AgentTasks[b].StartedAt) })
 	}
 	return out
+}
+
+// handleWatchCancel is the UI's ✕ on a watch chip: unlike the agent's own cancel,
+// it arrives from outside any turn and wakes the session.
+func (s *Server) handleWatchCancel(w http.ResponseWriter, r *http.Request, sessionID, watchID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.Tools == nil || s.Tools.Watch == nil {
+		http.Error(w, "watch not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if strings.TrimSpace(body.Reason) == "" {
+		body.Reason = "cancelled by the operator from the UI"
+	}
+	row, won, err := s.Tools.Watch.Cancel(sessionID, watchID, body.Reason, true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id": row.ID, "status": row.Status, "end_reason": row.EndReason, "cancelled": won,
+	})
 }
 
 func preview(s string, n int) string {

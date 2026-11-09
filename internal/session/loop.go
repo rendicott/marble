@@ -438,6 +438,12 @@ func (r *Runner) runTurn(s *Session) {
 					". Repeating them yields nothing new; change the arguments or the tool, or act on what you already have.",
 			)
 		}
+		// ADR-0041 (b): keep a live watch in view. Not Runner.advisory, which the model never sees.
+		if r.Tools != nil {
+			if line := r.Tools.Watch.AdvisoryLine(s.ID); line != "" {
+				advisories = append(advisories, line)
+			}
+		}
 		// ADR-0022 P3: soft checklist advisory mid long turn
 		if toolRounds >= soft/2 && soft > 0 && (tc.Thrash == nil || !tc.Thrash.ChecklistHint) {
 			advisories = append(advisories,
@@ -786,6 +792,15 @@ func (r *Runner) runTurn(s *Session) {
 			r.Reg.syncSessionRow(s)
 		}
 		s.publish(Event{Type: "message", Message: &am})
+		// ADR-0041 (c): a status note for the operator; ending with a live watch is correct.
+		if r.Tools != nil {
+			if note := r.Tools.Watch.TurnEndNote(s.ID); note != "" {
+				r.advisory(s, note)
+				if r.Reg != nil {
+					r.Reg.logEvent(s, "watch_open_at_turn_end", "system", note, "", "", "", nil, nil, nil, nil, nil, "", "")
+				}
+			}
+		}
 		// endTurn defer finalizes as complete
 		return
 	}
