@@ -91,6 +91,12 @@ type reverseOp struct {
 	existed bool
 }
 
+// normalizedHit records a patch hunk that matched below the exact tier.
+type normalizedHit struct {
+	path string
+	tier matchTier
+}
+
 func (r *Registry) applyPatch(argsJSON string, tc *TurnContext) (string, error) {
 	var a applyPatchArgs
 	if err := parseArgs(argsJSON, &a); err != nil {
@@ -102,6 +108,7 @@ func (r *Registry) applyPatch(argsJSON string, tc *TurnContext) (string, error) 
 
 	var applied []reverseOp
 	var diffs []string
+	var normalized []normalizedHit
 	rollback := func() {
 		for i := len(applied) - 1; i >= 0; i-- {
 			op := applied[i]
@@ -170,7 +177,7 @@ func (r *Registry) applyPatch(argsJSON string, tc *TurnContext) (string, error) 
 				}
 				if tier != tierExact {
 					diffs = append(diffs, fmt.Sprintf("(edit[%d] matched after %s normalization)\n", i, tier))
-					log.Printf("tools: edit %s matched after %s normalization", e.Path, tier)
+					normalized = append(normalized, normalizedHit{path: e.Path, tier: tier})
 				}
 			} else if e.Content != "" {
 				next = e.Content
@@ -205,6 +212,16 @@ func (r *Registry) applyPatch(argsJSON string, tc *TurnContext) (string, error) 
 	msg := fmt.Sprintf("apply_patch ok: %d edit(s)", len(a.Edits))
 	if len(diffs) > 0 {
 		msg += "\n" + strings.Join(diffs, "")
+	}
+	// Logged only now, and once per (path, tier): a rolled-back patch landed
+	// nothing, and per-hunk lines would inflate the ADR-0040 tier rates.
+	seen := make(map[normalizedHit]bool, len(normalized))
+	for _, n := range normalized {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		log.Printf("tools: edit %s matched after %s normalization", n.path, n.tier)
 	}
 	return msg, nil
 }
