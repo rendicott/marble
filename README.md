@@ -4,9 +4,11 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.30
+## What's new in v0.4.31
 
 Highlights since **[v0.4.29](https://github.com/rendicott/marble/releases/tag/v0.4.29)** (schema **v15**, additive: `watch_jobs`). Design: [ADR-0040](adr/0040-tool-result-continuation-and-edit-normalization.md), [ADR-0041](adr/0041-async-watch-obligations.md).
+
+> `v0.4.30` published no binaries: its release build failed on a flaky test — `TestInstantExitStillWakesOnce` armed ten `exit 0` watches back to back against the background-task cap of 8 per session, and the CI runner did not reap them fast enough. The test now arms six. `v0.4.31` carries the same content plus that repair, so install `v0.4.31`.
 
 ### A command that finishes later now wakes you ([ADR-0041](adr/0041-async-watch-obligations.md))
 `shell_execute` + hope was the old way to run a CI build, a deploy, or a long migration whose outcome is only needed in the *next* turn. If the agent forgot to schedule a continuation, the work finished into silence. There is now one tool for it: `watch`, with `action=create|status|list|cancel`.
