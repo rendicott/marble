@@ -275,3 +275,32 @@ func (d *DB) ListLiveWatchJobs(sessionID string) ([]WatchJobRow, error) {
 func (d *DB) ListUnsettledWatchJobs() ([]WatchJobRow, error) {
 	return d.queryWatchJobs(`WHERE status IN ('done', 'failed', 'lost', 'expired') AND wake_outcome IS NULL ORDER BY created_at, id`)
 }
+
+// CountWatchJobsByStatus returns one count per status present in watch_jobs, plus
+// the "total" key. Aggregated in SQL: /api/health polls it, so it must not walk rows.
+func (d *DB) CountWatchJobsByStatus() (map[string]int, error) {
+	if !d.Writable() {
+		return nil, fmt.Errorf("database not writable")
+	}
+	rows, err := d.SQL.Query(`SELECT status, COUNT(*) FROM watch_jobs GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	total := 0
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		out[status] = n
+		total += n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out["total"] = total
+	return out, nil
+}

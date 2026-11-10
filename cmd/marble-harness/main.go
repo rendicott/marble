@@ -788,6 +788,7 @@ func main() {
 	srv.Mpub = mpubStore
 	srv.PeerHub = peerHub
 	srv.Cron = cronMgr
+	srv.Watch = watchMgr
 	srv.Auth = authMgr
 	srv.Clerk = clerkMgr
 	if authMgr != nil {

@@ -102,6 +102,36 @@ func (m *Manager) Stop() {
 	m.stopOnce.Do(func() { close(m.stop) })
 }
 
+// Health reports watch state for GET /api/health. Counts come from one grouped
+// query, so a probe never walks the table. watch_count is the live set
+// (pending+running) — the same set /pending shows as chips.
+func (m *Manager) Health() map[string]interface{} {
+	if m == nil {
+		return map[string]interface{}{"watch_enabled": false, "watch_count": 0}
+	}
+	out := map[string]interface{}{
+		"watch_enabled": true,
+		"watch_stopped": m.stopped.Load(),
+	}
+	if m.db == nil || !m.db.Writable() {
+		out["watch_db_writable"] = false
+		out["watch_count"] = 0
+		return out
+	}
+	out["watch_db_writable"] = true
+	byStatus, err := m.db.CountWatchJobsByStatus()
+	if err != nil {
+		out["watch_error"] = err.Error()
+		out["watch_count"] = 0
+		return out
+	}
+	live := byStatus[db.WatchPending] + byStatus[db.WatchRunning]
+	out["watch_count"] = live
+	out["watch_total"] = byStatus["total"]
+	out["watch_by_status"] = byStatus
+	return out
+}
+
 func (m *Manager) notify(sessionID string) {
 	if m.Notify != nil {
 		m.Notify(sessionID)

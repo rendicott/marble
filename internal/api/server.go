@@ -25,6 +25,7 @@ import (
 	"github.com/rendicott/marble/internal/sink"
 	"github.com/rendicott/marble/internal/tools"
 	"github.com/rendicott/marble/internal/tts"
+	"github.com/rendicott/marble/internal/watch"
 	"github.com/rendicott/marble/internal/web"
 	"github.com/rendicott/marble/internal/workspacefs"
 )
@@ -43,6 +44,7 @@ type Server struct {
 	Tools    *tools.Registry
 	Mpub     *mpub.Store
 	Cron     *cron.Manager
+	Watch    *watch.Manager
 	Auth     *auth.Manager
 	PeerHub  *peerhub.Hub
 	Clerk    *clerk.Manager
@@ -233,6 +235,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.Mpub != nil {
 		out["mpub_count"] = s.Mpub.Count()
 		out["mpub_path"] = "/mpub"
+	}
+	if s.Watch != nil {
+		for k, v := range s.Watch.Health() {
+			out[k] = v
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
