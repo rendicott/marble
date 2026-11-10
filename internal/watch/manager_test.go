@@ -752,10 +752,15 @@ func TestDeadlineExpiresAndKills(t *testing.T) {
 }
 
 // A command that exits at once must not lose its wake to the arm window.
+//
+// The count stays under bgtask's per-session cap (8). Ten back-to-back creates
+// outran the reaper on a loaded CI runner and tripped "max concurrent
+// background tasks" before the earlier `exit 0` children had been reaped.
 func TestInstantExitStillWakesOnce(t *testing.T) {
 	f := newFixture(t)
-	ids := make([]string, 0, 10)
-	for i := 0; i < 10; i++ {
+	const n = 6
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
 		ids = append(ids, f.create("s", "exit 0", 60).ID)
 	}
 	for _, id := range ids {
