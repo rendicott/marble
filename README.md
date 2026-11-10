@@ -4,7 +4,61 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.29
+## What's new in v0.4.30
+
+Highlights since **[v0.4.29](https://github.com/rendicott/marble/releases/tag/v0.4.29)** (schema **v15**, additive: `watch_jobs`). Design: [ADR-0040](adr/0040-tool-result-continuation-and-edit-normalization.md), [ADR-0041](adr/0041-async-watch-obligations.md).
+
+### A command that finishes later now wakes you ([ADR-0041](adr/0041-async-watch-obligations.md))
+`shell_execute` + hope was the old way to run a CI build, a deploy, or a long migration whose outcome is only needed in the *next* turn. If the agent forgot to schedule a continuation, the work finished into silence. There is now one tool for it: `watch`, with `action=create|status|list|cancel`.
+
+- **The verdict is the exit code.** `watch create` starts the command through the existing background-task path (policy-checked) and returns a watch id at once; you are woken when it exits. Use invocations that set a code: `gh run watch --exit-status`, `kubectl rollout status`. Default deadline 3600 s, max 86400 s; on expiry the command is killed and you are still woken.
+- **Durable, because the point is to outlive the turn.** New schema v15 `watch_jobs`. A restart is the normal way a harness dies, so on boot every `pending`/`running` row moves to `lost` with `end_reason=harness_crash` and the session is woken; on SIGTERM rows are marked `harness_shutdown` *before* tasks are killed, so a `terraform apply` cut in half is reported as interrupted, not failed. The prompt says which of the two happened.
+- **No watch may end silently.** Success, failure, expiry, cancellation by the agent, cancellation from the UI, and harness restart each produce a message. A closed session cannot receive one; that outcome is recorded as `undeliverable`, shown as a warning row, and mirrored to sinks as a new `watch_undelivered` kind.
+- **Refuses rather than pretending.** With an unwritable database `create` errors instead of arming a continuation that memory will not outlive.
+- **Four channels, only two load-bearing.** The tool description names the situations and the competitor it beats; a standing advisory line keeps an existing watch in view every turn while it is pending or running; a turn-end note and the sink event are operator-facing backstops.
+- **A chip, on the existing `Notify` plumbing.** `⏱ watching CI v0.4.29 · 1m32s ✕` sits beside continuation and background-task chips. The ✕ cancels from outside any turn and wakes the session; `status` returns elapsed time plus a live tail, so the operator and the agent read identical facts. `/api/sessions/{id}/pending` gains a `watches` list and `POST /api/sessions/{id}/watches/{watchID}/cancel` backs the ✕.
+
+### A truncated tool result can be resumed instead of re-read ([ADR-0040](adr/0040-tool-result-continuation-and-edit-normalization.md) D1)
+Results were cut at `--max-tool-result` (32 000 chars) with `…[truncated N of M chars]` and nothing else, so a big `shell_execute` log or `file_read` had to be fetched again from the top — paying the same tokens twice.
+
+- **The whole body spills, the head says where.** `.tool-results/<ts>-<tool>-<seq>.txt` in the workspace (inside the jail, readable by `file_read`), and a one-key-per-line marker: `spilled_path`, `spilled_bytes`, `next_offset`, `next_line`, `total_bytes`, plus a ready-made `resume:` call. `resume_mid_line: true` when a single enormous line left no clean break.
+- **`file_read` gained `byte_offset`.** Its `offset` is line-based, so the byte resume point the marker names was unreachable through the tool it named. `limit` still caps lines after it; a mid-rune offset is a typed error, not a corruption.
+- **Sub-cap results are byte-identical**, so the prompt prefix and cache key do not move.
+- **Bounded.** 24 h / 50 files / 100 MiB, swept at startup and after every spill, never evicting the file just handed out. MCP tools and `computer_exec` inherit the same treatment, since they pass through the same clamp.
+- **Scrubbed before the cut** — see the repairs below.
+
+### Edits that miss on typography now land, and every edit shows its diff ([ADR-0040](adr/0040-tool-result-continuation-and-edit-normalization.md) D2)
+A model pasting a curly quote into `old_string` used to get a bare "not found", then pay for a re-read and a second attempt. And `edit_file` answered `edited x.go (1 replacement(s))` — a claim, not evidence, so the model usually re-read to check.
+
+- **Exact first, untouched.** A hit is byte-exact and the file is written exactly as before.
+- **Only on a miss:** a glyph tier (curly quotes, en/em dashes, thin and no-break spaces, ellipsis), then a trimmed-line fallback that requires equal line counts. The result says which tier fired.
+- **Ambiguity is a refusal.** Two candidates produce an error naming each line with an excerpt, never a guess. `replace_all` works in the glyph tier and is refused where trimmed-line matching would make it meaningless. CRLF regions keep their CRLF.
+- **Read-before-edit is untouched and evaluated first.**
+- **A unified diff comes back instead of a claim** — 3 lines of context, real LCS, capped at 4 KiB with a note; past the cap the edit is still applied in full. `apply_patch` keeps its atomic rollback and the same ladder per hunk.
+
+### Coding agents use your login, not your key
+`call_agent_process` and routed preset turns inherited the harness environment, Settings → Secrets included. An injected `ANTHROPIC_API_KEY` flipped Claude Code to metered API billing — *"Credit balance is too low"* while the subscription sat unused — and xAI's CLI reads `XAI_API_KEY` while Marble exports `GROK_API_KEY`, so the name mismatch alone reported "Not signed in". Both faults were in the spawn env, not the CLIs.
+
+- **`env_mode: "subscription"` is the default.** Credential-shaped names (`*_API_KEY`, `*_AUTH_TOKEN`, `*_OAUTH_TOKEN`, `*_ACCESS_KEY_ID`, …) and endpoint overrides (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, …) are withheld, so the child uses its own login.
+- **`env_mode: "inherit"`** hands over the full env, so a child can bill a key on purpose. Set it per call or in `agent_process.json`; a per-call value wins. A key named in a driver's `env` applies in either mode.
+- **A typo is an error, never a silent inherit.** An unparseable value fails the tool path and degrades to `subscription` on the config path.
+- **Subscription credentials pass:** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) reaches the child — safe because the API key Claude Code would otherwise prefer is withheld.
+- Shells, background tasks and MCP stdio servers still get every secret, unchanged. Task polls now carry `env_mode`, so a run's policy is visible.
+
+### MCP servers stay alive past dial
+Stdio servers were spawned with the *dial* context, which both callers cancel the moment dialing returns. Every `tavily` and `jev` child was killed milliseconds after logging "connected", while the cached `tools/list` kept health green — the failure surfaced much later as `write |1: broken pipe`. Lifetime is now owned by `Close()` (which SIGTERMs the process group), and `Execute` self-heals: a dead pipe is detected, the server respawned from the last config, and the call retried once.
+
+### Smaller repairs
+- **`file_read` panicked on a byte offset at end-of-file** — index out of range, exactly where a spill marker points when the cut landed on the last byte. It is now an explicit "end of file, nothing to resume".
+- **Empty-file diffs invented a line.** A phantom empty line made an insert-only change report `@@ -1,1 +1,3 @@` instead of `@@ -0,0 +1,2 @@` and a trailing context line that did not exist. Insert-only and delete-only headers now count honestly.
+- **The spill sweep under-counted.** The file it was told to protect was dropped from the eviction queue *and* from the tally while still on disk, so the directory settled at 51 against a 50 cap.
+- **Secrets could land in a spill file in plaintext.** The scrub wrapped tool execution from the outside, while the spill was written inside it: the transcript showed `[secret:NAME]` and the disk showed the secret. Scrubbing now happens before the cut, so the head, the marker's byte counts and `spilled_bytes` all describe the same text.
+- **The release workflow** pinned its macOS job to a runner image GitHub has retired.
+
+### The instrument the rollout asked for
+ADR-0040's rollout step 5 wants spill frequency and edit-tier rates monitored; there was no counter of any kind. One line per spill (`tools: spill <tool> -> <path> (N bytes)`) and one per normalized edit (`tools: edit <path> matched after <tier> normalization`) — logged once per `(path, tier)` and only *after* a patch has fully succeeded, so a rolled-back patch counts nothing. Exact-tier edits stay silent.
+
+### Earlier — v0.4.29
 
 Highlights since **[v0.4.27](https://github.com/rendicott/marble/releases/tag/v0.4.27)** (no schema change). UI fix only — no design doc.
 
@@ -114,9 +168,7 @@ Highlights since **[v0.4.18](https://github.com/rendicott/marble/releases/tag/v0
 ### Secrets just work in the agent's shells
 Settings → Secrets were loaded into the harness only at startup, so a key added later never reached `shell_execute`. Agents then tried to source `$MEMORY/env` (blocked) and suggested pasting the key into chat or copying it into the repo.
 
-- **Live:** shells, background tasks and MCP servers get the current Settings → Secrets as environment variables each time they start. Adding or rotating a key needs no restart.
-- **Not for agent CLIs:** `call_agent_process` and routed preset turns withhold credential-shaped names (`*_API_KEY`, `*_AUTH_TOKEN`, `*_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`, …), so `claude`, `grok` and `opencode` use the operator's own logged-in subscription instead of metered API keys. A key in the env made Claude Code answer "Credit balance is too low" while the subscription sat unused. Subscription credentials are the exception and always pass: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) reaches the child, which is safe because the API key it would otherwise prefer is withheld.
-- **Opt back in when you mean it:** pass `env_mode: "inherit"` on `call_agent_process` (or `"env_mode": "inherit"` in `agent_process.json`) to hand a child the full env — Settings → Secrets included — so it can authenticate with an API key. A key named in a driver's `env` applies in either mode. `env_mode` defaults to `subscription`; an unparseable value is an error, never a silent inherit.
+- **Live:** shells, background tasks, agent subprocesses and MCP servers get the current Settings → Secrets as environment variables each time they start. Adding or rotating a key needs no restart.
 - **Masked:** secret values in any tool result (and in routed grok / claude output) are replaced with `[secret:NAME]` before they reach the transcript or the model. Agents can write scripts that use `$FOO_TOKEN` freely.
 - **Guided:** the system prompt and tool descriptions say to use `"$NAME"`. Sourcing `$MEMORY/env` is still blocked, and the error now lists the available names (never values).
 
