@@ -4,7 +4,20 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.31
+## What's new in v0.4.32
+
+Highlights since **[v0.4.31](https://github.com/rendicott/marble/releases/tag/v0.4.31)** (no schema change).
+
+### `/api/health` now reports watch state
+`v0.4.31` shipped durable watches but left them invisible to a probe: `/api/sessions/{id}/pending` knew every live watch while `/api/health` said nothing, so monitoring the exact feature just released was blind.
+
+- **One grouped query, never a table walk.** `watch_by_status` counts rows per status plus a `total`; `watch_count` is the live set (`pending` + `running`) — the same rows the `/pending` chips show; `watch_total` is all rows ever.
+- **State a probe can act on.** `watch_enabled`, `watch_stopped`, and `watch_db_writable`, so a read-only or stopped manager is visible rather than silent.
+- **A nil manager answers truthfully** (`watch_enabled: false, watch_count: 0`) instead of omitting the keys.
+
+Verified against a live harness on three durability paths — normal wake, graceful `harness_shutdown` on SIGTERM, and hard `harness_crash` where no shutdown handler runs and boot reconcile does the redelivery alone.
+
+### Earlier — v0.4.31
 
 Highlights since **[v0.4.29](https://github.com/rendicott/marble/releases/tag/v0.4.29)** (schema **v15**, additive: `watch_jobs`). Design: [ADR-0040](adr/0040-tool-result-continuation-and-edit-normalization.md), [ADR-0041](adr/0041-async-watch-obligations.md).
 
