@@ -175,6 +175,8 @@
     mcp_url: "HTTP/SSE MCP endpoint (no local process). Example: https://host/mcp",
     mcp_env:
       'Environment for the child process only (stdio). Use ${VAR} placeholders. Example: {"TAVILY_API_KEY":"${TAVILY_API_KEY}"}',
+    mcp_oauth:
+      'HTTP servers that need OAuth sign-in (no API key). Connect opens the provider\'s authorization page; tokens are kept in $MEMORY/mcp-oauth.json (0600) and refreshed automatically. If your browser is on another device and lands on an unreachable 127.0.0.1 page, paste that page\'s full URL back here. Optional mcp.json "auth": {"CLIENT_ID","CLIENT_SECRET","scopes"} overrides dynamic client registration.',
   };
 
   const els = {
@@ -2563,6 +2565,7 @@
           <div class="settings-field"><label>${labelWithTip("Args (JSON array)", "mcp_args")}</label><input type="text" data-mcp="args" data-name="${escapeAttr(name)}" value="${escapeAttr(JSON.stringify(sc.args || []))}" ${m.disabled ? "disabled" : ""} placeholder='["-y","tavily-mcp@latest"]'/></div>
           <div class="settings-field"><label>${labelWithTip("URL (HTTP MCP)", "mcp_url")}</label><input type="text" data-mcp="url" data-name="${escapeAttr(name)}" value="${escapeAttr(sc.url || "")}" ${m.disabled ? "disabled" : ""} placeholder="https://…/mcp"/></div>
           <div class="settings-field"><label>${labelWithTip("Env (JSON, ${VAR})", "mcp_env")}</label><textarea data-mcp="env" data-name="${escapeAttr(name)}" ${m.disabled ? "disabled" : ""}>${escapeHtml(JSON.stringify(sc.env || {}, null, 2))}</textarea></div>
+          ${kind === "http" ? mcpOAuthBlock(name, ok, h, (m.oauth || {})[name] || {}, m.disabled) : ""}
           <div class="mcp-actions">
             <button type="button" class="btn-sm danger" data-mcp-del="${escapeAttr(name)}" ${m.disabled ? "disabled" : ""}>Remove</button>
           </div>
@@ -2584,6 +2587,23 @@
           mcpDirty = true;
           setDirty(true);
         });
+      });
+      els.pane.querySelectorAll("[data-mcp-oauth-login]").forEach((btn) => {
+        btn.addEventListener("click", () =>
+          startMCPOAuth(btn.getAttribute("data-mcp-oauth-login"), btn)
+        );
+      });
+      els.pane.querySelectorAll("[data-mcp-oauth-logout]").forEach((btn) => {
+        btn.addEventListener("click", () =>
+          forgetMCPOAuth(btn.getAttribute("data-mcp-oauth-logout"), btn)
+        );
+      });
+      // Resume any login flow that is still pending (e.g. after re-opening the pane).
+      Object.entries(m.oauth || {}).forEach(([n, oa]) => {
+        if (oa && oa.login && oa.login.status === "pending" && oa.login.auth_url) {
+          showMCPOAuthFlow(n, oa.login);
+          pollMCPOAuth(n, oa.login.expires_at);
+        }
       });
       els.pane.querySelectorAll("[data-mcp-del]").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -2619,6 +2639,180 @@
     } catch (e) {
       els.pane.innerHTML = `<h3>MCP</h3><p class="hint">${escapeHtml(e.message)}</p>`;
     }
+  }
+
+  // --- MCP OAuth (HTTP servers) ---
+  const mcpOAuthPolls = {};
+
+  function mcpOAuthBlock(name, ok, h, oa, disabled) {
+    const label = `<label>${labelWithTip("OAuth", "mcp_oauth")}</label>`;
+    if (oa.static_auth_header) {
+      return `<div class="settings-field mcp-oauth">${label}<p class="hint">Static Authorization header configured — OAuth not used.</p></div>`;
+    }
+    const dis = disabled ? "disabled" : "";
+    const n = escapeAttr(name);
+    const btns = [];
+    // Show Connect whenever there is no token — even on an "ok" server. Some
+    // endpoints (Product Hunt) serve initialize/tools/list unauthenticated but
+    // 401 on tool calls, so a healthy connect does not mean signed in.
+    if (!oa.has_token) {
+      btns.push(`<button type="button" class="btn-sm" data-mcp-oauth-login="${n}" ${dis}>Connect (OAuth)</button>`);
+    }
+    if (oa.has_token) {
+      btns.push(`<button type="button" class="btn-sm" data-mcp-oauth-login="${n}" ${dis}>Reconnect</button>`);
+      btns.push(`<button type="button" class="btn-sm danger" data-mcp-oauth-logout="${n}" ${dis}>Forget token</button>`);
+    }
+    const pending = oa.login && oa.login.status === "pending";
+    if (!btns.length && !pending) return "";
+    let note = "";
+    if (oa.has_token) {
+      note = "Token stored";
+      if (oa.expires_at) note += " · expires " + new Date(oa.expires_at * 1000).toLocaleString();
+      if (oa.can_refresh) note += " · auto-refresh";
+    } else if (h.auth_required) {
+      note = "This server requires OAuth sign-in.";
+    } else if (ok) {
+      note = "Connected without a token — tool calls will fail until you sign in.";
+    } else if (oa.login && oa.login.status === "error" && oa.login.error) {
+      note = "Last sign-in failed: " + oa.login.error;
+    }
+    return `<div class="settings-field mcp-oauth">${label}${
+      note ? `<p class="hint">${escapeHtml(note)}</p>` : ""
+    }<div class="mcp-actions">${btns.join("")}</div><div class="mcp-oauth-flow" data-oauth-flow="${n}"></div></div>`;
+  }
+
+  function mcpOAuthFlowEl(name) {
+    return Array.from(els.pane.querySelectorAll("[data-oauth-flow]")).find(
+      (el) => el.getAttribute("data-oauth-flow") === name
+    );
+  }
+
+  function mcpOAuthMessage(name, text) {
+    const box = mcpOAuthFlowEl(name);
+    if (!box) return;
+    let msg = box.querySelector("[data-oauth-msg]");
+    if (!msg) {
+      msg = document.createElement("p");
+      msg.className = "hint";
+      msg.setAttribute("data-oauth-msg", "");
+      box.appendChild(msg);
+    }
+    msg.textContent = text;
+  }
+
+  function showMCPOAuthFlow(name, st) {
+    const box = mcpOAuthFlowEl(name);
+    if (!box || !st || !st.auth_url) return;
+    if (box.getAttribute("data-auth-url") === st.auth_url) return;
+    box.setAttribute("data-auth-url", st.auth_url);
+    box.innerHTML = `<p class="hint">1. <a href="${escapeAttr(st.auth_url)}" target="_blank" rel="noopener noreferrer">Open the authorization page</a> and approve access (link expires in ~5 min).</p>
+      <div class="settings-field"><input type="text" readonly data-oauth-url value="${escapeAttr(st.auth_url)}"/></div>
+      <p class="hint">2. If the browser then shows an unreachable <code>127.0.0.1</code> page (e.g. on a phone), copy that page's full URL and paste it here:</p>
+      <div class="settings-field"><input type="text" data-oauth-paste placeholder="http://127.0.0.1:…/callback?code=…&amp;state=…" autocomplete="off" spellcheck="false"/></div>
+      <div class="mcp-actions"><button type="button" class="btn-sm" data-oauth-submit>Submit redirect URL</button></div>
+      <p class="hint" data-oauth-msg>Waiting for authorization…</p>`;
+    const urlIn = box.querySelector("[data-oauth-url]");
+    if (urlIn) urlIn.addEventListener("focus", () => urlIn.select());
+    const submit = box.querySelector("[data-oauth-submit]");
+    const paste = box.querySelector("[data-oauth-paste]");
+    if (submit && paste) {
+      submit.addEventListener("click", async () => {
+        const v = paste.value.trim();
+        if (!v) return;
+        submit.disabled = true;
+        try {
+          await api("/api/settings/mcp/login", {
+            method: "POST",
+            body: JSON.stringify({ name, redirect_url: v }),
+          });
+          mcpOAuthMessage(name, "Code accepted — connecting…");
+          pollMCPOAuth(name, st.expires_at);
+        } catch (e) {
+          submit.disabled = false;
+          mcpOAuthMessage(name, "Error: " + (e.message || String(e)));
+        }
+      });
+    }
+  }
+
+  function pollMCPOAuth(name, expiresAt) {
+    if (mcpOAuthPolls[name]) return;
+    const stopAt = (expiresAt ? expiresAt * 1000 : Date.now() + 5 * 60 * 1000) + 30000;
+    const tick = async () => {
+      if (section !== "mcp" || Date.now() > stopAt) {
+        delete mcpOAuthPolls[name];
+        return;
+      }
+      let st;
+      try {
+        st = await api("/api/settings/mcp/login?name=" + encodeURIComponent(name));
+      } catch (e) {
+        delete mcpOAuthPolls[name];
+        mcpOAuthMessage(name, "Error: " + (e.message || String(e)));
+        return;
+      }
+      if (st.status === "done") {
+        delete mcpOAuthPolls[name];
+        await renderMCP();
+        return;
+      }
+      if (st.status === "error") {
+        delete mcpOAuthPolls[name];
+        mcpOAuthMessage(name, "Sign-in failed: " + (st.error || "unknown error"));
+        return;
+      }
+      mcpOAuthPolls[name] = setTimeout(tick, 2000);
+    };
+    mcpOAuthPolls[name] = setTimeout(tick, 2000);
+  }
+
+  async function startMCPOAuth(name, btn) {
+    if (mcpDirty) {
+      alert("Save MCP changes first, then connect.");
+      return;
+    }
+    btn.disabled = true;
+    let st = null;
+    try {
+      st = await api("/api/settings/mcp/login", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+    } catch (e) {
+      // 409 (already pending) or a failed start: read the flow's current state.
+      try {
+        st = await api("/api/settings/mcp/login?name=" + encodeURIComponent(name));
+      } catch (_) {
+        st = null;
+      }
+      if (!st || st.status !== "pending") {
+        btn.disabled = false;
+        mcpOAuthMessage(
+          name,
+          "Error: " + ((st && st.error) || e.message || String(e))
+        );
+        return;
+      }
+    }
+    btn.disabled = false;
+    showMCPOAuthFlow(name, st);
+    pollMCPOAuth(name, st.expires_at);
+  }
+
+  async function forgetMCPOAuth(name, btn) {
+    if (!confirm(`Forget the stored OAuth token for "${name}"?`)) return;
+    btn.disabled = true;
+    try {
+      await api("/api/settings/mcp/logout", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+    } catch (e) {
+      btn.disabled = false;
+      alert(e.message || String(e));
+      return;
+    }
+    await renderMCP();
   }
 
   function applyMCPField(el) {

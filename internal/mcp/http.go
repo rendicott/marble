@@ -27,10 +27,18 @@ type httpSession struct {
 	nextID  int64
 	// session id from server if provided
 	sessionID string
+	// auth supplies OAuth bearer tokens (nil: static headers only)
+	auth *serverAuth
 }
 
-// ConnectHTTP initializes an HTTP MCP session.
+// ConnectHTTP initializes an HTTP MCP session using static headers only.
 func ConnectHTTP(ctx context.Context, name string, sc ServerConfig, timeout time.Duration) (Session, error) {
+	return connectHTTP(ctx, name, sc, timeout, nil)
+}
+
+// connectHTTP initializes an HTTP MCP session; auth (optional) adds OAuth bearer
+// tokens with refresh-on-401.
+func connectHTTP(ctx context.Context, name string, sc ServerConfig, timeout time.Duration, auth *serverAuth) (Session, error) {
 	if sc.URL == "" {
 		return nil, fmt.Errorf("http server %q: url required", name)
 	}
@@ -43,6 +51,7 @@ func ConnectHTTP(ctx context.Context, name string, sc ServerConfig, timeout time
 			Timeout: to + 5*time.Second,
 		},
 		timeout: to,
+		auth:    auth,
 	}
 	initCtx, cancel := context.WithTimeout(ctx, to)
 	defer cancel()
@@ -83,26 +92,11 @@ func (s *httpSession) call(ctx context.Context, method string, params, result in
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if s.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", s.sessionID)
-	}
-	for k, v := range s.headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := s.client.Do(req)
+	resp, err := s.post(ctx, raw)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-		s.sessionID = sid
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("http %d: %s", resp.StatusCode, string(b))
@@ -147,25 +141,60 @@ func (s *httpSession) notify(ctx context.Context, method string, params interfac
 		"params":  params,
 	}
 	raw, _ := json.Marshal(reqBody)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if s.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", s.sessionID)
-	}
-	for k, v := range s.headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := s.client.Do(req)
+	resp, err := s.post(ctx, raw)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// post sends one JSON-RPC body. With OAuth, it attaches the stored bearer token;
+// on 401 it refreshes (or picks up a newer token) once and retries, and otherwise
+// returns *AuthRequiredError.
+func (s *httpSession) post(ctx context.Context, raw []byte) (*http.Response, error) {
+	bearer := ""
+	if s.auth != nil {
+		bearer = s.auth.bearer(ctx)
+	}
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(raw))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if s.sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", s.sessionID)
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		for k, v := range s.headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+			s.sessionID = sid
+		}
+		if resp.StatusCode != http.StatusUnauthorized || s.auth == nil {
+			return resp, nil
+		}
+		www := resp.Header.Get("WWW-Authenticate")
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		resp.Body.Close()
+		if attempt == 0 {
+			if nb, ok := s.auth.onUnauthorized(ctx, bearer); ok {
+				bearer = nb
+				continue
+			}
+		}
+		return nil, s.auth.authRequired(www)
+	}
 }
 
 func parseSSEJSONRPC(body []byte, wantID int64) (json.RawMessage, *rpcError, error) {

@@ -34,6 +34,9 @@ type ServerStatus struct {
 	MarbleNames []string `json:"marble_names,omitempty"` // mcp_<server>_<tool> as model sees them
 	Resources   int      `json:"resources"`
 	Prompts     int      `json:"prompts"`
+	// AuthRequired: HTTP server answered 401 and no usable OAuth token exists.
+	AuthRequired bool   `json:"auth_required,omitempty"`
+	AuthURL      string `json:"auth_url,omitempty"` // pending login URL, if any
 }
 
 // Manager holds process-global MCP connections and catalogs.
@@ -48,6 +51,7 @@ type Manager struct {
 	timeout   time.Duration
 	disabled  bool
 	cfg       FileConfig // last known config, for self-heal respawn
+	oauth     *oauthCoordinator
 }
 
 // NewManager creates an empty manager.
@@ -60,6 +64,7 @@ func NewManager(timeout time.Duration, disabled bool) *Manager {
 		toolIndex: make(map[string]ToolDef),
 		timeout:   timeout,
 		disabled:  disabled,
+		oauth:     newOAuthCoordinator(),
 	}
 }
 
@@ -71,84 +76,147 @@ func (m *Manager) Start(ctx context.Context, fc FileConfig) {
 		m.mu.Unlock()
 		return
 	}
+	m.mu.Lock()
+	m.cfg = fc
+	m.mu.Unlock()
 	for name, sc := range fc.MCPServers {
 		if !sc.IsEnabled() {
 			continue
 		}
+		m.startOne(ctx, name, sc)
+	}
+}
+
+// dial opens a session for one server config.
+func (m *Manager) dial(ctx context.Context, name string, sc ServerConfig) (Session, error) {
+	switch sc.Kind() {
+	case "stdio":
+		return ConnectStdio(ctx, name, sc, m.timeout)
+	case "http":
+		return connectHTTP(ctx, name, sc, m.timeout, m.serverAuthFor(name, sc))
+	default:
+		return nil, fmt.Errorf("unknown transport")
+	}
+}
+
+// startOne connects one server and registers its tools/resources/prompts/status.
+func (m *Manager) startOne(ctx context.Context, name string, sc ServerConfig) {
+	kind := sc.Kind()
+	if kind == "" {
+		m.addStatus(ServerStatus{Name: name, OK: false, Error: "need command (stdio) or url (http)"})
+		return
+	}
+	sess, err := m.dial(ctx, name, sc)
+	if err != nil {
+		log.Printf("mcp: server %q failed: %v", name, err)
+		st := ServerStatus{Name: name, Kind: kind, OK: false, Error: err.Error()}
+		var are *AuthRequiredError
+		if errors.As(err, &are) {
+			st.AuthRequired = true
+			st.AuthURL = are.AuthURL
+		}
+		m.addStatus(st)
+		return
+	}
+	st := ServerStatus{Name: name, Kind: kind, OK: true}
+	// discover
+	if tools, err := sess.ListTools(ctx); err == nil {
 		m.mu.Lock()
-		m.cfg = fc
-		m.mu.Unlock()
-		kind := sc.Kind()
-		if kind == "" {
-			m.addStatus(ServerStatus{Name: name, OK: false, Error: "need command (stdio) or url (http)"})
-			continue
-		}
-		var sess Session
-		var err error
-		switch kind {
-		case "stdio":
-			sess, err = ConnectStdio(ctx, name, sc, m.timeout)
-		case "http":
-			sess, err = ConnectHTTP(ctx, name, sc, m.timeout)
-		default:
-			err = fmt.Errorf("unknown transport")
-		}
-		if err != nil {
-			log.Printf("mcp: server %q failed: %v", name, err)
-			m.addStatus(ServerStatus{Name: name, Kind: kind, OK: false, Error: err.Error()})
-			continue
-		}
-		st := ServerStatus{Name: name, Kind: kind, OK: true}
-		// discover
-		if tools, err := sess.ListTools(ctx); err == nil {
-			m.mu.Lock()
-			for _, t := range tools {
-				if len(m.tools) >= MaxTools {
-					log.Printf("mcp: tool soft cap %d reached; skipping further tools", MaxTools)
+		for _, t := range tools {
+			if len(m.tools) >= MaxTools {
+				log.Printf("mcp: tool soft cap %d reached; skipping further tools", MaxTools)
+				break
+			}
+			// unique marble name
+			mn := t.MarbleName
+			base := mn
+			i := 2
+			for {
+				if _, ok := m.toolIndex[mn]; !ok {
 					break
 				}
-				// unique marble name
-				mn := t.MarbleName
-				base := mn
-				i := 2
-				for {
-					if _, ok := m.toolIndex[mn]; !ok {
-						break
-					}
-					mn = fmt.Sprintf("%s_%d", base, i)
-					if len(mn) > 64 {
-						mn = mn[:64]
-					}
-					i++
+				mn = fmt.Sprintf("%s_%d", base, i)
+				if len(mn) > 64 {
+					mn = mn[:64]
 				}
-				t.MarbleName = mn
-				m.tools = append(m.tools, t)
-				m.toolIndex[mn] = t
-				st.ToolNames = append(st.ToolNames, t.Name)
-				st.MarbleNames = append(st.MarbleNames, mn)
+				i++
 			}
-			st.Tools = len(st.ToolNames)
-			m.mu.Unlock()
-		} else {
-			log.Printf("mcp: %s tools/list: %v", name, err)
+			t.MarbleName = mn
+			m.tools = append(m.tools, t)
+			m.toolIndex[mn] = t
+			st.ToolNames = append(st.ToolNames, t.Name)
+			st.MarbleNames = append(st.MarbleNames, mn)
 		}
-		if res, err := sess.ListResources(ctx); err == nil {
-			st.Resources = len(res)
-			m.mu.Lock()
-			m.resources = append(m.resources, res...)
-			m.mu.Unlock()
-		}
-		if pr, err := sess.ListPrompts(ctx); err == nil {
-			st.Prompts = len(pr)
-			m.mu.Lock()
-			m.prompts = append(m.prompts, pr...)
-			m.mu.Unlock()
-		}
-		m.mu.Lock()
-		m.sessions[name] = sess
+		st.Tools = len(st.ToolNames)
 		m.mu.Unlock()
-		m.addStatus(st)
-		log.Printf("mcp: connected %s (%s) tools=%d resources=%d prompts=%d", name, kind, st.Tools, st.Resources, st.Prompts)
+	} else {
+		log.Printf("mcp: %s tools/list: %v", name, err)
+	}
+	if res, err := sess.ListResources(ctx); err == nil {
+		st.Resources = len(res)
+		m.mu.Lock()
+		m.resources = append(m.resources, res...)
+		m.mu.Unlock()
+	}
+	if pr, err := sess.ListPrompts(ctx); err == nil {
+		st.Prompts = len(pr)
+		m.mu.Lock()
+		m.prompts = append(m.prompts, pr...)
+		m.mu.Unlock()
+	}
+	m.mu.Lock()
+	m.sessions[name] = sess
+	m.mu.Unlock()
+	m.addStatus(st)
+	log.Printf("mcp: connected %s (%s) tools=%d resources=%d prompts=%d", name, kind, st.Tools, st.Resources, st.Prompts)
+}
+
+// refreshServer drops one server's session and catalog entries and reconnects it
+// from the last known config (used after OAuth login/logout).
+func (m *Manager) refreshServer(ctx context.Context, name string) {
+	if m == nil || m.disabled {
+		return
+	}
+	m.mu.Lock()
+	sc, ok := m.cfg.MCPServers[name]
+	old := m.sessions[name]
+	delete(m.sessions, name)
+	tools := m.tools[:0:0]
+	for _, t := range m.tools {
+		if t.Server == name {
+			delete(m.toolIndex, t.MarbleName)
+			continue
+		}
+		tools = append(tools, t)
+	}
+	m.tools = tools
+	res := m.resources[:0:0]
+	for _, r := range m.resources {
+		if r.Server != name {
+			res = append(res, r)
+		}
+	}
+	m.resources = res
+	prs := m.prompts[:0:0]
+	for _, p := range m.prompts {
+		if p.Server != name {
+			prs = append(prs, p)
+		}
+	}
+	m.prompts = prs
+	sts := m.status[:0:0]
+	for _, st := range m.status {
+		if st.Name != name {
+			sts = append(sts, st)
+		}
+	}
+	m.status = sts
+	m.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	if ok && sc.IsEnabled() {
+		m.startOne(ctx, name, sc)
 	}
 }
 
@@ -190,8 +258,8 @@ func (m *Manager) Reload(ctx context.Context, fc FileConfig) {
 
 // CatalogTool is an MCP-exposed tool for UI/API listings.
 type CatalogTool struct {
-	Name         string `json:"name"`          // marble name (mcp_server_tool)
-	Server       string `json:"server"`        // MCP server key
+	Name         string `json:"name"`   // marble name (mcp_server_tool)
+	Server       string `json:"server"` // MCP server key
 	Description  string `json:"description,omitempty"`
 	OriginalName string `json:"original_name,omitempty"` // name on the MCP server
 	Bridge       bool   `json:"bridge,omitempty"`        // list_resources / get_prompt helpers
@@ -307,7 +375,7 @@ func (m *Manager) Specs() []model.ToolSpec {
 				"properties": map[string]interface{}{
 					"name": map[string]interface{}{"type": "string"},
 					"arguments": map[string]interface{}{
-						"type": "object",
+						"type":                 "object",
 						"additionalProperties": map[string]interface{}{"type": "string"},
 					},
 				},
@@ -352,16 +420,10 @@ func (m *Manager) reconnect(ctx context.Context, name string) Session {
 	if !ok || !sc.IsEnabled() {
 		return nil
 	}
-	var sess Session
-	var err error
-	switch sc.Kind() {
-	case "stdio":
-		sess, err = ConnectStdio(ctx, name, sc, m.timeout)
-	case "http":
-		sess, err = ConnectHTTP(ctx, name, sc, m.timeout)
-	default:
+	if sc.Kind() == "" {
 		return nil
 	}
+	sess, err := m.dial(ctx, name, sc)
 	if err != nil {
 		log.Printf("mcp: respawn %s failed: %v", name, err)
 		return nil

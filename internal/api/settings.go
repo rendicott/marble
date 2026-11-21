@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -28,6 +29,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.mcpGet(w, r)
 	case path == "mcp" && r.Method == http.MethodPut:
 		s.mcpPut(w, r)
+	case path == "mcp/login":
+		s.mcpLogin(w, r)
+	case path == "mcp/logout" && r.Method == http.MethodPost:
+		s.mcpLogout(w, r)
 	case path == "env":
 		// Secrets / env file manager — never routed through the agent loop.
 		s.handleSettingsEnv(w, r)
@@ -272,15 +277,129 @@ func (s *Server) mcpGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// redact nothing; env placeholders preserved in raw
 	health := map[string]interface{}{}
+	oauth := map[string]mcp.OAuthServerInfo{}
 	if s.MCP != nil {
+		s.pinMCPOAuthStore()
 		health = s.MCP.Health()
+		oauth = s.MCP.OAuthInfo()
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"path":     path,
 		"config":   fc,
 		"health":   health,
+		"oauth":    oauth,
 		"disabled": s.Cfg.MCPDisable,
 	})
+}
+
+// pinMCPOAuthStore points the MCP token store at $MEMORY/mcp-oauth.json.
+func (s *Server) pinMCPOAuthStore() {
+	if s.MCP != nil && strings.TrimSpace(s.Cfg.Memory) != "" {
+		s.MCP.SetOAuthStorePath(mcp.OAuthStorePath(s.Cfg.Memory))
+	}
+}
+
+func mcpOAuthErrStatus(err error) int {
+	switch {
+	case errors.Is(err, mcp.ErrUnknownServer), errors.Is(err, mcp.ErrNoLogin):
+		return http.StatusNotFound
+	case errors.Is(err, mcp.ErrLoginPending):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+// mcpLogin serves /api/settings/mcp/login:
+//
+//	POST {"name"}                 → start OAuth flow → {"status","auth_url"} (409 if pending)
+//	POST {"name","redirect_url"}  → complete flow from a pasted redirect URL
+//	GET  ?name=                   → {"status":"pending|done|error","auth_url","error"}
+func (s *Server) mcpLogin(w http.ResponseWriter, r *http.Request) {
+	if s.MCP == nil || s.Cfg.MCPDisable {
+		http.Error(w, "MCP disabled", http.StatusBadRequest)
+		return
+	}
+	s.pinMCPOAuthStore()
+	switch r.Method {
+	case http.MethodGet:
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" {
+			http.Error(w, "name required", http.StatusBadRequest)
+			return
+		}
+		st, err := s.MCP.OAuthLoginStatus(name)
+		if err != nil {
+			http.Error(w, err.Error(), mcpOAuthErrStatus(err))
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+	case http.MethodPost:
+		var body struct {
+			Name        string `json:"name"`
+			RedirectURL string `json:"redirect_url"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		body.Name = strings.TrimSpace(body.Name)
+		if body.Name == "" {
+			http.Error(w, "name required", http.StatusBadRequest)
+			return
+		}
+		var st mcp.LoginStatus
+		var err error
+		if strings.TrimSpace(body.RedirectURL) != "" {
+			st, err = s.MCP.CompleteOAuthLogin(body.Name, body.RedirectURL)
+		} else {
+			st, err = s.MCP.StartOAuthLogin(r.Context(), body.Name)
+		}
+		if err != nil {
+			code := mcpOAuthErrStatus(err)
+			if code == http.StatusConflict {
+				writeJSON(w, code, map[string]interface{}{
+					"status": st.Status, "auth_url": st.AuthURL, "error": err.Error(),
+				})
+				return
+			}
+			http.Error(w, err.Error(), code)
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// mcpLogout serves POST /api/settings/mcp/logout {"name"} — drops the stored token.
+func (s *Server) mcpLogout(w http.ResponseWriter, r *http.Request) {
+	if s.MCP == nil || s.Cfg.MCPDisable {
+		http.Error(w, "MCP disabled", http.StatusBadRequest)
+		return
+	}
+	s.pinMCPOAuthStore()
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	existed, err := s.MCP.ForgetOAuthToken(ctx, name)
+	if err != nil {
+		http.Error(w, err.Error(), mcpOAuthErrStatus(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "removed": existed})
 }
 
 func (s *Server) mcpPut(w http.ResponseWriter, r *http.Request) {
@@ -314,6 +433,7 @@ func (s *Server) mcpPut(w http.ResponseWriter, r *http.Request) {
 	}
 	// reload live connections (expand env for runtime)
 	if s.MCP != nil {
+		s.pinMCPOAuthStore()
 		live, err := mcp.LoadFile(path)
 		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

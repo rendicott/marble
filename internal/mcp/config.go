@@ -12,6 +12,10 @@ import (
 // FileConfig is the on-disk mcp.json shape (Cursor-compatible).
 type FileConfig struct {
 	MCPServers map[string]ServerConfig `json:"mcpServers"`
+
+	// path is the file this config was loaded from (not serialized). The OAuth
+	// token store defaults to a sibling file when no explicit path is set.
+	path string
 }
 
 // ServerConfig describes one MCP server (stdio and/or HTTP).
@@ -26,6 +30,11 @@ type ServerConfig struct {
 	URL       string            `json:"url,omitempty"`
 	Transport string            `json:"transport,omitempty"` // http | sse | streamable-http (normalized to http)
 	Headers   map[string]string `json:"headers,omitempty"`
+
+	// Auth optionally overrides OAuth client settings for HTTP servers
+	// (Cursor-compatible "auth" block). Without it Marble uses dynamic client
+	// registration when the authorization server supports it.
+	Auth *OAuthConfig `json:"auth,omitempty"`
 
 	Enabled *bool `json:"enabled,omitempty"` // default true if omitted
 }
@@ -82,8 +91,15 @@ func LoadFile(path string) (FileConfig, error) {
 		for k, v := range sc.Headers {
 			sc.Headers[k] = ExpandEnv(v)
 		}
+		if sc.Auth != nil {
+			a := *sc.Auth
+			a.ClientID = ExpandEnv(a.ClientID)
+			a.ClientSecret = ExpandEnv(a.ClientSecret)
+			sc.Auth = &a
+		}
 		fc.MCPServers[name] = sc
 	}
+	fc.path = path
 	return fc, nil
 }
 
