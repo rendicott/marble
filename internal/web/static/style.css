@@ -922,6 +922,24 @@ a.icon-btn {
   opacity: 1;
   color: var(--accent);
 }
+.bubble-copy {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.45rem;
+  opacity: 0.75;
+  min-width: 1.75rem;
+  white-space: nowrap;
+}
+.bubble-copy:hover { opacity: 1; }
+.bubble-copy.ok {
+  opacity: 1;
+  color: var(--ok);
+  border-color: var(--ok-edge);
+}
+.bubble-copy.err {
+  opacity: 1;
+  color: var(--danger-text);
+  border-color: var(--danger-edge);
+}
 
 .bubble.thinking .bubble-body.thinking-empty:not([hidden])::before {
   content: "thinking…";

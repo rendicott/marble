@@ -2113,6 +2113,28 @@
         toggleAssistantSpeech(content, m.id, speakBtn);
       });
       actions.appendChild(speakBtn);
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "icon-btn bubble-copy";
+      copyBtn.title = "Copy reply";
+      copyBtn.setAttribute("aria-label", "Copy reply");
+      copyBtn.textContent = "Copy";
+      copyBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Raw markdown so pasting keeps formatting.
+        copyTextToClipboard(m.content || content).then((ok) => {
+          copyBtn.textContent = ok ? "Copied" : "Copy failed";
+          copyBtn.classList.toggle("ok", ok);
+          copyBtn.classList.toggle("err", !ok);
+          clearTimeout(copyBtn._resetTimer);
+          copyBtn._resetTimer = setTimeout(() => {
+            copyBtn.textContent = "Copy";
+            copyBtn.classList.remove("ok", "err");
+          }, 1400);
+        });
+      });
+      actions.appendChild(copyBtn);
       div.appendChild(actions);
     }
     const chips = attachChipsRow(m);
