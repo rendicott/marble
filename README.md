@@ -4,7 +4,25 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.32
+## What's new in v0.4.33
+
+Highlights since **[v0.4.32](https://github.com/rendicott/marble/releases/tag/v0.4.32)** (no schema change).
+
+### An OAuth-only remote MCP server can now sign in
+HTTP MCP servers were reachable only with a static header. That is fine for a server that hands you an API key and useless for the OAuth-only ones — Product Hunt, Linear, Notion, Sentry, and GitHub's remote server all answer a bearer-less call with `401` and expect a browser round-trip. `mcp.json` could describe `headers`, so the config validated, the connection failed, and nothing in the UI could say why.
+
+- **Discovery runs off the challenge, not a guess.** On `401` Marble reads `WWW-Authenticate` for `resource_metadata=`, fetches the protected-resource document, then the authorization-server metadata — RFC 8414 first, OIDC second. Both the path-suffixed and root well-known forms are tried, which is what Product Hunt actually serves (`/.well-known/oauth-authorization-server/mcp/oauth`).
+- **Dynamic client registration plus PKCE S256.** A public client (`token_endpoint_auth_method: none`), `authorization_code` + `refresh_token`, no secret to hold. `mcp.json` keeps a Cursor-compatible `auth` block for servers that want a pinned `client_id`/`client_secret`/`scopes` instead.
+- **Pasting the redirect is the primary path, not the fallback.** This UI is normally driven from a phone over Tailscale, so a loopback callback on the harness host will never be reachable. The flow opens a listener anyway *and* accepts the full redirect URL pasted back into the settings pane. The state check is real: a stale or forged redirect is refused without cancelling the pending login.
+- **Tokens live in `$MEMORY/mcp-oauth.json`** — `0600`, atomic temp-file rename, keyed by normalized endpoint URL. Refreshed shortly before expiry and once more on `401`, then the request is retried; anything still unauthorized returns a typed error that names the authorize URL, so the model is told to send you to Settings rather than reporting a vague tool failure.
+- **A Connect button that appears even when the server looks healthy.** Product Hunt serves `initialize` and `tools/list` unauthenticated and only `401`s on a real tool call, so a healthy connect does not mean signed in — Connect, Reconnect, and Forget token are offered whenever a token is absent or stale.
+
+Verified against Product Hunt's live metadata and a fake authorization server in tests (discovery, registration, both completion modes, refresh, forged state, reconnect). Client ID Metadata Documents are deliberately out of scope — DCR covers the providers that matter.
+
+### Copy a whole reply
+Fenced code blocks had a copy button; the reply around them did not, so lifting an answer off a phone meant selecting a bubble by hand. Assistant bubbles now carry a Copy control beside the speak button, and it copies the **raw markdown** — paste it into a file and the headings, lists, and code fences survive instead of arriving as flattened text.
+
+### Earlier — v0.4.32
 
 Highlights since **[v0.4.31](https://github.com/rendicott/marble/releases/tag/v0.4.31)** (no schema change).
 
