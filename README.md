@@ -4,7 +4,19 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.34
+## What's new in v0.4.35
+
+Highlights since **[v0.4.34](https://github.com/rendicott/marble/releases/tag/v0.4.34)** (schema **v16**, additive: `tool_call_log`). No data migration. The new table is created on startup.
+
+### Tool calls are now recorded
+
+Search behaviour is unchanged. Matching, ordering, and the text `memory_search` returns are the same as v0.4.34. This release exists to establish a baseline: what was asked, what came back, how long it took, and how often the same arguments were asked again.
+
+- **One row per tool call.** `tool_call_log` stores the session, a per-session sequence, the time, the tool name, the call id, the arguments JSON verbatim, a result summary when the tool provides one, whether the call succeeded, the error text, the wall-clock latency, the result size, and the hit count. A failed call is still a row (`ok` 0, the error text, the arguments, and the latency). Writing the row never fails the turn; an insert error is ignored.
+- **`memory_search` is the first tool with a summary.** The summary carries the hit count, whether the result was empty, and for each document the path, whether the phrase matched, which tokens matched, and the file size. It also records how many documents were scanned, how many were rejected for tags, and the search time. Other tools record size and latency only.
+- **Two read-only endpoints, operator auth only.** `GET /api/tool-log?session_id=&tool=&since=&limit=` returns rows newest first. `limit` defaults to 100 and caps at 1000. `GET /api/tool-log/stats?tool=&since=` returns the call count, the error count, the empty-result rate, a hit-count histogram, the mean and median latency in milliseconds, the median result size, how many times the same session repeated the same arguments back to back, and the ten document paths that appeared most often in summaries.
+
+### Earlier — v0.4.34
 
 Highlights since **[v0.4.33](https://github.com/rendicott/marble/releases/tag/v0.4.33)** (no schema change). Pairs with **[marble-desktop-peer v0.2.7](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.7)**. No data migration.
 
