@@ -176,10 +176,19 @@ func (r *Registry) Specs() []model.ToolSpec {
 // Secret values from Settings → Secrets are masked in the result, which is what the
 // transcript and the model see.
 func (r *Registry) Execute(name, argsJSON string, tc *TurnContext) string {
-	return config.ScrubSecrets(r.execute(name, argsJSON, tc))
+	return r.ExecuteObserved(name, argsJSON, tc).Text
 }
 
-func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
+// ExecuteObserved runs a named tool and returns the model-facing text, any
+// structured summary, and the tool error. Text is secret-scrubbed, same as Execute.
+// Summary is nil when the tool does not report one. Err is nil when the tool succeeded.
+func (r *Registry) ExecuteObserved(name, argsJSON string, tc *TurnContext) ObservedTool {
+	obs := r.executeObserved(name, argsJSON, tc)
+	obs.Text = config.ScrubSecrets(obs.Text)
+	return obs
+}
+
+func (r *Registry) executeObserved(name, argsJSON string, tc *TurnContext) ObservedTool {
 	if tc == nil {
 		tc = &TurnContext{ReadPaths: map[string]bool{}}
 	}
@@ -191,7 +200,7 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 	if err := r.preflightThrash(name, argsJSON, tc); err != nil {
 		msg := "error: " + err.Error()
 		r.postflightThrash(name, argsJSON, msg, tc)
-		return r.noteRepeat(name, argsJSON, msg, tc)
+		return ObservedTool{Text: r.noteRepeat(name, argsJSON, msg, tc), Err: err}
 	}
 
 	parent := context.Background()
@@ -206,10 +215,11 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 		defer cancel()
 		out := r.clampResult(name, r.MCP.Execute(ctx, name, argsJSON))
 		r.postflightThrash(name, argsJSON, out, tc)
-		return r.noteRepeat(name, argsJSON, out, tc)
+		return ObservedTool{Text: r.noteRepeat(name, argsJSON, out, tc)}
 	}
 
 	var out string
+	var summary *ResultSummary
 	var err error
 	switch name {
 	case "file_read":
@@ -277,7 +287,7 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 	case "session_compact":
 		out, err = r.sessionCompact(argsJSON, tc)
 	case "memory_search":
-		out, err = r.memorySearch(argsJSON)
+		out, summary, err = r.memorySearch(argsJSON)
 	case "memory_fetch":
 		out, err = r.memoryFetch(argsJSON)
 	case "memory_write":
@@ -333,14 +343,15 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 	case "computer_stop":
 		out, err = r.computerStop(argsJSON, tc)
 	default:
-		msg := fmt.Sprintf("error: unknown tool %q", name)
+		err = fmt.Errorf("unknown tool %q", name)
+		msg := "error: " + err.Error()
 		r.postflightThrash(name, argsJSON, msg, tc)
-		return msg
+		return ObservedTool{Text: msg, Err: err}
 	}
 	if err != nil {
 		msg := "error: " + err.Error()
 		r.postflightThrash(name, argsJSON, msg, tc)
-		return r.noteRepeat(name, argsJSON, msg, tc)
+		return ObservedTool{Text: r.noteRepeat(name, argsJSON, msg, tc), Summary: summary, Err: err}
 	}
 	// Eval mutate soft warning (under hard limit)
 	if name == "computer_browser_act" {
@@ -357,7 +368,7 @@ func (r *Registry) execute(name, argsJSON string, tc *TurnContext) string {
 		// only note occasionally — caller may ignore duplicates
 		tc.OnHarnessNote("[harness] escalate lock: computer click blocked until confirm / different approach (ADR-0022)")
 	}
-	return r.noteRepeat(name, argsJSON, result, tc)
+	return ObservedTool{Text: r.noteRepeat(name, argsJSON, result, tc), Summary: summary}
 }
 
 // resolve maps a path into the workspace jail.

@@ -37,7 +37,7 @@ func agentprocMemoryTopK() int { return 5 }
 
 func (r *Registry) memorySearchHits(query, scope string, max int) ([]string, error) {
 	a := memSearchArgs{Query: query, Scope: scope, MaxResults: max}
-	s, err := r.runMemorySearch(a)
+	s, _, err := r.runMemorySearch(a)
 	if err != nil {
 		return nil, err
 	}
@@ -47,13 +47,13 @@ func (r *Registry) memorySearchHits(query, scope string, max int) ([]string, err
 	return strings.Split(s, "\n"), nil
 }
 
-func (r *Registry) memorySearch(argsJSON string) (string, error) {
+func (r *Registry) memorySearch(argsJSON string) (string, *ResultSummary, error) {
 	var a memSearchArgs
 	if err := parseArgs(argsJSON, &a); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if strings.TrimSpace(a.Query) == "" {
-		return "", fmt.Errorf("query is required")
+		return "", nil, fmt.Errorf("query is required")
 	}
 	if a.MaxResults <= 0 {
 		a.MaxResults = 20
@@ -61,16 +61,53 @@ func (r *Registry) memorySearch(argsJSON string) (string, error) {
 	return r.runMemorySearch(a)
 }
 
-func (r *Registry) runMemorySearch(a memSearchArgs) (string, error) {
-	if strings.TrimSpace(a.Query) == "" {
-		return "no matches", nil
-	}
+func (r *Registry) runMemorySearch(a memSearchArgs) (string, *ResultSummary, error) {
+	started := time.Now()
 	scope := strings.ToLower(a.Scope)
 	if scope == "" {
 		scope = "all"
 	}
+	tags := make([]string, len(a.Tags))
+	copy(tags, a.Tags)
+	var (
+		hits     []string
+		docs     = []map[string]interface{}{}
+		scanned  int
+		rejected int
+	)
+	finish := func() (string, *ResultSummary, error) {
+		ms := time.Since(started).Milliseconds()
+		if ms < 0 {
+			ms = 0
+		}
+		empty := len(hits) == 0
+		sum := &ResultSummary{
+			Hits:  len(hits),
+			Empty: empty,
+			Data: map[string]interface{}{
+				"query":              a.Query,
+				"scope":              scope,
+				"max_results":        a.MaxResults,
+				"tags":               tags,
+				"since":              a.Since,
+				"until":              a.Until,
+				"docs":               docs,
+				"hit_count":          len(hits),
+				"empty":              empty,
+				"search_ms":          ms,
+				"docs_scanned":       scanned,
+				"docs_rejected_tags": rejected,
+			},
+		}
+		if empty {
+			return "no matches", sum, nil
+		}
+		return strings.Join(hits, "\n"), sum, nil
+	}
+	if strings.TrimSpace(a.Query) == "" {
+		return finish()
+	}
 	q := strings.ToLower(a.Query)
-	var hits []string
 	searchDir := func(sub string, limit int) {
 		root := filepath.Join(r.Memory, sub)
 		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -87,9 +124,11 @@ func (r *Registry) runMemorySearch(a memSearchArgs) (string, error) {
 			if err != nil {
 				return nil
 			}
+			scanned++
 			text := string(data)
 			low := strings.ToLower(text)
-			if !strings.Contains(low, q) {
+			matchedPhrase := strings.Contains(low, q)
+			if !matchedPhrase {
 				// keyword tokens
 				ok := false
 				for _, tok := range strings.Fields(q) {
@@ -112,8 +151,15 @@ func (r *Registry) runMemorySearch(a memSearchArgs) (string, error) {
 				}
 				for _, tag := range a.Tags {
 					if !strings.Contains(strings.ToLower(fm), strings.ToLower(tag)) {
+						rejected++
 						return nil
 					}
+				}
+			}
+			matchedTokens := make([]string, 0)
+			for _, tok := range strings.Fields(q) {
+				if strings.Contains(low, tok) {
+					matchedTokens = append(matchedTokens, tok)
 				}
 			}
 			rel, _ := filepath.Rel(r.Memory, p)
@@ -132,6 +178,12 @@ func (r *Registry) runMemorySearch(a memSearchArgs) (string, error) {
 			}
 			ex := strings.ReplaceAll(text[start:end], "\n", " ")
 			hits = append(hits, fmt.Sprintf("%s: …%s…", rel, ex))
+			docs = append(docs, map[string]interface{}{
+				"path":           rel,
+				"matched_phrase": matchedPhrase,
+				"matched_tokens": matchedTokens,
+				"doc_bytes":      len(data),
+			})
 			return nil
 		})
 	}
@@ -144,10 +196,7 @@ func (r *Registry) runMemorySearch(a memSearchArgs) (string, error) {
 	if len(hits) < a.MaxResults && (scope == "all" || scope == "knowledge") {
 		searchDir("knowledge", a.MaxResults)
 	}
-	if len(hits) == 0 {
-		return "no matches", nil
-	}
-	return strings.Join(hits, "\n"), nil
+	return finish()
 }
 
 type memFetchArgs struct {
