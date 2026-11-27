@@ -51,11 +51,23 @@ type TurnContext struct {
 	LastScreenshotHash string
 	// LastScreenshotAttID is the attachment id of the last staged screenshot.
 	LastScreenshotAttID string
+	// LastFocusedApp is the focused_app from the latest desktop result that
+	// reported one (screenshot, click, type, or key). Empty until a peer does.
+	LastFocusedApp string
 	// Last click in image space (near-dup thrash).
 	LastClickX, LastClickY int
 	LastClickSet           bool
 	// PostClickShotAt is when a post-click screenshot was staged (suppress redundant shots).
 	PostClickShotAt time.Time
+	// Retained-image window for the prompt the model is answering now.
+	// The session loop sets these after applyImageLimit. A redundant
+	// screenshot is skipped only when LastScreenshotAttID is still inside
+	// this window; otherwise the model would be pointed at pixels it cannot see.
+	RetainedWindowKnown  bool
+	ImageLimitEffective  int // <=0 means unlimited
+	RetainedImageIDs     map[string]bool
+	RetainedUserImages   int // image parts kept in the latest user message
+	AttachedSinceRequest []string
 	// Thrash is ADR-0022 turn-scoped anti-repeat / escalate state.
 	Thrash *ThrashState
 	// ResultVisible reports whether an identical tool result is still in the model's

@@ -275,7 +275,86 @@ func (r *Registry) stagePeerScreenshot(tc *TurnContext, raw []byte, name string)
 	tc.LastScreenshotAt = time.Now()
 	tc.LastScreenshotHash = hash
 	tc.LastScreenshotAttID = id
+	tc.AttachedSinceRequest = append(tc.AttachedSinceRequest, id)
 	return id, mime, kind, hash, nil
+}
+
+// focusedApp reads meta.focused_app. Empty when the peer did not report one.
+func focusedApp(meta map[string]interface{}) string {
+	if meta == nil {
+		return ""
+	}
+	s, _ := meta["focused_app"].(string)
+	return strings.TrimSpace(s)
+}
+
+// noteFocusedApp remembers the peer's focused app for the next desktop action.
+func noteFocusedApp(tc *TurnContext, meta map[string]interface{}) {
+	if tc == nil {
+		return
+	}
+	if app := focusedApp(meta); app != "" {
+		tc.LastFocusedApp = app
+	}
+}
+
+// focusDrifted reports that type/key input was delivered to a different app
+// than the one frontmost before the action. A click is allowed to move focus;
+// that is how the next type learns its target. An empty baseline is not a
+// change: there is no expected window to name, so expected_app would be a lie.
+func focusDrifted(action, pre, post string) bool {
+	if action != "type" && action != "key" {
+		return false
+	}
+	pre, post = strings.TrimSpace(pre), strings.TrimSpace(post)
+	return pre != "" && post != "" && pre != post
+}
+
+func focusChangedHint(post, pre string) string {
+	return fmt.Sprintf("focus_changed: input was received by %q, not %q (the app that was frontmost before this action). The text did NOT land in the intended window. Click the intended field or pass expect_app so the peer activates it, then look at the post-action image before typing again.", post, pre)
+}
+
+func putExpectApp(payload map[string]interface{}, app string) {
+	app = strings.TrimSpace(app)
+	if app == "" || payload == nil {
+		return
+	}
+	payload["expect_app"] = app
+}
+
+// imageStillInWindow reports whether attID will actually be sent to the model.
+// Unknown window (the loop has not recorded one) is not visible: skipping
+// would point at an image we cannot prove the model can see.
+func (tc *TurnContext) imageStillInWindow(attID string) bool {
+	if tc == nil || attID == "" || !tc.RetainedWindowKnown {
+		return false
+	}
+	if tc.ImageLimitEffective <= 0 {
+		return true // unlimited: the cap does not drop images
+	}
+	if tc.RetainedImageIDs[attID] {
+		return true
+	}
+	slots := tc.ImageLimitEffective - tc.RetainedUserImages
+	if slots <= 0 {
+		return false
+	}
+	n := len(tc.AttachedSinceRequest)
+	if n > slots {
+		// Newest attachments take the slots left after the latest user message.
+		for _, id := range tc.AttachedSinceRequest[n-slots:] {
+			if id == attID {
+				return true
+			}
+		}
+		return false
+	}
+	for _, id := range tc.AttachedSinceRequest {
+		if id == attID {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string, error) {
@@ -306,13 +385,15 @@ func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string,
 	}
 
 	// Suppress redundant shots right after an atomic post-click screenshot
-	// (a deliberate region/scale request is never redundant).
-	if len(payload) == 0 && tc != nil && !tc.PostClickShotAt.IsZero() && time.Since(tc.PostClickShotAt) < postClickScreenshotGrace && tc.LastScreenshotAttID != "" {
+	// (a deliberate region/scale request is never redundant). Only when that
+	// attachment is still inside the retained image window — otherwise the
+	// hint points at pixels the cap already dropped.
+	if len(payload) == 0 && tc != nil && !tc.PostClickShotAt.IsZero() && time.Since(tc.PostClickShotAt) < postClickScreenshotGrace && tc.LastScreenshotAttID != "" && tc.imageStillInWindow(tc.LastScreenshotAttID) {
 		out := map[string]interface{}{
 			"ok":            true,
 			"skipped":       true,
 			"attachment_id": tc.LastScreenshotAttID,
-			"hint":          "Skipped redundant screenshot — a post-click image was just attached. LOOK at that attachment_id (do not re-screenshot). Next: click_button / different coords / computer_confirm.",
+			"hint":          "Skipped redundant screenshot — a post-click image was just attached and is still in the images sent to you. LOOK at that attachment_id (do not re-screenshot). Next: click_button / different coords / computer_confirm.",
 		}
 		b, _ := json.Marshal(out)
 		return string(b), nil
@@ -322,6 +403,7 @@ func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string,
 	if err != nil {
 		return "", err
 	}
+	noteFocusedApp(tc, res.Meta)
 	out := map[string]interface{}{
 		"ok":   true,
 		"meta": res.Meta,
@@ -421,6 +503,7 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 		Key        string `json:"key"`
 		Button     string `json:"button"`
 		Zoom       bool   `json:"zoom"`
+		ExpectApp  string `json:"expect_app"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", err
@@ -456,9 +539,12 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 	default:
 		return "", fmt.Errorf("unknown action %q (click|type|key). For labeled UI use computer_browser_act action=click_button", args.Action)
 	}
+	putExpectApp(payload, args.ExpectApp)
 	preHash := ""
+	preApp := ""
 	if tc != nil {
 		preHash = tc.LastScreenshotHash
+		preApp = tc.LastFocusedApp
 	}
 	res, err := r.peerCall(tc, args.ComputerID, kind, payload, 120*time.Second)
 	if err != nil {
@@ -474,6 +560,8 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 	if !res.OK && res.Error != "" {
 		return "", fmt.Errorf("%s", res.Error)
 	}
+	noteFocusedApp(tc, res.Meta)
+	postApp := focusedApp(res.Meta)
 
 	switch action {
 	case "click":
@@ -491,24 +579,38 @@ func (r *Registry) computerDesktopAct(argsJSON string, tc *TurnContext) (string,
 				out["precision"] = p
 			}
 		}
-	case "type":
-		r.notePeerAction(tc, "desktop_type")
-		r.attachPostActionScreenshot(tc, args.ComputerID, res, preHash, out,
-			"pixels identical after typing — the text likely did not land in a focused, editable field. STOP retyping the same text. NEXT: computer_screenshot to see where focus is and click the target field first, or computer_exec if this was meant to run a shell command (reads real stdout/stderr instead of a screenshot).")
-	default:
+	case "type", "key":
 		r.notePeerAction(tc, "desktop_"+action)
+		unchanged := "pixels identical after typing — the text likely did not land in a focused, editable field. STOP retyping the same text. NEXT: computer_screenshot to see where focus is and click the target field first, or computer_exec if this was meant to run a shell command (reads real stdout/stderr instead of a screenshot)."
+		if action == "key" {
+			unchanged = "pixels identical after key — the key likely did not land in the focused window. STOP repeating it. NEXT: computer_screenshot to see where focus is and click the target first."
+		}
+		r.attachPostActionScreenshot(tc, args.ComputerID, res, preHash, out, unchanged)
+	}
+	// Focus drift wins over the pixel-hash hint: a stolen focus repaints the
+	// region, so ui_unchanged stays false and the keystrokes would otherwise
+	// look successful.
+	if focusDrifted(action, preApp, postApp) {
+		out["ok"] = false
+		out["focus_changed"] = true
+		out["typed_into"] = postApp
+		out["focused_app"] = postApp
+		out["expected_app"] = preApp
+		out["hint"] = focusChangedHint(postApp, preApp)
 	}
 	b, _ := json.Marshal(out)
 	return string(b), nil
 }
 
 // attachPostActionScreenshot stages the peer's atomic post-action screenshot
-// (click and type both return one) and flags ui_unchanged when its hash
-// matches the screenshot taken before the action. Originally click-only;
-// generalized to type per field report peer-gui-loop-report (2026-09-23),
-// which found no "did my keystrokes land?" signal for type at all — an agent
-// retyped the same command into an unfocused window ~150 times with no
-// visible failure.
+// (click, type, and key return one on current peers) and flags ui_unchanged
+// when its hash matches the screenshot taken before the action. Originally
+// click-only; generalized to type per field report peer-gui-loop-report
+// (2026-09-23), which found no "did my keystrokes land?" signal for type at
+// all — an agent retyped the same command into an unfocused window ~150 times
+// with no visible failure. Key uses the same path. An older peer that returns
+// no image falls through to a follow-up screenshot; if that also fails, the
+// action result still succeeds and records post_click_screenshot_error.
 func (r *Registry) attachPostActionScreenshot(tc *TurnContext, computerID string, res peerhub.Envelope, preHash string, out map[string]interface{}, unchangedHint string) {
 	var raw []byte
 	if res.ScreenshotB64 != "" {

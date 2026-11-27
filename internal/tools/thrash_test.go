@@ -177,6 +177,9 @@ func TestIsComputerFailUIUnchanged(t *testing.T) {
 	if !isComputerFailResult(`{"ok":false,"ui_unchanged":true}`) {
 		t.Fatal("ui_unchanged should count as computer fail")
 	}
+	if !isComputerFailResult(`{"ok":false,"focus_changed":true}`) {
+		t.Fatal("focus_changed should count as computer fail")
+	}
 }
 
 func TestContinuePacket(t *testing.T) {

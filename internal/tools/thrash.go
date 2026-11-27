@@ -556,6 +556,7 @@ func isComputerFailResult(result string) bool {
 		strings.Contains(low, "bot_wall") ||
 		strings.Contains(low, "escalate lock") ||
 		strings.Contains(low, "ui_unchanged") ||
+		strings.Contains(low, "focus_changed") ||
 		strings.Contains(low, "near-duplicate") ||
 		strings.Contains(low, "ambiguous")
 }
