@@ -35,12 +35,15 @@ func (s *Server) promptGet(w http.ResponseWriter, r *http.Request) {
 	} else if s.Cfg.Memory != "" {
 		soulAbs = filepath.Join(s.Cfg.Memory, "soul.md")
 	}
+	sha, chars := memory.SoulVersion(soul)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"system_prompt":  session.SystemPrompt(),
 		"soul":           soul,
 		"soul_path":      soulPath,
 		"soul_path_abs":  soulAbs,
 		"soul_max_chars": memory.SoulMaxBytes,
+		"soul_sha":       sha,
+		"soul_chars":     chars,
 		"immutable":      true,
 	})
 }
