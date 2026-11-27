@@ -509,6 +509,7 @@ func (r *Runner) runTurn(s *Session) {
 		imgLimit := s.ImageLimitFor(em)
 		var omittedImgs int
 		prompt, omittedImgs = applyImageLimit(prompt, imgLimit.Effective)
+		noteRetainedImages(tc, prompt, imgLimit.Effective)
 		if omittedImgs > 0 && !imageTrimNoted {
 			imageTrimNoted = true
 			r.harnessNote(s, fmt.Sprintf(
@@ -582,6 +583,7 @@ func (r *Runner) runTurn(s *Session) {
 					limit = n
 				}
 				prompt, _ = applyImageLimit(prompt, limit)
+				noteRetainedImages(tc, prompt, limit)
 				imageTrimNoted = true // learnImageLimit already explained the trim
 				outbound = r.buildOutbound(s, prompt)
 				result, err = client.ChatWithOpts(ctx, outbound, toolSpecs, chatOpts)
@@ -962,7 +964,14 @@ func (r *Runner) buildOutbound(s *Session, prompt []model.Message) []model.Messa
 		outbound = prompt
 	}
 	// Strict providers (vLLM): only one system block at the start; never mid-history.
-	return normalizeOutboundChatMessages(outbound)
+	// Annotate after normalize: an orphan tool result is demoted to plain text
+	// and loses its image parts, and a missing blob is already a text placeholder.
+	// Either way the look-at-pixels line would describe an image that is not sent.
+	outbound = normalizeOutboundChatMessages(outbound)
+	if mErr != nil {
+		return outbound
+	}
+	return annotateSentImages(outbound)
 }
 
 func stopMessage(err error, s *Session) string {

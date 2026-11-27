@@ -322,10 +322,10 @@ func putExpectApp(payload map[string]interface{}, app string) {
 	payload["expect_app"] = app
 }
 
-// imageStillInWindow reports whether attID will actually be sent to the model.
+// ImageStillInWindow reports whether attID will actually be sent to the model.
 // Unknown window (the loop has not recorded one) is not visible: skipping
 // would point at an image we cannot prove the model can see.
-func (tc *TurnContext) imageStillInWindow(attID string) bool {
+func (tc *TurnContext) ImageStillInWindow(attID string) bool {
 	if tc == nil || attID == "" || !tc.RetainedWindowKnown {
 		return false
 	}
@@ -388,7 +388,7 @@ func (r *Registry) computerScreenshot(argsJSON string, tc *TurnContext) (string,
 	// (a deliberate region/scale request is never redundant). Only when that
 	// attachment is still inside the retained image window — otherwise the
 	// hint points at pixels the cap already dropped.
-	if len(payload) == 0 && tc != nil && !tc.PostClickShotAt.IsZero() && time.Since(tc.PostClickShotAt) < postClickScreenshotGrace && tc.LastScreenshotAttID != "" && tc.imageStillInWindow(tc.LastScreenshotAttID) {
+	if len(payload) == 0 && tc != nil && !tc.PostClickShotAt.IsZero() && time.Since(tc.PostClickShotAt) < postClickScreenshotGrace && tc.LastScreenshotAttID != "" && tc.ImageStillInWindow(tc.LastScreenshotAttID) {
 		out := map[string]interface{}{
 			"ok":            true,
 			"skipped":       true,

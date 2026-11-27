@@ -42,9 +42,14 @@ func TestApplyImageLimitKeepsNewestAndLatestUser(t *testing.T) {
 	if !msgs[2].Content.HasImages() {
 		t.Fatal("input mutated")
 	}
-	// Dropped tool image collapses to plain text with a placeholder naming the id.
-	if len(out[2].Content.Parts) != 0 || !strings.Contains(out[2].Content.PlainText(), "s1 omitted") {
+	// Dropped tool image collapses to plain text. The placeholder names the id
+	// and says the image was not sent.
+	text := out[2].Content.PlainText()
+	if len(out[2].Content.Parts) != 0 || !strings.Contains(text, "s1") || !strings.Contains(text, "NOT sent") {
 		t.Fatalf("placeholder: %+v", out[2].Content)
+	}
+	if strings.Contains(text, "ARE the peer screenshot") || strings.Contains(strings.ToLower(text), "look at") {
+		t.Fatalf("placeholder implies the pixels are present: %s", text)
 	}
 }
 

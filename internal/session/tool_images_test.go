@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,6 +14,9 @@ func TestExtractAttachmentIDs(t *testing.T) {
 	c := toolResultContent(`{"attachment_id":"abc123"}`)
 	if !c.HasImages() {
 		t.Fatal("expected image parts on tool result content")
+	}
+	if strings.Contains(c.PlainText(), "ARE the peer screenshot") {
+		t.Fatal("look instruction must not be stored on the tool result")
 	}
 }
 

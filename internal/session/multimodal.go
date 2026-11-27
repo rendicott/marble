@@ -253,11 +253,19 @@ func attMetaJSON(ids []string) string {
 	return string(b)
 }
 
+// peerScreenshotNote is appended at outbound assembly, and only onto a tool
+// message that still has an image part after the per-request cap and after
+// marble-att:// blobs have loaded. Storing it here would survive a dropped
+// image and a missing blob, and tell the model to look at pixels it was not sent.
+const peerScreenshotNote = "[harness] The image part(s) above ARE the peer screenshot. Look at them: identify lock screen, OTP, dialogs, buttons. Do not claim you cannot see the image if image parts are present. If you see a lock/login screen, say so and stop automating until unlocked."
+
 // toolResultContent builds model content for a tool result. When the result JSON
 // includes attachment_id / attachment_ids for staged images (e.g. computer_screenshot),
 // those are included as marble-att:// image parts so the next model call can *see* them
 // via materializeImages. Previously only a text JSON blob was stored — vision models
 // never received the pixels (UI showed the chip; model said it "couldn't see" the image).
+// The look-at-pixels order is not stored: history and reload both come through
+// here, and the cap may drop the image before send.
 func toolResultContent(toolResult string) model.Content {
 	text := toolResult
 	ids := extractAttachmentIDs(toolResult)
@@ -276,12 +284,30 @@ func toolResultContent(toolResult string) model.Content {
 			},
 		})
 	}
-	// Explicit instruction so models that get images still ground on the pixels.
-	parts = append(parts, model.ContentPart{
-		Type: "text",
-		Text: "[harness] The image part(s) above ARE the peer screenshot. Look at them: identify lock screen, OTP, dialogs, buttons. Do not claim you cannot see the image if image parts are present. If you see a lock/login screen, say so and stop automating until unlocked.",
-	})
 	return model.ContentFromParts(parts)
+}
+
+// annotateSentImages appends peerScreenshotNote to tool messages that still
+// carry an image part. Call it on the outbound copy after applyImageLimit and
+// after materializeImages: a capped-off image or a blob that failed to load
+// is text by then, and must not be described as present. msgs is not mutated.
+func annotateSentImages(msgs []model.Message) []model.Message {
+	out := msgs
+	copied := false
+	for i, m := range msgs {
+		if m.Role != "tool" || !m.Content.HasImages() || strings.Contains(m.Content.PlainText(), peerScreenshotNote) {
+			continue
+		}
+		if !copied {
+			out = append([]model.Message(nil), msgs...)
+			copied = true
+		}
+		parts := make([]model.ContentPart, len(m.Content.Parts), len(m.Content.Parts)+1)
+		copy(parts, m.Content.Parts)
+		parts = append(parts, model.ContentPart{Type: "text", Text: peerScreenshotNote})
+		out[i].Content = model.ContentFromParts(parts)
+	}
+	return out
 }
 
 // extractAttachmentIDs pulls staged attachment ids from tool result JSON text.

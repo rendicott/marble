@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rendicott/marble/internal/model"
+	"github.com/rendicott/marble/internal/tools"
 )
 
 // Per-request image cap (session setting × model catalog max_images).
@@ -179,12 +180,56 @@ func applyImageLimit(msgs []model.Message, limit int) ([]model.Message, int) {
 	return out, omitted
 }
 
+// omittedImageText replaces a dropped image part. It must not tell the model
+// to look at pixels: the part was removed from this request.
 func omittedImageText(p model.ContentPart, limit int) string {
 	id := ""
 	if p.ImageURL != nil && strings.HasPrefix(p.ImageURL.URL, marbleAttScheme) {
-		id = " " + strings.TrimPrefix(p.ImageURL.URL, marbleAttScheme)
+		id = strings.TrimPrefix(p.ImageURL.URL, marbleAttScheme)
 	}
-	return fmt.Sprintf("[harness] older image%s omitted (per-request image limit %d; only the most recent images are sent). Take a fresh screenshot if you need to see the current screen.", id, limit)
+	if id == "" {
+		return fmt.Sprintf("[harness] An image was NOT sent this request (per-request image limit %d). Its pixels are not in this prompt. A fresh screenshot is required to see the screen.", limit)
+	}
+	return fmt.Sprintf("[harness] Image %s was NOT sent this request (per-request image limit %d). Its pixels are not in this prompt. A fresh screenshot is required to see the screen.", id, limit)
+}
+
+// noteRetainedImages records the image window of the prompt just capped, so a
+// later computer tool can tell whether an attachment will actually be sent.
+// AttachedSinceRequest is cleared here: it counts shots staged after this
+// request, not ones already reflected in the prompt. msgs is not modified.
+func noteRetainedImages(tc *tools.TurnContext, msgs []model.Message, effective int) {
+	if tc == nil {
+		return
+	}
+	lastUser := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			lastUser = i
+			break
+		}
+	}
+	ids := make(map[string]bool)
+	userImages := 0
+	for mi, m := range msgs {
+		for _, p := range m.Content.Parts {
+			if p.Type != "image_url" || p.ImageURL == nil || p.ImageURL.URL == "" {
+				continue
+			}
+			if mi == lastUser {
+				userImages++
+			}
+			if strings.HasPrefix(p.ImageURL.URL, marbleAttScheme) {
+				if id := strings.TrimPrefix(p.ImageURL.URL, marbleAttScheme); id != "" {
+					ids[id] = true
+				}
+			}
+		}
+	}
+	tc.RetainedWindowKnown = true
+	tc.ImageLimitEffective = effective
+	tc.RetainedImageIDs = ids
+	tc.RetainedUserImages = userImages
+	tc.AttachedSinceRequest = nil
 }
 
 // collapseTextParts turns an all-text part list back into plain text content.
