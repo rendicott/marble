@@ -28,7 +28,8 @@ import (
 // v13: sessions.agent_cwd (project directory for routed subprocess turns)
 // v14: session_search + session_search_terms (ADR-0037)
 // v15: watch_jobs (ADR-0041)
-const CurrentSchemaVersion = 15
+// v16: tool_call_log (tool-call telemetry)
+const CurrentSchemaVersion = 16
 
 // Mode is normal dual-write or limp (files-only).
 type Mode string
@@ -194,6 +195,10 @@ func (d *DB) upgradeSchema(fromVer int) error {
 			}
 		case 14:
 			if err := d.migrateV14toV15(); err != nil {
+				return err
+			}
+		case 15:
+			if err := d.migrateV15toV16(); err != nil {
 				return err
 			}
 		default:

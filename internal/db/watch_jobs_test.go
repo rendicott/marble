@@ -64,8 +64,8 @@ func TestMigrateV14toV15(t *testing.T) {
 	if d2.Mode != ModeNormal {
 		t.Fatalf("mode %s: %s", d2.Mode, d2.Reason)
 	}
-	if got := schemaVersion(t, d2); got != 15 {
-		t.Fatalf("schema %d", got)
+	if got := schemaVersion(t, d2); got != CurrentSchemaVersion {
+		t.Fatalf("schema %d want %d", got, CurrentSchemaVersion)
 	}
 	var idx int
 	if err := d2.SQL.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_watch_jobs_session'`).Scan(&idx); err != nil || idx != 1 {
