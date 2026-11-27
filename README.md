@@ -4,7 +4,25 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.33
+## What's new in v0.4.34
+
+Highlights since **[v0.4.33](https://github.com/rendicott/marble/releases/tag/v0.4.33)** (no schema change). Pairs with **[marble-desktop-peer v0.2.7](https://github.com/rendicott/marble-desktop-peer/releases/tag/v0.2.7)**. No data migration.
+
+### Keystrokes could land in a different app and still look successful
+A click is allowed to move focus — that is how the next `type` learns its target. What followed was not. A `type` or `key` that the peer delivered to some other app (a browser it had just raised, a dialog that stole the window) came back `ok: true`. The stolen focus repainted the region, so `ui_unchanged` stayed false, and the harness reported success for text that never landed.
+
+- **Focus drift is a failure.** After `type` or `key`, when the peer names a `focused_app` and it is not the app that was frontmost before the action, the result is `ok: false` with `focus_changed`, `typed_into`, and `expected_app`. The hint says the text did not land. An empty focus report is not treated as a change — there is no window to name, so failing it would be a guess.
+- **The tool schema gains `expect_app`.** It names the app that must be frontmost to receive this input. Peer v0.2.7 activates that app, refuses when it cannot, and stops activating a browser before keystrokes. An older peer ignores the field. If it still reports `focused_app`, a real drift fails the action; if it reports none, the action is left as it was. The loop degrades instead of requiring the new peer.
+- **Clicks may still move focus.** The check is on the keystrokes, not the click. `focus_changed` counts as a computer failure for the anti-repeat path, same as `ui_unchanged`.
+
+### The model was told to look at an image the cap had already dropped
+Every screenshot carried a standing order: the image parts above are the peer screenshot, and the model must not claim it cannot see them. That sentence was stored on the tool result and rebuilt on reload. The per-request image cap then dropped the image and left the sentence. A blob that failed to load did the same — `[missing attachment …]` underneath a line that said the pixels were right there. A redundant-screenshot skip pointed at the same dropped id.
+
+- **The order is outbound-only.** It is appended when a tool message still has an image part after the cap and after the blob has loaded. A dropped image, or a missing blob, does not get it. A user upload never did, and still does not.
+- **A dropped image says it was NOT sent.** The placeholder names the attachment and says a fresh screenshot is required. It does not tell the model to look at pixels that are not in this prompt.
+- **The skip checks the retained window.** Each request records which attachment ids survived the cap, and how many image parts the latest user message kept. A just-taken shot is treated as still visible only when it fits the slots that remain. Until that window has been recorded, the skip does not fire.
+
+### Earlier — v0.4.33
 
 Highlights since **[v0.4.32](https://github.com/rendicott/marble/releases/tag/v0.4.32)** (no schema change).
 
