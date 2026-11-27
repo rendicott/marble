@@ -4,7 +4,18 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.35
+## What's new in v0.4.36
+
+Highlights since **[v0.4.35](https://github.com/rendicott/marble/releases/tag/v0.4.35)** (no schema change). No data migration.
+
+### Every-turn context reaches preset-routed sessions
+
+Settings → Prompt writes `$MEMORY/soul.md`. Marble-model turns re-read that file on every model call, so an edit is in effect on the next turn. A session locked to an agent preset takes another path. `runRoutedTurn` builds the subprocess prompt from the transcript and the preset context, and that block did not include `soul.md`. The preset agent's own project instructions were the standing context, so the same edit showed up in a new Marble-model session and left the routed session unchanged.
+
+- **Routed turns read `soul.md` from disk each turn.** The text is prepended to that turn's subprocess context under the heading "Every-turn context (soul) — from harness settings, applies to this turn only", and the context marker lists `soul`. A blank file leaves the block as it was. A harness with no memory store leaves it as it was. Saving the prompt does not require a restart.
+- **Each turn records the version it sent.** One `prompt_soul` session event on the Marble loop and one on the routed subprocess. The line is `soul_sha=<first 12 hex chars of sha256> chars=<unicode count> source=loop|subprocess path=soul.md`. The sha is of the `soul.md` bytes read for that turn. The soul text is not written to the event. A blank file, and a system-agent session on the Marble loop, record the empty digest (`e3b0c44298fc`, 0 chars). `GET /api/prompt` adds `soul_sha` and `soul_chars` for the file as it stands. The previous fields are unchanged.
+
+### Earlier — v0.4.35
 
 Highlights since **[v0.4.34](https://github.com/rendicott/marble/releases/tag/v0.4.34)** (schema **v16**, additive: `tool_call_log`). No data migration. The new table is created on startup.
 
@@ -631,7 +642,7 @@ Highlights since **[v0.4.0](https://github.com/rendicott/marble/releases/tag/v0.
 - **Limp mode** if the DB schema is unreadable/mismatched (chat + MD still work)
 - **Daemon** — periodic flush, prune closed sessions, blob/attachment GC, daily compaction
 - **Session info** panel — tokens, tool histogram, recent events
-- **Every-turn soul (ADR-0013)** — optional `$MEMORY/soul.md` injected as a second system message
+- **Every-turn soul (ADR-0013)** — optional `$MEMORY/soul.md`, read fresh each turn: a second system message on Marble-model user sessions, and a prepended block on preset-routed turns
 - **Cron session badges** — 🕐 next to sessions bound to durable cron jobs
 - **Per-session model_id** — catalog override until cleared back to process default
 - **Per-session computer_id** — bind a [marble-peer](https://github.com/rendicott/marble-desktop-peer) for `computer_*` tools
