@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +19,14 @@ func (s *Store) SoulPath() string {
 		return ""
 	}
 	return filepath.Join(s.Root, "soul.md")
+}
+
+// SoulVersion identifies soul text without echoing it.
+// sha12 is the first 12 hex characters of SHA-256 over the raw bytes.
+// chars is the Unicode character count (not the byte length).
+func SoulVersion(content string) (sha12 string, chars int) {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])[:12], utf8.RuneCountInString(content)
 }
 
 // ReadSoul returns every-turn context text. Missing file ⇒ empty string, nil error.
