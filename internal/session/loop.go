@@ -716,7 +716,7 @@ func (r *Runner) runTurn(s *Session) {
 					r.Reg.logEvent(s, "tool_call", "assistant", "", name, call.ID, args, nil, nil, nil, nil, nil, "", "")
 				}
 
-				toolResult := r.Tools.Execute(name, args, tc)
+				toolResult := r.observeTool(s, name, call.ID, args, tc)
 
 				s.finishCurrentTool(toolResult)
 				s.appendStep(TurnStep{

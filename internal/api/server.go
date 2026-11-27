@@ -82,6 +82,8 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/computers/", s.handleComputers)
 	s.Mux.HandleFunc("/api/clerk", s.handleClerk)
 	s.Mux.HandleFunc("/api/clerk/", s.handleClerk)
+	s.Mux.HandleFunc("/api/tool-log", s.handleToolLog)
+	s.Mux.HandleFunc("/api/tool-log/", s.handleToolLog)
 	s.Mux.HandleFunc("/api/tts/status", s.handleTTSStatus)
 	// Tailscale-reachable confirm Accept/Deny (before SPA catch-all)
 	s.Mux.HandleFunc("/confirm/", s.handleConfirmPage)
