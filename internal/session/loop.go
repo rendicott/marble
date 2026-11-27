@@ -337,6 +337,7 @@ func (r *Runner) runTurn(s *Session) {
 
 	imageTrimNoted := false // one transcript note per turn when images are trimmed
 	clampNoted := false     // one note per turn when max_tokens is below max_output
+	soulLogged := false     // one prompt_soul event per turn, including later model calls
 	for iter := 0; iter < hard; iter++ {
 		if err := ctx.Err(); err != nil {
 			stopNote = stopMessage(err, s)
@@ -566,6 +567,10 @@ func (r *Runner) runTurn(s *Session) {
 		if em.MaxOutput > 0 && cl.MaxTokens < em.MaxOutput && !clampNoted {
 			clampNoted = true
 			r.advisory(s, fmt.Sprintf("[harness] output budget clamped to %d", cl.MaxTokens))
+		}
+		if !soulLogged {
+			r.notePromptSoul(s, "loop")
+			soulLogged = true
 		}
 		chatOpts := model.ChatOpts{ReasoningEffort: effort, MaxTokens: cl.MaxTokens}
 		result, err := client.ChatWithOpts(ctx, outbound, toolSpecs, chatOpts)
@@ -1013,14 +1018,10 @@ func (r *Runner) injectSoul(s *Session, prompt []model.Message) []model.Message 
 	if s == nil || s.Kind == "system" {
 		return prompt
 	}
-	if r.Reg == nil || r.Reg.Store() == nil {
+	soul := strings.TrimSpace(r.soulOnDisk())
+	if soul == "" {
 		return prompt
 	}
-	soul, err := r.Reg.Store().ReadSoul()
-	if err != nil || strings.TrimSpace(soul) == "" {
-		return prompt
-	}
-	soul = strings.TrimSpace(soul)
 	out := make([]model.Message, 0, len(prompt)+1)
 	inserted := false
 	for i, m := range prompt {

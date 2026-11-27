@@ -153,17 +153,19 @@ func (r *Runner) runRoutedTurn(s *Session, ctx context.Context, preset *db.Agent
 	s.appendStep(TurnStep{Kind: "starting", Detail: "routing → " + preset.ID + " (" + preset.Driver + ") cwd " + abs})
 	s.publishTurnProgress()
 
+	block := r.buildSubprocessBlock(s, opts, preset, userText, nil)
+	// One digest per routed turn, for the soul.md bytes attached to this block.
+	r.notePromptSoul(s, "subprocess")
+	if block.Marker != "" && block.Marker != "none" {
+		s.appendStep(TurnStep{Kind: "advisory", Detail: "context " + block.Marker})
+		s.publishTurnProgress()
+	}
 	if r.Tools == nil || r.Tools.Agents == nil {
 		r.failRouted(s, preset.ID, "agent process manager unavailable")
 		return
 	}
 	m := r.Tools.Agents
 	timeout := preset.TimeoutSec
-	block := r.buildSubprocessBlock(s, opts, preset, userText, nil)
-	if block.Marker != "" && block.Marker != "none" {
-		s.appendStep(TurnStep{Kind: "advisory", Detail: "context " + block.Marker})
-		s.publishTurnProgress()
-	}
 	req := agentproc.Request{
 		Format:              preset.Driver,
 		Prompt:              prompt,

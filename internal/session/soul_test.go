@@ -1,6 +1,7 @@
 package session
 
 import (
+	"os"
 	"testing"
 
 	"github.com/rendicott/marble/internal/memory"
@@ -49,6 +50,47 @@ func TestInjectSoul(t *testing.T) {
 	out3 := r.injectSoul(user, prompt)
 	if len(out3) != 2 {
 		t.Fatalf("blank soul: %+v", out3)
+	}
+}
+
+func TestInjectSoulSeesRewrite(t *testing.T) {
+	root := t.TempDir()
+	store, err := memory.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(nil, store, nil, "/ws", "m")
+	r := &Runner{Reg: reg}
+	user := newSession("siduser0001", "u")
+	prompt := []model.Message{
+		{Role: "system", Content: model.ContentFromText(SystemPrompt())},
+		{Role: "user", Content: model.ContentFromText("hi")},
+	}
+	if err := os.WriteFile(store.SoulPath(), []byte("ALPHA-SOUL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := r.injectSoul(user, prompt)
+	if len(out) != 3 || out[1].Content.PlainText() != "ALPHA-SOUL" {
+		t.Fatalf("first inject %+v", out)
+	}
+	if err := os.WriteFile(store.SoulPath(), []byte("BETA-SOUL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = r.injectSoul(user, prompt)
+	if len(out) != 3 || out[1].Content.PlainText() != "BETA-SOUL" {
+		t.Fatalf("second inject stale: %+v", out)
+	}
+
+	sys := newSession("sidsys00001", "sys")
+	sys.Kind = "system"
+	if len(r.injectSoul(sys, prompt)) != len(prompt) {
+		t.Fatal("system session received soul")
+	}
+	if err := os.WriteFile(store.SoulPath(), []byte(" \n\t"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.injectSoul(user, prompt)) != len(prompt) {
+		t.Fatal("whitespace soul was injected")
 	}
 }
 

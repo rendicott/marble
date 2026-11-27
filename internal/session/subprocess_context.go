@@ -97,7 +97,7 @@ func (r *Runner) buildSubprocessBlock(s *Session, opts TurnOpts, preset *db.Agen
 		q := agentproc.MemorySeedQuery(prompt, in.Turns)
 		in.MemoryHits = r.Tools.MemoryHits(q, agentproc.MemoryTopK)
 	}
-	return agentproc.Assemble(spec, in)
+	return r.applySoulToBlock(agentproc.Assemble(spec, in))
 }
 
 func specPtr(s agentproc.ContextSpec) *agentproc.ContextSpec {
