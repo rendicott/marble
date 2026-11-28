@@ -15,6 +15,11 @@ func TestSearchPathStaysOperatorAuth(t *testing.T) {
 	if isPublicPath("/api/tool-log") || isPublicPath("/api/tool-log/stats") {
 		t.Fatal("tool log must not be a public path")
 	}
+	for _, p := range []string{"/api/memory-index", "/api/memory-index/", "/api/memory-index/reindex"} {
+		if isPublicPath(p) {
+			t.Fatalf("%s must not be a public path", p)
+		}
+	}
 }
 
 func TestSafeNext(t *testing.T) {

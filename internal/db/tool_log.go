@@ -150,6 +150,7 @@ type ToolLogStats struct {
 	LatencyMSMean       float64           `json:"latency_ms_mean"`
 	ResultCharsMedian   float64           `json:"result_chars_median"`
 	ConsecutiveSameArgs int               `json:"consecutive_same_args"`
+	DistinctQueryRate   float64           `json:"distinct_query_rate"`
 	TopDocs             []ToolLogDocCount `json:"top_docs"`
 }
 
@@ -159,6 +160,9 @@ type ToolLogStats struct {
 // EmptyResultRate is the fraction of rows whose summary JSON has empty=true.
 // TimeoutCount is how many rows contain the substring "timed_out":true in
 // result_summary_json, which is what encoding/json writes for a bool.
+// DistinctQueryRate is distinct (session, args_json) pairs over CallCount:
+// 1.0 means no call repeated its arguments within a session, 1/6 is six
+// identical searches. 0 when there are no rows.
 // TopDocs are the ten paths most often listed under data.docs.
 func (d *DB) ToolCallLogStats(tool, since string) (ToolLogStats, error) {
 	st := ToolLogStats{
@@ -184,6 +188,7 @@ func (d *DB) ToolCallLogStats(tool, since string) (ToolLogStats, error) {
 	docCounts := map[string]int{}
 	prevArgs := map[string]string{}
 	seen := map[string]bool{}
+	distinct := map[[2]string]bool{}
 	emptyCount := 0
 
 	for rows.Next() {
@@ -215,12 +220,14 @@ func (d *DB) ToolCallLogStats(tool, since string) (ToolLogStats, error) {
 		}
 		seen[row.SessionID] = true
 		prevArgs[row.SessionID] = row.ArgsJSON
+		distinct[[2]string{row.SessionID, row.ArgsJSON}] = true
 	}
 	if err := rows.Err(); err != nil {
 		return st, err
 	}
 	if st.CallCount > 0 {
 		st.EmptyResultRate = float64(emptyCount) / float64(st.CallCount)
+		st.DistinctQueryRate = float64(len(distinct)) / float64(st.CallCount)
 	}
 	st.LatencyMSMedian = medianInt64(latency)
 	st.LatencyMSMean = meanInt64(latency)

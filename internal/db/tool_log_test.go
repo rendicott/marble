@@ -229,3 +229,38 @@ func summaryJSON(empty bool, hits int, paths ...string) string {
 	}
 	return string(b)
 }
+
+func TestToolLogStatsDistinctQueryRate(t *testing.T) {
+	d, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	// The baseline pattern: the same search asked six times in a row.
+	for i := 0; i < 6; i++ {
+		if err := d.InsertToolCallLog(ToolCallLog{
+			SessionID: "s1", TS: "2026-11-28T09:39:3" + string(rune('0'+i)) + "Z", ToolName: "memory_search",
+			ArgsJSON: `{"query":"windows signing certificate SmartScreen EV"}`, OK: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := d.ToolCallLogStats("memory_search", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ConsecutiveSameArgs != 5 {
+		t.Fatalf("consecutive_same_args %d want 5", st.ConsecutiveSameArgs)
+	}
+	if st.DistinctQueryRate < 0.166 || st.DistinctQueryRate > 0.167 {
+		t.Fatalf("distinct_query_rate %v want 1/6", st.DistinctQueryRate)
+	}
+	b, _ := json.Marshal(st)
+	if !strings.Contains(string(b), `"distinct_query_rate":`) {
+		t.Fatalf("json %s", b)
+	}
+	empty, err := d.ToolCallLogStats("nothing", "")
+	if err != nil || empty.DistinctQueryRate != 0 {
+		t.Fatalf("empty %+v %v", empty, err)
+	}
+}
