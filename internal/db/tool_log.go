@@ -143,6 +143,7 @@ type ToolLogDocCount struct {
 type ToolLogStats struct {
 	CallCount           int               `json:"call_count"`
 	ErrorCount          int               `json:"error_count"`
+	TimeoutCount        int               `json:"timeout_count"`
 	EmptyResultRate     float64           `json:"empty_result_rate"`
 	HitCountHistogram   []HitCountBucket  `json:"hit_count_histogram"`
 	LatencyMSMedian     float64           `json:"latency_ms_median"`
@@ -156,6 +157,8 @@ type ToolLogStats struct {
 // ConsecutiveSameArgs counts a call whose args_json equals the previous
 // call in the same session (within the filtered set, ordered by seq).
 // EmptyResultRate is the fraction of rows whose summary JSON has empty=true.
+// TimeoutCount is how many rows contain the substring "timed_out":true in
+// result_summary_json, which is what encoding/json writes for a bool.
 // TopDocs are the ten paths most often listed under data.docs.
 func (d *DB) ToolCallLogStats(tool, since string) (ToolLogStats, error) {
 	st := ToolLogStats{
@@ -191,6 +194,9 @@ func (d *DB) ToolCallLogStats(tool, since string) (ToolLogStats, error) {
 		st.CallCount++
 		if row.OK == 0 {
 			st.ErrorCount++
+		}
+		if strings.Contains(row.ResultSummaryJSON, `"timed_out":true`) {
+			st.TimeoutCount++
 		}
 		latency = append(latency, row.LatencyMS)
 		chars = append(chars, row.ResultChars)

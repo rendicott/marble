@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -103,7 +104,7 @@ func TestToolCallLogStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.CallCount != 7 || st.ErrorCount != 1 {
+	if st.CallCount != 7 || st.ErrorCount != 1 || st.TimeoutCount != 0 {
 		t.Fatalf("counts %+v", st)
 	}
 	if st.EmptyResultRate != 1.0/7.0 {
@@ -155,6 +156,37 @@ func TestToolCallLogStats(t *testing.T) {
 	}
 	if since.CallCount != 3 || since.ConsecutiveSameArgs != 1 || since.ErrorCount != 0 {
 		t.Fatalf("since %+v", since)
+	}
+}
+
+func TestToolLogStatsTimeoutCount(t *testing.T) {
+	d := openWatchDB(t)
+	insertLog(t, d, logRow("s1", "2026-11-01T00:00:01Z", "shell_execute", `{"command":"sleep 5"}`, 1, "", 1000, 40, ip(0), `{"hits":0,"empty":true,"data":{"timed_out":true,"killed_timeout":true}}`))
+	insertLog(t, d, logRow("s1", "2026-11-01T00:00:02Z", "shell_execute", `{"command":"sleep 5"}`, 1, "", 1000, 40, ip(0), `{"hits":0,"empty":true,"data":{"killed_timeout":true,"timed_out":true}}`))
+	insertLog(t, d, logRow("s1", "2026-11-01T00:00:03Z", "shell_execute", `{"command":"true"}`, 1, "", 5, 20, ip(0), `{"hits":0,"empty":true,"data":{"timed_out":false}}`))
+	insertLog(t, d, logRow("s1", "2026-11-01T00:00:04Z", "shell_execute", `{"command":"y"}`, 1, "", 2, 8, ip(0), `{"hits":0,"empty":false,"data":{"killed_timeout":true,"timed_out":false}}`))
+	insertLog(t, d, logRow("s1", "2026-11-01T00:00:05Z", "shell_execute", `{"command":"x"}`, 0, "nope", 1, 8, nil, ""))
+
+	st, err := d.ToolCallLogStats("shell_execute", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CallCount != 5 || st.ErrorCount != 1 || st.TimeoutCount != 2 {
+		t.Fatalf("counts %+v", st)
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	errAt := strings.Index(body, `"error_count"`)
+	toAt := strings.Index(body, `"timeout_count"`)
+	emptyAt := strings.Index(body, `"empty_result_rate"`)
+	if errAt < 0 || toAt < errAt || emptyAt < toAt {
+		t.Fatalf("field order %s", body)
+	}
+	if !strings.Contains(body, `"call_count":5`) || !strings.Contains(body, `"error_count":1`) || !strings.Contains(body, `"timeout_count":2`) {
+		t.Fatalf("json %s", body)
 	}
 }
 
