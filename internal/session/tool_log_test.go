@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rendicott/marble/internal/db"
+	"github.com/rendicott/marble/internal/shellpolicy"
 	"github.com/rendicott/marble/internal/tools"
 )
 
@@ -113,5 +115,65 @@ func TestMemorySearchWritesToolCallLog(t *testing.T) {
 	}
 	if miss.Seq != 2 || hit.Seq != 1 {
 		t.Fatalf("seq hit %d miss %d", hit.Seq, miss.Seq)
+	}
+}
+
+// TestShellExecuteNonZeroExitStaysOK records a failing command as ok=1.
+// ok is cleared only when the tool returns an error. The exit code lives in
+// the summary, and the summary JSON is stored on the row.
+func TestShellExecuteNonZeroExitStaysOK(t *testing.T) {
+	root := t.TempDir()
+	sqldb, err := db.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	ws := t.TempDir()
+	pol := shellpolicy.New(ws, t.TempDir(), false, 5*time.Second, 10*time.Second)
+	toolsReg := &tools.Registry{Workspace: ws, Policy: pol, MaxResultChars: 10000}
+	reg := NewRegistry(nil, nil, sqldb, "", "")
+	runner := &Runner{Tools: toolsReg, Reg: reg}
+	s := &Session{ID: "sess-shell"}
+
+	args := `{"command":"exit 7"}`
+	text := runner.observeTool(s, "shell_execute", "call-exit", args, nil)
+	if strings.HasPrefix(text, "error:") || !strings.Contains(text, "exit=7") {
+		t.Fatalf("text %q", text)
+	}
+
+	rows, err := sqldb.ListToolCallLogs(s.ID, "shell_execute", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows %d", len(rows))
+	}
+	row := rows[0]
+	if row.OK != 1 || row.Error != "" {
+		t.Fatalf("ok row %+v", row)
+	}
+	if row.ArgsJSON != args {
+		t.Fatalf("args %q", row.ArgsJSON)
+	}
+	if row.ResultSummaryJSON == "" {
+		t.Fatal("empty result_summary_json")
+	}
+	if row.HitCount == nil || *row.HitCount != 0 {
+		t.Fatalf("hit_count %+v", row.HitCount)
+	}
+	var sum struct {
+		Hits  int  `json:"hits"`
+		Empty bool `json:"empty"`
+		Data  struct {
+			ExitCode int  `json:"exit_code"`
+			TimedOut bool `json:"timed_out"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(row.ResultSummaryJSON), &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.Hits != 0 || !sum.Empty || sum.Data.ExitCode != 7 || sum.Data.TimedOut {
+		t.Fatalf("summary %+v json %s", sum, row.ResultSummaryJSON)
 	}
 }

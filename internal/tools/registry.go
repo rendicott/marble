@@ -239,7 +239,7 @@ func (r *Registry) executeObserved(name, argsJSON string, tc *TurnContext) Obser
 	case "apply_patch":
 		out, err = r.applyPatch(argsJSON, tc)
 	case "shell_execute":
-		out, err = r.shellExecute(argsJSON, tc)
+		out, summary, err = r.shellExecute(argsJSON, tc)
 	case "start_background_task":
 		out, err = r.startBG(argsJSON, tc)
 	case "kill_background_task":

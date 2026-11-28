@@ -30,24 +30,29 @@ type shellArgs struct {
 	TimeoutSec int    `json:"timeout_sec"`
 }
 
-func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error) {
+// shellExecute runs one foreground command.
+// The summary is nil only when the command never started: bad args, an empty
+// command, a policy denial, or cmd.Start failing. A nil summary is how the
+// tool log records that this call did not run. Every path that starts a
+// process returns a summary, including a Wait error that is not an ExitError.
+func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, *ResultSummary, error) {
 	var a shellArgs
 	if err := parseArgs(argsJSON, &a); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if strings.TrimSpace(a.Command) == "" {
-		return "", fmt.Errorf("command is required")
+		return "", nil, fmt.Errorf("command is required")
 	}
 	pol := r.Policy
 	if pol == nil {
-		return "", fmt.Errorf("shell policy not configured")
+		return "", nil, fmt.Errorf("shell policy not configured")
 	}
 	if err := pol.Check(a.Command, a.CWD); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	cwd, err := pol.ResolveCWD(a.CWD)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	timeout, hint := pol.ClampTimeout(a.TimeoutSec)
 
@@ -79,7 +84,7 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 
 	start := time.Now()
 	if err = cmd.Start(); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	waitDone := make(chan struct{})
 	go killProcessGroupOnDone(ctx, cmd, waitDone)
@@ -103,7 +108,8 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 			exit = ee.ExitCode()
 			err = nil
 		} else {
-			return "", err
+			// The process started, so the log still gets an outcome.
+			return "", shellRunSummary(exit, dur, killed, killedStop, &stdout, &stderr, timeout), err
 		}
 	}
 
@@ -120,7 +126,35 @@ func (r *Registry) shellExecute(argsJSON string, tc *TurnContext) (string, error
 	if stderr.Len() > 0 {
 		fmt.Fprintf(&b, "--- stderr ---\n%s\n", stderr.String())
 	}
-	return b.String(), nil
+	return b.String(), shellRunSummary(exit, dur, killed, killedStop, &stdout, &stderr, timeout), nil
+}
+
+// shellRunSummary is the outcome of a command that was started.
+// Empty is true when both captured streams are empty. Hits stays 0;
+// shell output is not a search hit. timeout is the clamped duration the
+// process was given; timeout_sec is that duration in whole seconds.
+func shellRunSummary(exit int, dur time.Duration, killed, killedStop bool, stdout, stderr *bytes.Buffer, timeout time.Duration) *ResultSummary {
+	stdoutN, stderrN := 0, 0
+	if stdout != nil {
+		stdoutN = stdout.Len()
+	}
+	if stderr != nil {
+		stderrN = stderr.Len()
+	}
+	return &ResultSummary{
+		Hits:  0,
+		Empty: stdoutN == 0 && stderrN == 0,
+		Data: map[string]interface{}{
+			"exit_code":      exit,
+			"duration_ms":    dur.Milliseconds(),
+			"killed_timeout": killed && !killedStop,
+			"killed_stop":    killedStop,
+			"timed_out":      killed,
+			"stdout_bytes":   stdoutN,
+			"stderr_bytes":   stderrN,
+			"timeout_sec":    int(timeout / time.Second),
+		},
+	}
 }
 
 // killProcessGroupOnDone sends SIGTERM/SIGKILL to the command's process group
