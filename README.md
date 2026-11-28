@@ -4,7 +4,11 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.36
+## What's new in v0.4.37
+
+Highlights since **[v0.4.36](https://github.com/rendicott/marble/releases/tag/v0.4.36)** (no schema change). No migration needed; `result_summary_json` already exists. shell_execute now records its outcome: the tool log summary carries the exit code, the duration, whether the process was killed for the tool timeout or because the turn stopped, whether it timed out, the stdout and stderr sizes, and the timeout that was used. Empty stdout and stderr mark the summary empty. A non-zero exit stays ok. `GET /api/tool-log/stats` adds `timeout_count` next to `error_count`, counting rows whose summary contains `"timed_out":true`. The text the model sees is unchanged.
+
+### Earlier — v0.4.36
 
 Highlights since **[v0.4.35](https://github.com/rendicott/marble/releases/tag/v0.4.35)** (no schema change). No data migration.
 
