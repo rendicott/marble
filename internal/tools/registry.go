@@ -18,6 +18,7 @@ import (
 	"github.com/rendicott/marble/internal/cron"
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/mcp"
+	"github.com/rendicott/marble/internal/memsearch"
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/peerhub"
 	"github.com/rendicott/marble/internal/shellpolicy"
@@ -159,6 +160,14 @@ type Registry struct {
 	// Thrash is ADR-0022 anti-repeat / escalate / sleep-block policy (set from CLI).
 	Thrash    ThrashPolicy
 	ThrashSet bool // true once main (or tests) assigned Thrash, including intentional zeros
+
+	// MemIndex is the memory_search index ($MEMORY/memory-index.db). Main
+	// opens it at startup; nil opens it lazily on the first search.
+	MemIndex *memsearch.Index
+	// MemIndexMaxAge is how stale the index may be before a search runs an
+	// incremental reindex (0 = memsearch.DefaultMaxAge). Applied on lazy open.
+	MemIndexMaxAge time.Duration
+	memIndexMu     sync.Mutex
 
 	mu sync.Mutex
 }

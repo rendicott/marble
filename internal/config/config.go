@@ -37,6 +37,9 @@ type Config struct {
 	// ModelTimeout is the HTTP client timeout for a single chat/completions call
 	// (await headers + body). Independent of HardWall (whole turn). Default 30m.
 	ModelTimeout time.Duration
+	// MemoryReindexAge is how stale the memory_search index may get before a
+	// search runs an incremental (2s-budgeted) reindex. Default 60s.
+	MemoryReindexAge time.Duration
 	// AutoContinueReserve: when max-tool-iters remaining ≤ this, hard-stop the turn
 	// and schedule_continuation so work resumes automatically (0 = disabled).
 	AutoContinueReserve int
@@ -133,6 +136,7 @@ func ParseFlags(args []string) (Config, error) {
 	fs.DurationVar(&cfg.HardWall, "hard-wall", 2*time.Hour, "Hard wall-clock deadline for an entire user turn (context timeout; ends turn)")
 	// 30m default: thinking models can block past 10m on headers alone (session 0wcsrng8j8).
 	fs.DurationVar(&cfg.ModelTimeout, "model-timeout", 30*time.Minute, "HTTP timeout for a single model chat/completions request (headers + body); not the whole-turn hard-wall")
+	fs.DurationVar(&cfg.MemoryReindexAge, "memory-reindex-age", 60*time.Second, "memory_search: reindex memory-index.db on a search when the last reindex is older than this")
 	// Stop a few rounds before the hard max and auto-schedule a continuation so long turns don't die mid-work.
 	fs.IntVar(&cfg.AutoContinueReserve, "auto-continue-reserve", 10, "When remaining max-tool-iters ≤ this, hard-stop turn and schedule auto-continuation (0 disables)")
 	// ADR-0022: identical-arg anti-repeat is OPT-IN (default off).

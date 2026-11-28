@@ -2,11 +2,14 @@ package tools
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/rendicott/marble/internal/memsearch"
 )
 
 type memSearchArgs struct {
@@ -55,58 +58,162 @@ func (r *Registry) memorySearch(argsJSON string) (string, *ResultSummary, error)
 	if strings.TrimSpace(a.Query) == "" {
 		return "", nil, fmt.Errorf("query is required")
 	}
-	if a.MaxResults <= 0 {
-		a.MaxResults = 20
+	out, sum, err := r.runMemorySearch(a)
+	if err == nil && sum != nil && sum.Data["degraded"] == true {
+		// Say so in the text as well as the log row: an unranked answer, or
+		// "no matches" from a walk that may have stopped early, must not
+		// read like a ranked one.
+		out = memSearchDegradedNote + "\n" + out
 	}
-	return r.runMemorySearch(a)
+	return out, sum, err
 }
+
+const memSearchDegradedNote = "[degraded: memory index unavailable; unranked linear scan, may miss documents late in the tree]"
 
 func (r *Registry) runMemorySearch(a memSearchArgs) (string, *ResultSummary, error) {
 	started := time.Now()
-	scope := strings.ToLower(a.Scope)
+	scope := strings.ToLower(strings.TrimSpace(a.Scope))
 	if scope == "" {
 		scope = "all"
 	}
+	a.MaxResults = memsearch.ClampMaxResults(a.MaxResults)
 	tags := make([]string, len(a.Tags))
 	copy(tags, a.Tags)
+	q := memsearch.BuildQuery(a.Query)
+	dropped := q.Dropped
+	if dropped == nil {
+		dropped = []string{}
+	}
+	terms := q.Terms
+	if terms == nil {
+		terms = []string{}
+	}
 	var (
 		hits     []string
 		docs     = []map[string]interface{}{}
 		scanned  int
+		indexed  int
 		rejected int
 	)
+	data := map[string]interface{}{
+		"query":             a.Query,
+		"scope":             scope,
+		"max_results":       a.MaxResults,
+		"tags":              tags,
+		"since":             a.Since,
+		"until":             a.Until,
+		"engine":            "fts5",
+		"match_expr":        q.Expr,
+		"phrase_expr":       q.Phrase,
+		"terms":             terms,
+		"stopwords_dropped": dropped,
+		"reindexed":         false,
+		"index_age_sec":     int64(-1),
+		"degraded":          false,
+	}
 	finish := func() (string, *ResultSummary, error) {
 		ms := time.Since(started).Milliseconds()
 		if ms < 0 {
 			ms = 0
 		}
 		empty := len(hits) == 0
-		sum := &ResultSummary{
-			Hits:  len(hits),
-			Empty: empty,
-			Data: map[string]interface{}{
-				"query":              a.Query,
-				"scope":              scope,
-				"max_results":        a.MaxResults,
-				"tags":               tags,
-				"since":              a.Since,
-				"until":              a.Until,
-				"docs":               docs,
-				"hit_count":          len(hits),
-				"empty":              empty,
-				"search_ms":          ms,
-				"docs_scanned":       scanned,
-				"docs_rejected_tags": rejected,
-			},
-		}
+		data["docs"] = docs
+		data["hits"] = len(hits)
+		data["hit_count"] = len(hits)
+		data["empty"] = empty
+		data["search_ms"] = ms
+		data["docs_scanned"] = scanned
+		data["docs_indexed"] = indexed
+		data["docs_rejected_tags"] = rejected
+		sum := &ResultSummary{Hits: len(hits), Empty: empty, Data: data}
 		if empty {
 			return "no matches", sum, nil
 		}
 		return strings.Join(hits, "\n"), sum, nil
 	}
-	if strings.TrimSpace(a.Query) == "" {
+	if len(q.Terms) == 0 {
+		// Only stopwords or single characters. Matching on those is what made
+		// every document a hit; say nothing was searched instead.
+		data["note"] = "no searchable terms after dropping stopwords and single characters; nothing was searched"
 		return finish()
 	}
+
+	ix, err := r.memoryIndex()
+	var res memsearch.Result
+	if err == nil {
+		var reindexed bool
+		var rep memsearch.ReindexReport
+		reindexed, rep, err = ix.MaybeReindex()
+		if err == nil {
+			data["reindexed"] = reindexed
+			if reindexed && rep.Partial {
+				data["reindex_partial"] = true
+			}
+			res, err = ix.Search(q, memsearch.Options{Scope: scope, Max: a.MaxResults, Tags: a.Tags})
+		}
+		if age := ix.Age(); age >= 0 {
+			data["index_age_sec"] = int64(age.Seconds())
+		}
+	}
+	if err != nil {
+		log.Printf("memory_search_degraded reason=%q", err.Error())
+		data["engine"] = "linear"
+		data["degraded"] = true
+		data["degraded_reason"] = err.Error()
+		hits, docs, scanned, rejected = r.memorySearchLinear(a, scope)
+		return finish()
+	}
+	scanned, indexed, rejected = res.DocsInScope, res.DocsIndexed, res.Rejected
+	for _, h := range res.Hits {
+		hits = append(hits, fmt.Sprintf("%s: …%s…", h.Path, h.Excerpt))
+		docs = append(docs, map[string]interface{}{
+			"path":           h.Path,
+			"kind":           h.Kind,
+			"score":          h.Score,
+			"title_hit":      h.TitleHit,
+			"matched_phrase": h.MatchedPhrase,
+			"matched_tokens": h.MatchedTerms,
+			"doc_bytes":      h.SizeBytes,
+		})
+	}
+	return finish()
+}
+
+// memoryIndex returns the search index, opening $MEMORY/memory-index.db on
+// first use when main did not set MemIndex. A failed open is retried on the
+// next search rather than cached.
+func (r *Registry) memoryIndex() (*memsearch.Index, error) {
+	r.memIndexMu.Lock()
+	defer r.memIndexMu.Unlock()
+	if r.MemIndex != nil {
+		return r.MemIndex, nil
+	}
+	if strings.TrimSpace(r.Memory) == "" {
+		return nil, fmt.Errorf("no memory root")
+	}
+	ix, err := memsearch.Open(r.Memory)
+	if err != nil {
+		return nil, err
+	}
+	if r.MemIndexMaxAge > 0 {
+		ix.MaxAge = r.MemIndexMaxAge
+	}
+	r.MemIndex = ix
+	return ix, nil
+}
+
+// MemoryIndex is the search index for the admin endpoint (nil when it cannot
+// be opened; err says why).
+func (r *Registry) MemoryIndex() (*memsearch.Index, error) {
+	return r.memoryIndex()
+}
+
+// memorySearchLinear is the pre-v0.4.38 search, kept only as the degraded
+// fallback when the index cannot be used. It is unranked and stops at
+// max_results, so it can miss documents late in the tree; callers mark the
+// result degraded.
+func (r *Registry) memorySearchLinear(a memSearchArgs, scope string) (hits []string, docs []map[string]interface{}, scanned, rejected int) {
+	docs = []map[string]interface{}{}
 	q := strings.ToLower(a.Query)
 	searchDir := func(sub string, limit int) {
 		root := filepath.Join(r.Memory, sub)
@@ -196,7 +303,7 @@ func (r *Registry) runMemorySearch(a memSearchArgs) (string, *ResultSummary, err
 	if len(hits) < a.MaxResults && (scope == "all" || scope == "knowledge") {
 		searchDir("knowledge", a.MaxResults)
 	}
-	return finish()
+	return hits, docs, scanned, rejected
 }
 
 type memFetchArgs struct {
@@ -270,6 +377,12 @@ func (r *Registry) memoryWrite(argsJSON string) (string, error) {
 	if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
 		return "", err
 	}
+	// A search right after the write should find it, not wait for the
+	// reindex age to pass.
+	r.memIndexMu.Lock()
+	ix := r.MemIndex
+	r.memIndexMu.Unlock()
+	ix.Invalidate()
 	return fmt.Sprintf("wrote knowledge/%s.md", slug), nil
 }
 

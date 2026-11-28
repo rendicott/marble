@@ -27,6 +27,7 @@ import (
 	"github.com/rendicott/marble/internal/db"
 	"github.com/rendicott/marble/internal/mcp"
 	"github.com/rendicott/marble/internal/memory"
+	"github.com/rendicott/marble/internal/memsearch"
 	"github.com/rendicott/marble/internal/model"
 	"github.com/rendicott/marble/internal/mpub"
 	"github.com/rendicott/marble/internal/peerhub"
@@ -265,7 +266,26 @@ func main() {
 			BlockSleepShell: cfg.BlockSleepShell,
 			EvalMutateMax:   cfg.EvalMutateMax,
 		},
-		ThrashSet: true,
+		ThrashSet:      true,
+		MemIndexMaxAge: cfg.MemoryReindexAge,
+	}
+	// memory_search index: open after the marble.db migrations, then one full
+	// reindex in the background. Searches before it finishes run their own
+	// budgeted incremental pass. A failed open leaves MemIndex nil; searches
+	// then retry the open and fall back to the linear scan, marked degraded.
+	if ix, err := memsearch.Open(cfg.Memory); err != nil {
+		log.Printf("memory_search_degraded reason=%q", "open memory index: "+err.Error())
+	} else {
+		ix.MaxAge = cfg.MemoryReindexAge
+		toolReg.MemIndex = ix
+		go func() {
+			rep, err := ix.ReindexFull()
+			if err != nil {
+				log.Printf("memory index: startup reindex: %v", err)
+				return
+			}
+			log.Printf("memory index: startup reindex %s", rep)
+		}()
 	}
 	// ADR-0040 D1: age/size sweep for .tool-results/ so spills cannot accumulate.
 	go tools.SweepSpills(cfg.Workspace)
