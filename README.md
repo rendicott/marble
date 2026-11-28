@@ -4,7 +4,26 @@
 
 > **MVP status.** Marble is intentionally minimal. A process-wide CLI model is always available as fallback; additional models live in a **Settings catalog** (per-session + optional cron pin). Optional **Google OAuth** allowlist (shared full-admin sessions) and a **single writer** per memory directory. Expect sharp edges; design decisions live in [`adr/`](adr/).
 
-## What's new in v0.4.37
+## What's new in v0.4.38
+
+Highlights since **[v0.4.37](https://github.com/rendicott/marble/releases/tag/v0.4.37)**. `marble.db` stays at schema **v16**. The search index is a new file, `$MEMORY/memory-index.db` (its own schema v1). It is created on startup and filled by a background reindex. You can delete it at any time; the next start or search rebuilds it. State export does not copy it.
+
+### memory_search is ranked, and it reaches the whole store
+
+**Result ordering changed.** `memory_search` used to return the first files it came across in directory order. It now returns files ranked by relevance, best first.
+
+The old search walked `session/` alphabetically. A file counted as a hit if it contained *any one* word of the query, and the walk stopped once `max_results` files had matched. A common word such as "windows" matches nearly every file, so the quota filled within the first twenty or so files and the walk ended there. Files later in the tree were never opened, and `daily/` and `knowledge/` were reached only when `session/` came up short. The v0.4.35 tool log measured one session: 33 searches in 32 seconds, every one returning exactly `max_results`, 0 useful results, and no file opened past #26 of 223. The three notes that held the answer were at #183, #193 and #196.
+
+- **SQLite FTS5 with BM25 scoring.** This uses the SQLite driver Marble already ships, so there is no new dependency and no CGO. Title matches weigh 12×, heading matches 6×, body matches 1×. A rare word now outranks a common one. A file late in the tree ranks the same as one early in it.
+- **The query is cleaned before it is matched.** Words like *the*, *is*, *of* and single letters are dropped. A query made only of those returns `no matches` and searches nothing. Every remaining word is quoted, so FTS5 operators typed into a query (`NEAR`, `AND`, `*`, `-`, `^`, `"`) are treated as plain text. A match on the whole query as a phrase ranks above the rest. The last word also matches as a prefix.
+- **Excerpts come from the match itself.** Each line is still `path: …excerpt…`. The excerpt is now taken from around the best-matching words, not from wherever the first query word first appears.
+- **`max_results` defaults to 10 and is capped at 25.** The old default was 20 with no cap. Now that results are ranked, fewer of them are needed, and each one costs prompt tokens. The argument schema (`query`, `since`, `until`, `tags`, `scope`, `max_results`) is unchanged. `since` and `until` are still recorded but not applied, same as before.
+- **The index stays current.** On startup it does one full reindex in the background. After that, a search reindexes when the index is more than `--memory-reindex-age` old (default `60s`). Only files whose mtime or size changed are read again, and files that were deleted are dropped from the index. One reindex on the search path runs for at most 2 seconds; anything left over is picked up by the next search and logged as `reindex_partial`. `memory_write` marks the index stale, so a note you just wrote shows up in the next search.
+- **Degraded mode is labelled.** If the index cannot be opened or queried, the search falls back to the old linear walk. It logs `memory_search_degraded`, the summary records `"degraded":true` with the reason, and the text the model sees starts with a `[degraded: …]` line.
+- **Telemetry adds keys and renames none.** Every key from v0.4.35 is still there. New keys: `match_expr`, `phrase_expr`, `terms`, `stopwords_dropped`, `hits`, `docs_indexed`, `index_age_sec`, `reindexed`, `engine` (`fts5` or `linear`) and `degraded`. Each entry in `docs` adds `score` (bm25, negative, lower is better), `title_hit` and `kind`. `docs_scanned` is now the number of indexed files in scope. `GET /api/tool-log/stats` adds `distinct_query_rate`: distinct (session, arguments) pairs divided by the call count. Six identical searches give 1/6.
+- **Two admin endpoints, operator auth only.** `GET /api/memory-index` returns `docs`, `by_kind`, `bytes`, `index_file_bytes`, `last_reindexed_at` and `age_sec`. `POST /api/memory-index/reindex` runs a full reindex and returns the report: walked, touched, added, updated, unchanged and deleted counts.
+
+### Earlier — v0.4.37
 
 Highlights since **[v0.4.36](https://github.com/rendicott/marble/releases/tag/v0.4.36)** (no schema change). No migration needed; `result_summary_json` already exists. shell_execute now records its outcome: the tool log summary carries the exit code, the duration, whether the process was killed for the tool timeout or because the turn stopped, whether it timed out, the stdout and stderr sizes, and the timeout that was used. Empty stdout and stderr mark the summary empty. A non-zero exit stays ok. `GET /api/tool-log/stats` adds `timeout_count` next to `error_count`, counting rows whose summary contains `"timed_out":true`. The text the model sees is unchanged.
 
@@ -944,6 +963,7 @@ Wire contract: [`docs/peer-protocol.md`](docs/peer-protocol.md). Peer install, C
 ├── marble.db              # SQLite (WAL) — sessions, events, settings, cron_*, model_catalog,
 │                          #   attachments, computers, clerk_session_state, daemon
 ├── marble.lock            # single-writer lock
+├── memory-index.db        # memory_search FTS5 index (rebuildable cache; not exported)
 ├── session/<id>.md        # first-class transcripts
 ├── daily/YYYY-MM-DD.md
 ├── blobs/                 # large payload spill
